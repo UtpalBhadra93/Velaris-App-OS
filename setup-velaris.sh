@@ -4,6 +4,12 @@
 #  Run once after a fresh OS install. Safe to re-run (idempotent).
 #
 #  Usage:  chmod +x setup-velaris.sh && ./setup-velaris.sh
+#          ./setup-velaris.sh --verbose   # stream all build output
+#          ./setup-velaris.sh --with-key  # prompt for a product key during setup
+#
+#  Build output is captured to /tmp/velaris-setup.log (previous run kept as
+#  .log.prev) and the terminal shows a progress bar. On failure the tail of
+#  that log is printed automatically.
 # ═══════════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -57,7 +63,84 @@ bold()   { echo -e "\033[1m$*\033[0m"; }
 fail()   { red "  ✗ $*"; ERRORS=$((ERRORS + 1)); }
 ok()     { green "  ✓ $*"; }
 warn()   { yellow "  ⚠ $*"; }
-step()   { echo ""; bold "▶ $*"; }
+
+# ── Progress display ──────────────────────────────────────────────
+# Long build output (uv, npm, docker) goes to a log; the terminal keeps a bar.
+# apt is deliberately left VISIBLE with its own fancy progress: it is the part
+# an operator most expects to watch, and it draws its own bar anyway.
+# --verbose streams everything to the terminal as before.
+VERBOSE=0
+for _a in ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; do
+  case "$_a" in -v|--verbose) VERBOSE=1 ;; esac
+done
+SETUP_LOG="${VELARIS_SETUP_LOG:-/tmp/velaris-setup.log}"
+# Keep the previous run: a log truncated on every start is a log that is empty
+# exactly when someone needs it.
+[ -f "$SETUP_LOG" ] && mv -f "$SETUP_LOG" "$SETUP_LOG.prev" 2>/dev/null || true
+: > "$SETUP_LOG" 2>/dev/null || SETUP_LOG=/dev/null
+echo "Velaris setup — $(date -Is)" >> "$SETUP_LOG"
+
+BAR_WIDTH=28
+_bar_active=0
+draw_bar() {                       # draw_bar <current> <total> <label>
+  [ "$VERBOSE" = "1" ] && return 0
+  [ -t 1 ] || return 0             # no bar when piped to a file or CI
+  local cur="$1" total="$2" label="$3" filled empty pct
+  [ "$total" -gt 0 ] 2>/dev/null || return 0
+  pct=$(( cur * 100 / total ))
+  filled=$(( cur * BAR_WIDTH / total ))
+  empty=$(( BAR_WIDTH - filled ))
+  printf "\r\033[K\033[0;36m[%s%s]\033[0m %3d%%  %s" \
+    "$(printf '█%.0s' $(seq 1 $filled 2>/dev/null))" \
+    "$(printf '░%.0s' $(seq 1 $empty 2>/dev/null))" \
+    "$pct" "$label"
+  _bar_active=1
+}
+clear_bar() { [ "$_bar_active" = "1" ] && { printf "\r\033[K"; _bar_active=0; }; return 0; }
+
+# step "Step 4/9 — Doing the thing..." — the bar reads the counter from the label.
+step() {
+  clear_bar
+  echo ""
+  bold "▶ $*"
+  local cur total
+  if [[ "$*" =~ Step[[:space:]]+([0-9]+)[a-z]?/([0-9]+) ]]; then
+    cur="${BASH_REMATCH[1]}"; total="${BASH_REMATCH[2]}"
+    draw_bar "$cur" "$total" "${*#Step */* — }"
+  fi
+}
+
+# quiet <label> <command...> — run with output captured unless --verbose.
+# The command's exit status is preserved so callers can still branch on it.
+quiet() {
+  local label="$1"; shift
+  if [ "$VERBOSE" = "1" ]; then
+    "$@"
+    return $?
+  fi
+  echo "--- $label: $* ---" >> "$SETUP_LOG"
+  "$@" >> "$SETUP_LOG" 2>&1
+}
+
+# Anything that dies unexpectedly should hand over the output it hid.
+on_error() {
+  local code=$?
+  clear_bar
+  [ "$code" -eq 0 ] && return 0
+  red ""
+  red "  ✗ Setup failed (exit $code) at line ${1:-?}."
+  if [ "$VERBOSE" != "1" ] && [ -s "$SETUP_LOG" ]; then
+    yellow "  ── last 25 lines of $SETUP_LOG ─────────────────────"
+    tail -25 "$SETUP_LOG" | sed 's/^/  /'
+    yellow "  ────────────────────────────────────────────────────"
+    echo   "  Full log: $SETUP_LOG   ·   re-run with --verbose to watch live"
+  fi
+}
+trap 'on_error $LINENO' ERR
+trap clear_bar EXIT
+
+# apt draws its own progress bar; let it, and keep it on screen.
+APT_PROGRESS=(-o Dpkg::Progress-Fancy=1)
 
 echo "╔══════════════════════════════════════════╗"
 echo "║         VELARIS One-Time Setup           ║"
@@ -66,7 +149,7 @@ echo "╚═══════════════════════�
 # ── Step 1: Prerequisites ─────────────────────────────────────────
 step "Step 1/9 — Checking prerequisites..."
 
-sudo apt update
+sudo apt-get "${APT_PROGRESS[@]}" update
 
 APT_PACKAGES=()
 
@@ -112,7 +195,7 @@ if command -v docker &>/dev/null; then
 else
   warn "Docker is not installed."
   if ask "Install Docker now (apt: docker.io)?"; then
-    sudo apt-get install -y docker.io || true
+    sudo apt-get "${APT_PROGRESS[@]}" install -y docker.io || true
     command -v docker &>/dev/null || { warn "Falling back to Docker's official installer..."; curl -fsSL https://get.docker.com | sudo sh; }
     command -v docker &>/dev/null && ok "Docker installed" || fail "Docker install failed"
   else
@@ -160,7 +243,7 @@ fi
 # Install missing apt packages
 if [ "${#APT_PACKAGES[@]}" -gt 0 ]; then
   step "Installing missing apt packages..."
-  sudo apt install -y "${APT_PACKAGES[@]}"
+  sudo apt-get "${APT_PROGRESS[@]}" install -y "${APT_PACKAGES[@]}"
   ok "Missing apt packages installed"
 fi
 
@@ -173,7 +256,7 @@ if command -v node &>/dev/null; then
     warn "Node $(node -v) is too old for the Studio build (needs 18+)."
     if ask "Install Node 20 LTS from NodeSource?"; then
       curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null
-      sudo apt-get install -y nodejs
+      sudo apt-get "${APT_PROGRESS[@]}" install -y nodejs
       ok "Node $(node -v) installed"
     fi
   fi
@@ -231,7 +314,7 @@ if command -v uv &>/dev/null; then
     ok "Python 3.12 available via uv"
   else
     step "Installing Python 3.12 via uv..."
-    uv python install 3.12
+    quiet "uv python install" uv python install 3.12
     ok "Python 3.12 installed"
   fi
 fi
@@ -470,14 +553,14 @@ fi
 # ── Step 3: uv workspace sync ─────────────────────────────────────
 step "Step 3/9 — Syncing uv workspace..."
 cd "$HELIX_DIR"
-uv sync --all-packages 2>&1 | tail -5
+quiet "uv sync" uv sync --all-packages || uv sync --all-packages 2>&1 | tail -5
 ok "uv workspace synced"
 
 # ── Step 4: Studio npm install ────────────────────────────────────
 step "Step 4/9 — Installing Studio npm dependencies..."
 if [ -d "$HELIX_DIR/studio" ]; then
   cd "$HELIX_DIR/studio"
-  npm install --prefer-offline 2>&1 | tail -5
+  quiet "npm install" npm install --prefer-offline || npm install --prefer-offline 2>&1 | tail -5
   ok "Studio dependencies installed"
 else
   fail "studio/ directory not found"
@@ -711,13 +794,13 @@ else
   if [ "$DB_FAMILY" = "mysql" ]; then
     # Install script dependencies (MySQL driver) + run the interactive setup.
     # Password via VELARIS_DB_PASSWORD env (not in the URL) so special chars are safe.
-    uv pip install bcrypt httpx pymysql cryptography --quiet
+    quiet "uv pip install (mysql)" uv pip install bcrypt httpx pymysql cryptography --quiet
     VELARIS_DB_PASSWORD="$MY_PASS" \
     DATABASE_URL="mysql://${MY_USER}@${MY_HOST}:${MY_PORT}/${MY_NAME}" \
     uv run python "$HELIX_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
   else
     # Install script dependencies
-    uv pip install bcrypt httpx psycopg2-binary cryptography --quiet
+    quiet "uv pip install" uv pip install bcrypt httpx psycopg2-binary cryptography --quiet
 
     # Run the interactive Python setup
     DATABASE_URL="postgresql://helix:${VELARIS_DB_PASSWORD:-helix}@localhost:5432/helix" \
