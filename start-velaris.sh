@@ -10,6 +10,14 @@ set -euo pipefail
 
 HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
+
+# uv installs itself to ~/.local/bin, which is NOT on PATH in a fresh non-login
+# shell. Add it here rather than making the operator export it — a missing uv
+# used to surface as "product key verification failed", which is a lie.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+esac
 DB_CONTAINER="docker-compose-helix-db-1"
 DB_USER="helix"
 DB_NAME="helix"
@@ -71,8 +79,37 @@ echo ""
 # ════════════════════════════════════════════════════════════════════
 # GATE 1: Product key verification (MUST PASS — first check, always)
 # ════════════════════════════════════════════════════════════════════
+# If systemd already supervises Velaris, starting a second copy from a shell
+# gives two processes racing for 8100/8201/5173. The nohup copy usually wins
+# the bind, systemd's restarts fail quietly, and the whole thing disappears at
+# the next logout. Refuse instead.
+if systemctl is-active --quiet velaris-case-service 2>/dev/null \
+   || systemctl is-active --quiet velaris-engine 2>/dev/null; then
+  yellow "  ⚠ Velaris is already running under systemd."
+  echo   "    Status:   sudo systemctl status velaris-engine velaris-case-service velaris-studio"
+  echo   "    Restart:  sudo systemctl restart velaris-engine velaris-case-service velaris-studio"
+  echo   "    Logs:     sudo journalctl -u velaris-case-service -f"
+  echo ""
+  echo   "    To run from this shell instead:"
+  echo   "      sudo systemctl stop velaris-engine velaris-case-service velaris-studio"
+  exit 0
+fi
+
+# A missing toolchain is a toolchain problem — report it as one instead of
+# blaming the licence, which sent the operator hunting the wrong thing.
+if ! command -v uv >/dev/null 2>&1; then
+  red "  ✗ 'uv' is not installed (or not on PATH)."
+  echo "    Install it with:  curl -LsSf https://astral.sh/uv/install.sh | sh"
+  echo "    Then re-run ./start-velaris.sh"
+  exit 1
+fi
+
 echo "▶ Verifying product key…"
-if ! uv run python "$HELIX_DIR/scripts/verify_key.py"; then
+set +e
+uv run python "$HELIX_DIR/scripts/verify_key.py"
+KEY_STATUS=$?
+set -e
+if [ "$KEY_STATUS" -eq 1 ]; then
   echo ""
   red "╔═══════════════════════════════════════════════════════╗"
   red "║  STARTUP BLOCKED: product key verification failed.   ║"
@@ -80,6 +117,11 @@ if ! uv run python "$HELIX_DIR/scripts/verify_key.py"; then
   red "║  Contact support: velaris.app.os@gmail.com                   ║"
   red "╚═══════════════════════════════════════════════════════╝"
   exit 1
+elif [ "$KEY_STATUS" -eq 2 ]; then
+  # Not activated yet. Starting is REQUIRED here: the registration website
+  # calls this platform's API to create the customer's user, so the key
+  # cannot exist until these services are up. See scripts/verify_key.py.
+  yellow "  ⚠ Running unactivated — activate with ./activate-velaris.sh once you have a key."
 fi
 echo ""
 
@@ -348,7 +390,14 @@ echo ""
 # ── Step 4b: Sync Python workspace dependencies ──────────────────
 echo "▶ Syncing Python dependencies..."
 cd "$HELIX_DIR"
-uv sync --all-packages --quiet 2>/dev/null && green "  ✓ Dependencies up to date" || yellow "  ⚠ uv sync had warnings — continuing"
+# Optional ML extras are NOT part of the default install (a base box stays lean,
+# no model weights). But `uv sync` is exact by default — it prunes anything not
+# declared, so an operator who installed an extra would silently lose it on the
+# next run. Detect what is already present and ask for it again.
+_EXTRAS=""
+uv run python -c "import faster_whisper" >/dev/null 2>&1 && _EXTRAS="$_EXTRAS --extra intelligence"
+uv run python -c "import av" >/dev/null 2>&1 && _EXTRAS="$_EXTRAS --extra kyc"
+uv sync --all-packages $_EXTRAS --quiet 2>/dev/null && green "  ✓ Dependencies up to date$([ -n "$_EXTRAS" ] && echo " (extras preserved:$_EXTRAS)")" || yellow "  ⚠ uv sync had warnings — continuing"
 echo ""
 
 # ── Step 5: Set environment variables ────────────────────────────
@@ -465,6 +514,23 @@ if [ -f "$HELIX_DIR/.velaris-key" ]; then
   fi
 fi
 
+# ── Speech capability notice ─────────────────────────────────────
+# Voice input ships enabled (releases/manifest.sql) but needs BOTH halves:
+#   1. a local Whisper engine — the optional `intelligence` extra. Without it
+#      /stt/status reports no engine and the mic renders nothing at all (an
+#      absent capability is absent, never a dead button), so this is a notice
+#      rather than a failure.
+#   2. a SECURE CONTEXT in the browser. `navigator.mediaDevices` is undefined
+#      on a plain-http origin, so the mic works at http://localhost but is
+#      silently unavailable to anyone opening Studio or the customer portal
+#      over http://<LAN-IP> — most obviously from a phone. Put a TLS
+#      terminator in front for those users.
+if ! uv run python -c "import faster_whisper" >/dev/null 2>&1; then
+  yellow "  ⚠ Speech-to-text engine not installed — voice input will be hidden."
+  echo   "    Enable it with:  uv sync --all-packages --extra intelligence"
+  echo ""
+fi
+
 # ── Done ─────────────────────────────────────────────────────────
 echo "╔═══════════════════════════════════════════════════════╗"
 green "║              VELARIS is running!                      ║"
@@ -481,4 +547,8 @@ echo "║  Case logs:     tail -f /tmp/velaris-case-service.log ║"
 echo "║  Studio logs:   tail -f /tmp/velaris-studio.log       ║"
 echo "╠═══════════════════════════════════════════════════════╣"
 echo "║  Stop:          ./stop-velaris.sh                     ║"
+echo "╠═══════════════════════════════════════════════════════╣"
+echo "║  Microphone features (voice input, HxMeet captions)   ║"
+echo "║  need https or localhost — browsers refuse mic access ║"
+echo "║  over plain http on a LAN address.                    ║"
 echo "╚═══════════════════════════════════════════════════════╝"

@@ -74,6 +74,14 @@ ACTION_ROLES: dict[str, set[str]] = {
     "replay.run":                    {"admin"},  # HxReplay cohort replay = bulk case read
     "costing.rates":                 {"admin"},  # rate cards are commercially sensitive
     "mcp.tokens.mint":               {"admin", "designer"},  # P4 scoped external-agent tokens
+    # HxSentinel P1. Labelling is the engine's ground truth, so a wrong or
+    # malicious label poisons everything learned later — keep it narrower than
+    # ordinary case work.
+    "risk.read":                     {"admin", "manager", "case_worker"},
+    "risk.label":                    {"admin", "manager"},
+    "risk.taxonomy":                 {"admin"},   # vocabulary changes are tenant-wide
+    "risk.rules":                    {"admin", "manager"},   # tune the rule engine (tenant-wide)
+    "risk.scores.review":            {"admin", "manager"},   # supervise reviewers' scores (dashboard + dispute)
 }
 
 #: grant-backed actions: resolved against namespace_grants, not roles.
@@ -152,6 +160,8 @@ CASE_ACTIONS: dict[str, set[str]] = {
     "docs.verify":    {"assignee", "editor"},            # HxMeet P4b: record a document verification
     "meet.kyc.run":   {"assignee", "editor"},            # HxMeet P4c: issue liveness challenges / run the signal pass
     "cases.ask":      {"assignee", "editor", "viewer"},  # HxNexus case Q&A: read-derived
+    "stt.transcribe": {"assignee", "editor", "viewer"},  # Voice input: dictate into a case surface
+    "voicefill.extract": {"assignee", "editor"},         # Voice input P3: propose form values (write-prep)
 }
 
 

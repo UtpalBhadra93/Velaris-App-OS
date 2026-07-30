@@ -34,6 +34,7 @@ from case_service.db.models import (
     CaseAssignmentModel,
 )
 from case_service.db.session import get_session
+from case_service.tenancy.identity import same_tenant
 from case_service.hxnexus.factory import get_llm_backend, get_ai_info, check_ai_available
 from case_service.hxnexus.guard import (
     chat_rate_limiter, regen_rate_limiter, global_rate_limiter,
@@ -298,8 +299,7 @@ async def case_ask(
         raise HTTPException(400, str(e))
 
     case = await session.get(CaseInstanceModel, case_id)
-    if case is None or (case.tenant_id is not None and
-                        str(case.tenant_id) != (current_user.tenant_id or "default")):
+    if case is None or not await same_tenant(session, case.tenant_id, current_user.tenant_id):
         raise HTTPException(404, "Case not found")
     await hxguard.require_case(session, current_user, "cases.ask", case_id)
 

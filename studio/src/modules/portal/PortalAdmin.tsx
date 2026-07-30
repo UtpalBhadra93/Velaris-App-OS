@@ -11,6 +11,8 @@ type Tenant = {
   brand_color: string;
   logo_text: string;
   allowed_case_type_ids: string[];
+  voice_input: boolean;
+  voice_consent_text: string;
   portal_case_type_count: number;
 };
 
@@ -153,6 +155,8 @@ function TenantsTab() {
           brand_color: editing.brand_color,
           logo_text: editing.logo_text,
           allowed_case_type_ids: editing.allowed_case_type_ids,
+          voice_input: editing.voice_input ?? false,
+          voice_consent_text: editing.voice_consent_text ?? "",
         }),
       });
       setEditing(null);
@@ -290,6 +294,33 @@ function TenantsTab() {
                 {logoPreview && <img src={logoPreview} alt="logo"
                   style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border-default)" }} />}
               </div>
+            </ModalField>
+
+            {/* Voice input P3b — recording a customer is the tenant's call to
+                make and defend, so it is off until someone turns it on here. */}
+            <ModalField label="Voice Input (customers may answer by speaking)">
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={editing.voice_input ?? false}
+                  onChange={e => setEditing({ ...editing, voice_input: e.target.checked })}
+                  style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+                />
+                <span style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                  Let customers dictate answers on action cards
+                </span>
+              </label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 8 }}>
+                Speech is transcribed by this server's own model and the recording is
+                discarded immediately — nothing is stored. Customers are shown a consent
+                notice before their first recording on each case.
+              </p>
+              <textarea
+                value={editing.voice_consent_text ?? ""}
+                placeholder="Consent notice (leave blank for the default wording)"
+                onChange={e => setEditing({ ...editing, voice_consent_text: e.target.value })}
+                rows={3} style={modalInput}
+              />
             </ModalField>
 
             <ModalField label="Brand Color">

@@ -20,7 +20,7 @@ async def _reg_sf(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRegi
         credentials=encrypt_credentials({"client_id": "cid", "client_secret": "csec", "refresh_token": "rtok"}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _reg_xero(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRegistryModel:
@@ -30,7 +30,7 @@ async def _reg_xero(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRe
         credentials=encrypt_credentials({"client_id": "xid", "client_secret": "xsec", "refresh_token": "xrtok", "xero_tenant_id": "xtenant"}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _crm_case(client: AsyncClient) -> dict:

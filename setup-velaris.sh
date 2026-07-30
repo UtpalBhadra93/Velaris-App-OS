@@ -11,11 +11,22 @@ set -euo pipefail
 HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ERRORS=0
 
+# uv lives in ~/.local/bin. It is added to .bashrc during install, but that
+# does not affect THIS shell (or a re-run in the same session), so put it on
+# PATH up front — a previously-installed uv was being reported as missing.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
+esac
+
 # ── CLI flags (DB SDK — optional; enable non-interactive DB setup) ────────────
 # --database <postgresql|mysql|mariadb>  pick the backend without the interactive prompt
 # --db-host/-port/-name/-user/-password   MySQL (BYO) connection details
 # --non-interactive               never prompt; use flags + defaults only
 DB_BACKEND_ARG=""; DB_HOST_ARG=""; DB_PORT_ARG=""; DB_NAME_ARG=""; DB_USER_ARG=""; DB_PASSWORD_ARG=""; NONINTERACTIVE=0
+# The parse loop below consumes $@, so keep a copy: it is needed for the
+# docker-group re-exec and for the --with-key check near the end.
+ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
     --database)        DB_BACKEND_ARG="${2:-}"; shift 2 ;;
@@ -35,6 +46,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 # MySQL-only selections (kept empty for postgresql so `set -u` is satisfied everywhere)
+SYSTEMD_MANAGED=0
 SEL_BACKEND=""; SEL_DB_HOST=""; SEL_DB_PORT=""; SEL_DB_NAME=""; SEL_DB_USER=""; SEL_DB_PASSWORD=""
 
 red()    { echo -e "\033[0;31m$*\033[0m"; }
@@ -80,13 +92,69 @@ require_cmd node nodejs "Node.js"
 require_cmd npm npm "npm"
 require_cmd pg_isready postgresql-client "postgresql-client"
 
-# Docker check (do NOT install docker.io automatically)
+# ask "question" → 0 = yes. --non-interactive and a missing tty both answer yes,
+# so an unattended install still completes instead of stalling on a prompt.
+ask() {
+  if [ "$NONINTERACTIVE" = "1" ] || [ ! -t 0 ]; then
+    warn "$1 — yes (non-interactive)"
+    return 0
+  fi
+  local reply
+  read -rp "$(yellow "  ? $1 [Y/n] ")" reply || reply=""
+  [ -z "$reply" ] || [[ "$reply" =~ ^[Yy] ]]
+}
+
+# ── Docker: engine, compose plugin, daemon, group membership ─────
+# All four have to be true before anything else works, and each one used to
+# fail separately with a different confusing message.
 if command -v docker &>/dev/null; then
   ok "Docker found: $(command -v docker)"
 else
-  fail "Docker not found."
-  echo "  Install Docker first:"
-  echo "  https://docs.docker.com/engine/install/ubuntu/"
+  warn "Docker is not installed."
+  if ask "Install Docker now (apt: docker.io)?"; then
+    sudo apt-get install -y docker.io || true
+    command -v docker &>/dev/null || { warn "Falling back to Docker's official installer..."; curl -fsSL https://get.docker.com | sudo sh; }
+    command -v docker &>/dev/null && ok "Docker installed" || fail "Docker install failed"
+  else
+    fail "Docker is required — https://docs.docker.com/engine/install/ubuntu/"
+  fi
+fi
+
+if docker compose version &>/dev/null 2>&1; then
+  ok "Docker Compose found"
+elif command -v docker-compose &>/dev/null; then
+  ok "docker-compose (v1) found"
+else
+  warn "Docker Compose plugin is not installed."
+  if ask "Install the Docker Compose plugin now?"; then
+    sudo apt-get install -y docker-compose-v2 2>/dev/null \
+      || sudo apt-get install -y docker-compose-plugin 2>/dev/null || true
+    docker compose version &>/dev/null 2>&1 && ok "Docker Compose installed" || fail "Compose install failed"
+  else
+    fail "Docker Compose is required"
+  fi
+fi
+
+if command -v docker &>/dev/null && ! sudo docker info &>/dev/null 2>&1; then
+  warn "Docker daemon is not running."
+  ask "Start and enable the Docker service?" && sudo systemctl enable --now docker || true
+fi
+
+# usermod does not affect the running shell, so re-exec inside the new group
+# rather than ending the install with "log out and back in".
+if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
+  warn "$USER cannot use the Docker socket (not in the 'docker' group)."
+  if ask "Add $USER to the 'docker' group and continue?"; then
+    sudo usermod -aG docker "$USER"
+    if [ "${VELARIS_SETUP_REEXEC:-0}" != "1" ]; then
+      warn "Re-running setup inside the new group..."
+      export VELARIS_SETUP_REEXEC=1
+      exec sg docker -c "$(printf '%q ' "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"})"
+    fi
+    docker info &>/dev/null 2>&1 || fail "Still no Docker access — log out and back in, then re-run."
+  else
+    fail "Docker group membership is required"
+  fi
 fi
 
 # Install missing apt packages
@@ -94,6 +162,21 @@ if [ "${#APT_PACKAGES[@]}" -gt 0 ]; then
   step "Installing missing apt packages..."
   sudo apt install -y "${APT_PACKAGES[@]}"
   ok "Missing apt packages installed"
+fi
+
+# Studio is built with Vite, which needs Node 18+. The distro package can be
+# older than that, and the resulting build failure names neither Node nor the
+# version, so check explicitly.
+if command -v node &>/dev/null; then
+  NODE_MAJOR="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+  if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -lt 18 ] 2>/dev/null; then
+    warn "Node $(node -v) is too old for the Studio build (needs 18+)."
+    if ask "Install Node 20 LTS from NodeSource?"; then
+      curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null
+      sudo apt-get install -y nodejs
+      ok "Node $(node -v) installed"
+    fi
+  fi
 fi
 
 # Install uv if missing
@@ -510,17 +593,37 @@ DB_CONTAINER="docker-compose-helix-db-1"
 DB_USER="helix"
 DB_NAME="helix"
 
-docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d helix-db 2>/dev/null || \
-  docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d 2>/dev/null || true
+# Do NOT silence these — a failure here is the whole reason the next loop
+# times out, and hiding it leaves the operator with "not ready" and no cause.
+DB_UP_LOG=$(mktemp)
+if ! docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d helix-db > "$DB_UP_LOG" 2>&1; then
+  docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d >> "$DB_UP_LOG" 2>&1 || true
+fi
 
 echo "  Waiting for PostgreSQL..."
 for i in $(seq 1 20); do
   if docker exec "$DB_CONTAINER" pg_isready -U "$DB_USER" -q 2>/dev/null; then
     ok "PostgreSQL ready"; break
   fi
-  [ "$i" -eq 20 ] && { fail "PostgreSQL not ready — check docker logs $DB_CONTAINER"; exit 1; }
+  if [ "$i" -eq 20 ]; then
+    fail "PostgreSQL not ready after 20s."
+    echo ""
+    yellow "  ── docker compose output ─────────────────────────"
+    sed 's/^/  /' "$DB_UP_LOG"
+    yellow "  ── last 20 lines of $DB_CONTAINER ────────────────"
+    docker logs "$DB_CONTAINER" --tail 20 2>&1 | sed 's/^/  /' || echo "  (container does not exist)"
+    yellow "  ──────────────────────────────────────────────────"
+    # Port 5432 already taken by a host Postgres is the usual cause.
+    if ss -tlnp 2>/dev/null | grep -q ':5432 '; then
+      warn "Something is already listening on 5432 — likely a host PostgreSQL."
+      warn "  Free it with:  sudo systemctl disable --now postgresql"
+    fi
+    rm -f "$DB_UP_LOG"
+    exit 1
+  fi
   sleep 1
 done
+rm -f "$DB_UP_LOG"
 
 # Sync DB user password to match .env (prevents auth failures on TCP connections)
 docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
@@ -581,8 +684,17 @@ fi
 echo ""
 
 # ── Step 9: Product key + superadmin creation ─────────────────────
-step "Step 9/9 — Product key validation and superadmin setup..."
+step "Step 9/9 — Superadmin account (product key comes later)..."
 echo ""
+# A fresh box CANNOT have a key yet: the registration website issues one only
+# after calling this platform's API to create the customer's user, and that API
+# is not running until setup finishes. So setup creates the superadmin and
+# leaves activation to ./activate-velaris.sh. --with-key restores the old
+# key-first prompt for an operator who already holds one.
+SUPERADMIN_KEY_MODE="--skip-key"
+for _a in ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; do
+  [ "$_a" = "--with-key" ] && SUPERADMIN_KEY_MODE=""
+done
 
 # Skip if superadmin already exists
 if [ "$DB_FAMILY" = "mysql" ]; then
@@ -594,9 +706,7 @@ else
 fi
 
 if [ "$SUPERADMIN_EXISTS" = "1" ]; then
-  warn "Superadmin already exists — skipping key + superadmin setup."
-  # Still ensure .velaris-setup-complete marker exists
-  touch "$HELIX_DIR/.velaris-setup-complete"
+  warn "Superadmin already exists — skipping superadmin creation."
 else
   if [ "$DB_FAMILY" = "mysql" ]; then
     # Install script dependencies (MySQL driver) + run the interactive setup.
@@ -604,16 +714,21 @@ else
     uv pip install bcrypt httpx pymysql cryptography --quiet
     VELARIS_DB_PASSWORD="$MY_PASS" \
     DATABASE_URL="mysql://${MY_USER}@${MY_HOST}:${MY_PORT}/${MY_NAME}" \
-    uv run python "$HELIX_DIR/scripts/setup_superadmin.py"
+    uv run python "$HELIX_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
   else
     # Install script dependencies
     uv pip install bcrypt httpx psycopg2-binary cryptography --quiet
 
     # Run the interactive Python setup
     DATABASE_URL="postgresql://helix:${VELARIS_DB_PASSWORD:-helix}@localhost:5432/helix" \
-    uv run python "$HELIX_DIR/scripts/setup_superadmin.py"
+    uv run python "$HELIX_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
   fi
 fi
+
+# The marker means "setup ran to completion", NOT "licensed" — verify_key.py
+# treats a missing KEY as a warning and a missing MARKER as a hard error, so
+# writing it unconditionally here is what lets an unactivated box start.
+touch "$HELIX_DIR/.velaris-setup-complete"
 
 # ── Done ─────────────────────────────────────────────────────────
 echo ""
@@ -624,6 +739,51 @@ if [ "$ERRORS" -gt 0 ]; then
   exit 1
 else
   echo "╔═══════════════════════════════════════════╗"
-  green "║  Setup complete! Run ./start-velaris.sh   ║"
+  if [ "${SYSTEMD_MANAGED:-0}" = "1" ]; then
+    green "║  Setup complete! Velaris is running.      ║"
+  else
+    green "║  Setup complete! Run ./start-velaris.sh   ║"
+  fi
   echo "╚═══════════════════════════════════════════╝"
+  echo ""
+  # Boot persistence. Without it the platform only runs for as long as the
+  # shell that launched it, so a reboot silently takes the site down.
+  if [ ! -f /etc/systemd/system/velaris-case-service.service ] \
+     && ask "Install systemd units so Velaris starts on boot?"; then
+    if sudo "$HELIX_DIR/deploy/systemd/install.sh"; then
+      # install.sh only ENABLES the units (boot persistence). Start them here
+      # too, otherwise the platform is "installed and enabled" but down until
+      # the next reboot — and the operator reaches for start-velaris.sh, which
+      # would then double-bind the ports at the next boot.
+      sudo systemctl start velaris-engine velaris-case-service velaris-studio 2>/dev/null || true
+      SYSTEMD_MANAGED=1
+      ok "systemd units installed, enabled and started"
+      echo "    Status:  sudo systemctl status velaris-case-service"
+      echo "    Logs:    sudo journalctl -u velaris-case-service -f"
+      warn "Manage with systemctl from now on — do NOT also run ./start-velaris.sh."
+    else
+      warn "systemd install failed — start-velaris.sh still works."
+    fi
+    echo ""
+  fi
+
+  if [ ! -f "$HELIX_DIR/.velaris-key" ]; then
+    yellow "  This install is not activated yet — that is expected on a fresh box."
+    echo   "    1. ./start-velaris.sh          (the platform must be up first)"
+    echo   "    2. register on your Velaris website to receive a product key"
+    echo   "    3. ./activate-velaris.sh       (binds the key to this machine)"
+    echo ""
+  fi
+  # Optional ML extras are left out of the default install on purpose: they
+  # pull model weights a base install does not need. Every feature that uses
+  # them fail-closes honestly (501 / hidden control) rather than degrading
+  # silently, so this is an offer, not a warning.
+  echo "  Optional add-ons (install only if you want them):"
+  echo "    Speech-to-text — voice input, HxMeet live captions:"
+  echo "      uv sync --all-packages --extra intelligence"
+  echo "    Video-KYC passive checks:"
+  echo "      uv sync --all-packages --extra kyc"
+  echo ""
+  echo "  Microphone features need https or localhost — browsers block mic"
+  echo "  access over plain http on a LAN address."
 fi

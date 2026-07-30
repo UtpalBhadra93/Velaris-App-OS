@@ -110,7 +110,7 @@ class TestSovereigntyResolver:
     async def test_primary_region_returned_as_fallback(self, session):
         region = RegionModel(name="primary-test", provider="local", is_primary=True, enabled=True)
         session.add(region)
-        await session.flush()
+        await session.commit()
         result = await resolve_region(None, None, session)
         assert result is not None
         assert result.name == "primary-test"
@@ -119,12 +119,12 @@ class TestSovereigntyResolver:
         primary = RegionModel(name="primary-r", provider="local", is_primary=True, enabled=True)
         specific = RegionModel(name="eu-specific", provider="local", is_primary=False, enabled=True)
         session.add_all([primary, specific])
-        await session.flush()
+        await session.commit()
 
         from case_service.db.models import SovereigntyRuleModel
         rule = SovereigntyRuleModel(tenant_id="tenant-eu", region_id=specific.id, regulation="GDPR")
         session.add(rule)
-        await session.flush()
+        await session.commit()
 
         result = await resolve_region("tenant-eu", None, session)
         assert result is not None
@@ -138,7 +138,7 @@ class TestMigrationPipeline:
     async def test_migrate_to_local_region(self, session):
         region = RegionModel(name="target-region", provider="local", enabled=True)
         session.add(region)
-        await session.flush()
+        await session.commit()
         result = await migrate_tenant("tenant-abc", region.id, session)
         assert result["status"] == "success"
         assert result["tenant_id"] == "tenant-abc"
@@ -155,7 +155,7 @@ class TestHealthPoller:
     async def test_poll_local_region(self, session):
         region = RegionModel(name="health-test", provider="local", enabled=True)
         session.add(region)
-        await session.flush()
+        await session.commit()
         result = await poll_region_health(region, session)
         assert result["status"] == "healthy"
         assert "latency_ms" in result

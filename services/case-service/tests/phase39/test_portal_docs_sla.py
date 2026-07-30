@@ -51,7 +51,7 @@ async def tenant(session) -> TenantModel:
         name="ACME Corp",
         settings={"portal": {"enabled": True, "welcome_text": "Hi", "brand_color": "#000", "logo_text": "ACME"}},
     )
-    session.add(t); await session.flush(); return t
+    session.add(t); await session.commit(); return t
 
 
 @pytest_asyncio.fixture
@@ -60,7 +60,7 @@ async def case_type(session) -> CaseTypeModel:
         name="Support", version="1.0",
         definition_json={"stages": []}, portal_enabled=True,
     )
-    session.add(ct); await session.flush(); return ct
+    session.add(ct); await session.commit(); return ct
 
 
 @pytest_asyncio.fixture
@@ -74,7 +74,7 @@ async def case_inst(session, tenant, case_type) -> CaseInstanceModel:
         extra_metadata={"portal_slug": "acme"},
         created_by="portal:jane@example.com",
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 def _make_doc(session, case_id, filename="file.pdf", portal_visible=False, portal_source=None) -> DocumentModel:
@@ -120,7 +120,7 @@ def _make_sla(session, case_id, status="on_track", hours_total=48, hours_elapsed
 class TestPortalDocuments:
     async def test_staff_shared_doc_visible(self, client: AsyncClient, session, case_inst):
         _make_doc(session, case_inst.id, "response.pdf", portal_visible=True, portal_source="staff")
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         assert r.status_code == 200
@@ -131,14 +131,14 @@ class TestPortalDocuments:
 
     async def test_non_shared_doc_hidden(self, client: AsyncClient, session, case_inst):
         _make_doc(session, case_inst.id, "internal.pdf", portal_visible=False)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         assert r.json()["documents"] == []
 
     async def test_customer_upload_visible(self, client: AsyncClient, session, case_inst):
         _make_doc(session, case_inst.id, "customer_upload.pdf", portal_visible=False, portal_source="customer")
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         docs = r.json()["documents"]
@@ -149,7 +149,7 @@ class TestPortalDocuments:
         _make_doc(session, case_inst.id, "shared.pdf", portal_visible=True, portal_source="staff")
         _make_doc(session, case_inst.id, "internal.pdf", portal_visible=False)
         _make_doc(session, case_inst.id, "cust.pdf", portal_source="customer")
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         docs = r.json()["documents"]
@@ -167,7 +167,7 @@ class TestPortalDocuments:
 
     async def test_download_url_in_response(self, client: AsyncClient, session, case_inst):
         _make_doc(session, case_inst.id, "file.pdf", portal_visible=True, portal_source="staff")
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         doc = r.json()["documents"][0]
@@ -176,7 +176,7 @@ class TestPortalDocuments:
 
     async def test_size_bytes_in_response(self, client: AsyncClient, session, case_inst):
         _make_doc(session, case_inst.id, "file.pdf", portal_visible=True, portal_source="staff")
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/documents?email=jane@example.com")
         assert r.json()["documents"][0]["size_bytes"] == 1024
@@ -187,7 +187,7 @@ class TestPortalDocuments:
 class TestPortalVisibilityToggle:
     async def test_staff_can_share_document(self, client: AsyncClient, session, case_inst):
         doc = _make_doc(session, case_inst.id, "response.pdf", portal_visible=False)
-        await session.flush()
+        await session.commit()
         doc_id = doc.id
 
         _override(_admin())
@@ -204,7 +204,7 @@ class TestPortalVisibilityToggle:
 
     async def test_staff_can_unshare_document(self, client: AsyncClient, session, case_inst):
         doc = _make_doc(session, case_inst.id, "response.pdf", portal_visible=True, portal_source="staff")
-        await session.flush()
+        await session.commit()
         doc_id = doc.id
 
         _override(_admin())
@@ -235,7 +235,7 @@ class TestPortalVisibilityToggle:
 class TestSLACountdown:
     async def test_on_track_green(self, client: AsyncClient, session, case_inst):
         _make_sla(session, case_inst.id, status="on_track", hours_total=48, hours_elapsed=12)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         assert r.status_code == 200
@@ -247,7 +247,7 @@ class TestSLACountdown:
     async def test_at_risk_amber(self, client: AsyncClient, session, case_inst):
         # Elapsed 90% of the time window → < 20% remaining → amber
         _make_sla(session, case_inst.id, status="at_risk", hours_total=48, hours_elapsed=44)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         sla = r.json()["sla"]
@@ -256,7 +256,7 @@ class TestSLACountdown:
 
     async def test_breached_red(self, client: AsyncClient, session, case_inst):
         _make_sla(session, case_inst.id, status="breached", hours_total=24, hours_elapsed=25)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         sla = r.json()["sla"]
@@ -270,7 +270,7 @@ class TestSLACountdown:
 
     async def test_wrong_email_404(self, client: AsyncClient, session, case_inst):
         _make_sla(session, case_inst.id)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=wrong@example.com")
         assert r.status_code == 404
@@ -281,7 +281,7 @@ class TestSLACountdown:
 
     async def test_deadline_at_in_response(self, client: AsyncClient, session, case_inst):
         _make_sla(session, case_inst.id, hours_total=24, hours_elapsed=1)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         sla = r.json()["sla"]
@@ -291,7 +291,7 @@ class TestSLACountdown:
 
     async def test_remaining_seconds_zero_when_breached(self, client: AsyncClient, session, case_inst):
         _make_sla(session, case_inst.id, status="breached", hours_total=24, hours_elapsed=25)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         assert r.json()["sla"]["remaining_seconds"] == 0
@@ -300,7 +300,7 @@ class TestSLACountdown:
         """If multiple SLA instances exist, the most recent is used."""
         _make_sla(session, case_inst.id, status="breached", hours_total=24, hours_elapsed=25)
         _make_sla(session, case_inst.id, status="on_track", hours_total=48, hours_elapsed=1)
-        await session.flush()
+        await session.commit()
 
         r = await client.get(f"/api/v1/portal/acme/cases/{case_inst.id}/sla?email=jane@example.com")
         assert r.json()["sla"]["status"] == "on_track"
@@ -326,5 +326,5 @@ class TestCustomerUploadTagging:
     async def test_portal_visibility_false_by_default(self, client: AsyncClient, session, case_inst):
         """Newly uploaded staff doc has portal_visible=False by default."""
         doc = _make_doc(session, case_inst.id, "internal.pdf")
-        await session.flush()
+        await session.commit()
         assert doc.portal_visible is False

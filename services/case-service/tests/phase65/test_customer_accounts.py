@@ -180,7 +180,7 @@ class TestHistoricalCaseLink:
     async def test_auto_link_is_tenant_scoped(self, client, session, tenant, other_tenant):
         ct = CaseTypeModel(name="Support", version="1.0", definition_json={"stages": []},
                            portal_enabled=True)
-        session.add(ct); await session.flush()
+        session.add(ct); await session.commit()
         mine = CaseInstanceModel(
             case_type_id=ct.id, case_type_version="1.0", status="open", priority="medium",
             tenant_id=tenant.id, portal_submitter_email="jane@example.com",

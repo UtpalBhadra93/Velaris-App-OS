@@ -50,6 +50,7 @@ import {
   getKycAnalysis,
   type KycAnalysis,
   type KycCheck,
+  apiFetch,
 } from "@shared/api/client";
 import type { MyTaskResult, CaseSession, MeetProvider } from "@shared/api/client";
 import FormRenderer from "@modules/form-builder/FormRenderer";
@@ -61,6 +62,8 @@ import {
   TimeAgo,
   Stat,
   MeetRoom,
+  VoiceInput,
+  appendTranscript,
 } from "@shared/components";
 import type { CaseSummary, CaseAuditEntry, CaseStatus, CasePriority, SLAStatusInfo, CaseTypeSummary } from "@shared/types";
 
@@ -314,7 +317,7 @@ function CaseDetailPanel({
   const { data: slaData } = useApi(() => getCaseSLA(caseId), [caseId]);
   const { data: caseTypeData } = useApi(() => getCaseType(caseData?.case_type_id ?? ""), [caseData?.case_type_id]);
   const { data: myTask, refetch: refetchMyTask } = useApi(() => getMyTask(caseId), [caseId]);
-  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask">("stages");
+  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk">("stages");
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -444,8 +447,8 @@ function CaseDetailPanel({
       <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)", flexShrink: 0, overflowX: "auto" }}>
         {([
           myTask ? "my-task" : null,
-          "stages", "details", "timeline", "sla", "sharing", "sessions", "messages", "ask",
-        ].filter(Boolean) as Array<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask">).map((t) => (
+          "stages", "details", "timeline", "sla", "risk", "sharing", "sessions", "messages", "ask",
+        ].filter(Boolean) as Array<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk">).map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{
             flex: 1, padding: "10px 8px", fontSize: 11, fontWeight: 500, fontFamily: "var(--font-mono)",
             textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
@@ -453,7 +456,7 @@ function CaseDetailPanel({
             color: tab === t ? "var(--accent)" : "var(--text-muted)",
             background: "transparent", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
           }}>
-            {t === "my-task" ? "⚡ My Task" : t === "sessions" ? "HxMeet" : t === "ask" ? "✦ Ask" : t}
+            {t === "my-task" ? "⚡ My Task" : t === "sessions" ? "HxMeet" : t === "ask" ? "✦ Ask" : t === "risk" ? "⚠ Risk" : t}
           </button>
         ))}
       </div>
@@ -501,6 +504,7 @@ function CaseDetailPanel({
         {tab === "sharing" && <SharingTab caseId={caseId} />}
         {tab === "sessions" && <SessionsTab caseId={caseId} />}
         {tab === "ask" && <AskTab caseId={caseId} />}
+        {tab === "risk" && <RiskTab caseId={caseId} onResolved={() => { refetch(); onUpdate(); }} />}
         {tab === "messages" && <MessagesTab caseId={caseId} />}
       </div>
     </div>
@@ -642,6 +646,261 @@ function MessagesTab({ caseId }: { caseId: string }) {
 
 /* ── Ask Tab (HxNexus case-scoped Q&A) ───────────────────────── */
 
+// ── HxSentinel risk panel ────────────────────────────────────────────────────
+// Recommendations with cited evidence — never a verdict. Shows the engine's
+// findings and any open verify-gate hold; a worker clears a hold (with a note)
+// to release the case's stage advance.
+
+interface RiskFinding {
+  id: string; rule_key: string; severity: string; title: string; message: string;
+  evidence: any; status: string;
+}
+interface RiskHold {
+  id: string; rule_key: string; severity: string; status: string;
+  resolved_by?: string | null; resolution_note?: string | null;
+}
+
+const SEV_COLOR: Record<string, string> = {
+  high: "var(--status-failed)", medium: "var(--status-warning, #d98c00)", low: "var(--text-muted)",
+};
+
+function SevBadge({ severity }: { severity: string }) {
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+      padding: "1px 8px", borderRadius: 8, color: "#fff",
+      background: SEV_COLOR[severity] || "var(--text-muted)" }}>
+      {severity}
+    </span>
+  );
+}
+
+// Per-finding 1–5 score + note (P2b). Scoring requires having seen the evidence,
+// so it lives on the finding. Shows your last score and its outcome cross-check.
+interface ScoreEntry { id: string; reviewer: string; score: number; note?: string | null; calibration?: string }
+
+function FindingFeedback({ findingId }: { findingId: string }) {
+  const [latest, setLatest] = useState<{ score: number; calibration?: string } | null>(null);
+  const [history, setHistory] = useState<ScoreEntry[]>([]);
+  const [score, setScore] = useState(0);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [showScores, setShowScores] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await apiFetch(`/api/v1/risk/findings/${findingId}/feedback`);
+      if (r.ok) { const b = await r.json(); setLatest(b.latest); setHistory(b.history || []); }
+    } catch { /* non-fatal */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [findingId]);
+
+  // P3b: a supervisor disputes a specific score (excludes it from reliability +
+  // training). The API enforces risk.scores.review; a non-supervisor is refused.
+  const disputeScore = async (feedbackId: string) => {
+    const reason = window.prompt("Why dispute this score? (required)");
+    if (!reason || !reason.trim()) return;
+    try {
+      const r = await apiFetch(`/api/v1/risk/feedback/${feedbackId}/dispute`, {
+        method: "POST", body: JSON.stringify({ note: reason.trim() }) });
+      if (!r.ok) window.alert(await r.text());
+      await load();
+    } catch { /* non-fatal */ }
+  };
+
+  const submit = async () => {
+    if (!score || busy) return;
+    setBusy(true);
+    try {
+      const r = await apiFetch(`/api/v1/risk/findings/${findingId}/feedback`, {
+        method: "POST", body: JSON.stringify({ score, note: note.trim() || null }) });
+      if (r.ok) { setOpen(false); setNote(""); setScore(0); await load(); }
+    } finally { setBusy(false); }
+  };
+
+  const calColor = latest?.calibration === "miscalibrated" ? "var(--status-failed)"
+    : latest?.calibration === "ok" ? "var(--accent)" : "var(--text-muted)";
+
+  return (
+    <div style={{ marginTop: 6, borderTop: "1px dashed var(--border-subtle)", paddingTop: 6 }}>
+      {!open ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+          <span style={{ color: "var(--text-muted)" }}>
+            {latest ? `Your score: ${latest.score}/5` : "Rate this analysis"}
+          </span>
+          {latest?.calibration && latest.calibration !== "undetermined" && (
+            <span style={{ color: calColor, fontWeight: 600 }}>· {latest.calibration}</span>
+          )}
+          <button onClick={() => setOpen(true)} style={{ fontSize: 11, background: "transparent",
+            border: "none", color: "var(--accent)", cursor: "pointer" }}>
+            {latest ? "re-score" : "score"}
+          </button>
+          {history.length > 0 && (
+            <button onClick={() => setShowScores((s) => !s)} style={{ fontSize: 11, background: "transparent",
+              border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
+              {showScores ? "hide scores" : `all scores (${history.length})`}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>1=bad … 5=best</span>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button key={n} onClick={() => setScore(n)} style={{ width: 24, height: 24,
+                borderRadius: 6, fontSize: 12, cursor: "pointer",
+                border: "1px solid var(--border-default)",
+                background: score === n ? "var(--accent)" : "var(--bg-secondary)",
+                color: score === n ? "#fff" : "var(--text-secondary)" }}>{n}</button>
+            ))}
+          </div>
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)"
+            style={{ fontSize: 12, padding: 6, borderRadius: 6, border: "1px solid var(--border-default)",
+              background: "var(--bg-secondary)", color: "var(--text-primary)" }} />
+          <div style={{ display: "flex", gap: 6 }}>
+            <Button size="sm" disabled={!score || busy} onClick={submit}>Save score</Button>
+            <Button size="sm" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {showScores && !open && (
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+          {history.map((h) => (
+            <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11,
+              color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              <span>{h.reviewer}</span>
+              <span style={{ fontWeight: 700, color: "var(--text-secondary)" }}>{h.score}/5</span>
+              {h.calibration && h.calibration !== "undetermined" && (
+                <span style={{ color: h.calibration === "miscalibrated" ? "var(--status-failed)" : "var(--accent)" }}>
+                  {h.calibration}
+                </span>
+              )}
+              {h.note && <span style={{ fontStyle: "italic" }}>“{h.note}”</span>}
+              <button onClick={() => disputeScore(h.id)} title="Dispute this score (supervisor)"
+                style={{ marginLeft: "auto", fontSize: 10, background: "transparent",
+                  border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "1px 6px",
+                  color: "var(--text-muted)", cursor: "pointer" }}>dispute</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => void }) {
+  const [findings, setFindings] = useState<RiskFinding[]>([]);
+  const [holds, setHolds] = useState<RiskHold[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [off, setOff] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const fr = await apiFetch(`/api/v1/risk/cases/${caseId}/findings`);
+      if (fr.status === 404) { setOff(true); setLoading(false); return; }
+      if (!fr.ok) throw new Error(await fr.text());
+      setFindings((await fr.json()).findings || []);
+      const hr = await apiFetch(`/api/v1/risk/cases/${caseId}/holds`);
+      if (hr.ok) setHolds((await hr.json()).holds || []);
+    } catch (e: any) { setErr(e?.message || "Failed to load risk"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [caseId]);
+
+  const clearHold = async (holdId: string, status: "cleared" | "dismissed") => {
+    const note = (notes[holdId] || "").trim();
+    if (!note) { setErr("A note is required to clear a hold."); return; }
+    setBusy(holdId); setErr(null);
+    try {
+      const r = await apiFetch(`/api/v1/risk/holds/${holdId}/resolve`, {
+        method: "POST", body: JSON.stringify({ status, note }) });
+      if (!r.ok) throw new Error(await r.text());
+      await load();
+      onResolved();
+    } catch (e: any) { setErr(e?.message || "Resolve failed"); }
+    finally { setBusy(null); }
+  };
+
+  if (loading) return <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Evaluating…</div>;
+  if (off) return (
+    <div style={{ color: "var(--text-muted)", fontSize: 12, maxWidth: 620 }}>
+      HxSentinel is not enabled for this workspace. Risk recommendations appear here once it is on.
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 760 }}>
+      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+        Deterministic recommendations with cited evidence — never a verdict. A human reviews and decides.
+      </div>
+      {err && <div style={{ color: "var(--status-failed)", fontSize: 12 }}>{err}</div>}
+
+      {holds.filter((h) => h.status === "open").map((h) => (
+        <div key={h.id} style={{ border: "1px solid var(--status-failed)", borderRadius: 8,
+          padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <SevBadge severity={h.severity} />
+            <strong style={{ fontSize: 13 }}>Stage advance is held</strong>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{h.rule_key}</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            A verification is required before this case can advance. Record what you checked, then clear it.
+          </div>
+          <textarea value={notes[h.id] || ""} onChange={(e) => setNotes((n) => ({ ...n, [h.id]: e.target.value }))}
+            placeholder="What did you verify? (required)" rows={2}
+            style={{ fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid var(--border-default)",
+              background: "var(--bg-secondary)", color: "var(--text-primary)", resize: "vertical" }} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button size="sm" disabled={busy === h.id} onClick={() => clearHold(h.id, "cleared")}>Clear hold</Button>
+            <Button size="sm" variant="secondary" disabled={busy === h.id} onClick={() => clearHold(h.id, "dismissed")}>Dismiss</Button>
+          </div>
+        </div>
+      ))}
+
+      {findings.length === 0 && (
+        <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No risk findings for this case.</div>
+      )}
+      {findings.map((f) => (
+        <div key={f.id} style={{ border: "1px solid var(--border-subtle)", borderRadius: 8, padding: 12,
+          display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <SevBadge severity={f.severity} />
+            <strong style={{ fontSize: 13 }}>{f.title}</strong>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{f.rule_key}</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{f.message}</div>
+          {Array.isArray(f.evidence?.matched_cases) && f.evidence.matched_cases.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+              {f.evidence.matched_cases.map((m: any, i: number) => (
+                <span key={i} title={m.outcome} style={{ fontSize: 10, padding: "1px 7px", borderRadius: 8,
+                  border: "1px solid var(--border-subtle)", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                  {m.case_number} · {m.outcome}
+                </span>
+              ))}
+            </div>
+          )}
+          {Array.isArray(f.evidence?.neighbours) && f.evidence.neighbours.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+              {f.evidence.neighbours.map((n: any, i: number) => (
+                <span key={i} title={`shares: ${(n.shared_signals || []).join(", ")}`}
+                  style={{ fontSize: 10, padding: "1px 7px", borderRadius: 8,
+                    border: "1px solid var(--border-subtle)", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                  {n.case_number} · {n.outcome} · {n.shared_count} shared
+                </span>
+              ))}
+            </div>
+          )}
+          <FindingFeedback findingId={f.id} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AskTab({ caseId }: { caseId: string }) {
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<{ q: string; r: CaseAskResult }[]>([]);
@@ -709,6 +968,8 @@ function AskTab({ caseId }: { caseId: string }) {
           style={{ flex: 1, padding: "9px 12px", border: "1px solid var(--border-default)",
             borderRadius: "var(--radius-sm)", background: "var(--bg-input)",
             color: "var(--text-primary)", fontSize: 13 }} />
+        <VoiceInput size={34} caseId={caseId} disabled={busy}
+          onText={(t) => setQuestion((q) => appendTranscript(q, t))} />
         <button onClick={ask} disabled={busy || !question.trim()}
           style={{ padding: "9px 18px", border: "none", borderRadius: "var(--radius-sm)",
             background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600,
@@ -1732,6 +1993,7 @@ function FormBuilderStep({
       onSubmit={async (values) => onSubmit(values)}
       onCancel={onCancel}
       caseId={caseId}
+      formId={formId}
     />
   );
 }

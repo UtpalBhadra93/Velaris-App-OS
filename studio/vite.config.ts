@@ -376,7 +376,19 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,  // P4a-live caption stream
       },
+      "/api/v1/stt": {   // Voice input — local speech-to-text
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
+      "/api/v1/voicefill": {   // Voice input P3 — transcript to form-field candidates
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
       "/api/v1/variables": {
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
+      "/api/v1/risk": {   // HxSentinel (findings, rule config, verify-gate holds)
         target: "http://localhost:8200",
         changeOrigin: true,
       },

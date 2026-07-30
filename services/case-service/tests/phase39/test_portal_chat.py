@@ -39,13 +39,13 @@ async def tenant(session) -> TenantModel:
         slug="acme", name="ACME Corp",
         settings={"portal": {"enabled": True, "welcome_text": "Hi", "brand_color": "#000", "logo_text": "ACME"}},
     )
-    session.add(t); await session.flush(); return t
+    session.add(t); await session.commit(); return t
 
 
 @pytest_asyncio.fixture
 async def case_type(session) -> CaseTypeModel:
     ct = CaseTypeModel(name="Support", version="1.0", definition_json={"stages": []}, portal_enabled=True)
-    session.add(ct); await session.flush(); return ct
+    session.add(ct); await session.commit(); return ct
 
 
 @pytest_asyncio.fixture
@@ -59,7 +59,7 @@ async def case_inst(session, tenant, case_type) -> CaseInstanceModel:
         extra_metadata={"portal_slug": "acme"},
         created_by="portal:jane@example.com",
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 def _mock_llm(answer: str = "Here is your answer."):
@@ -212,7 +212,7 @@ class TestPortalCaseChat:
             case_id=case_inst.id, action="case_created",
             actor_id="portal", details={},
         ))
-        await session.flush()
+        await session.commit()
 
         captured = {}
         async def mock_complete(prompt, **kw):
@@ -258,7 +258,7 @@ class TestPortalCaseChat:
             extra_metadata={"portal_slug": "acme"},
             created_by="portal:jane@example.com",
         )
-        session.add(c2); await session.flush()
+        session.add(c2); await session.commit()
 
         with patch("case_service.api.routers.portal.check_ai_available", AsyncMock(return_value=True)), \
              patch("case_service.api.routers.portal.get_llm_backend", return_value=_mock_llm()):
@@ -295,7 +295,7 @@ class TestPortalCaseChat:
         """Rate limits for /ask are per-IP, but different slugs share the same bucket
         since IP is the discriminator (by design — prevents abuse across portals)."""
         t2 = TenantModel(slug="beta", name="Beta", settings={"portal": {"enabled": True, "welcome_text": "Hi", "brand_color": "#fff", "logo_text": "B"}})
-        session.add(t2); await session.flush()
+        session.add(t2); await session.commit()
         with patch("case_service.api.routers.portal.check_ai_available", AsyncMock(return_value=True)), \
              patch("case_service.api.routers.portal.get_llm_backend", return_value=_mock_llm()):
             r = await client.post("/api/v1/portal/beta/ask", json={"question": "First question on beta?"})

@@ -153,7 +153,12 @@ async def list_releases(
     _require_superadmin(current_user)
     from case_service.db.models import ScheduledReleaseModel
     rows = (await session.execute(
-        select(ScheduledReleaseModel).order_by(ScheduledReleaseModel.release_date.asc().nullslast())
+        # NULLS LAST is Postgres-only ANSI syntax; MySQL/MariaDB reject it (1064). Emulate
+        # portably: `release_date IS NULL` sorts False(0) before True(1), so dated rows come
+        # first (nulls last), then release_date ASC orders within them.
+        select(ScheduledReleaseModel).order_by(
+            ScheduledReleaseModel.release_date.is_(None), ScheduledReleaseModel.release_date.asc()
+        )
     )).scalars().all()
     return {"releases": [_serialize(r) for r in rows]}
 

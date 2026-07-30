@@ -30,7 +30,7 @@ async def ct(session):
         lifecycle_process_id="lp-p25",
         definition_json={"stages": []},
     )
-    session.add(x); await session.flush(); return x
+    session.add(x); await session.commit(); return x
 
 
 @pytest_asyncio.fixture
@@ -39,7 +39,7 @@ async def case(session, ct):
         case_type_id=ct.id, case_type_version="1.0.0",
         status="new", priority="medium", data={},
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 @pytest_asyncio.fixture
@@ -50,7 +50,7 @@ async def account(session):
         smtp_username="bot", smtp_password="x",
         is_active=True, is_default_outbound=True,
     )
-    session.add(a); await session.flush(); return a
+    session.add(a); await session.commit(); return a
 
 
 # ── Templates ────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ async def test_13_resolve_via_in_reply_to(session, case, account):
         message_id=msg_id, from_address="bot@helix.test",
         to_addresses=["a@x.com"], subject="Hello", body_text="hi",
     )
-    session.add(out); await session.flush()
+    session.add(out); await session.commit()
 
     cid = await resolve_case_id_from_message(
         session, in_reply_to=msg_id, references=[], subject="some unrelated",

@@ -273,3 +273,8 @@ export { BranchModeBanner } from "./BranchModeBanner";
 export { ReviewerPicker } from "./ReviewerPicker";
 
 export { default as MeetRoom } from "./MeetRoom";
+
+export { default as VoiceInput, appendTranscript } from "./VoiceInput";
+
+export { default as VoiceFillPanel } from "./VoiceFillPanel";
+export type { VoiceFillCandidate } from "./VoiceFillPanel";

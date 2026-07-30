@@ -1,0 +1,42 @@
+[Unit]
+Description=Velaris Studio — web UI (:5173)
+After=network-online.target velaris-case-service.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=__VELARIS_USER__
+WorkingDirectory=__VELARIS_DIR__/studio
+EnvironmentFile=__VELARIS_DIR__/.env
+Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=NODE_ENV=development
+
+# This runs the VITE DEV SERVER, matching what start-velaris.sh does today.
+# On a host reachable from the internet that is not what you want long-term: it
+# serves unminified source, runs an unauthenticated HMR websocket, and its proxy
+# block forwards /api/v1/* straight to case-service. The supported shape is
+# `npm run build` served by nginx on 443 with /api/v1 proxied to 127.0.0.1:8201.
+# To switch, swap ExecStart for the preview line below and rebuild on deploy:
+#   ExecStart=__NPM__ run preview -- --host 0.0.0.0 --port 5173
+ExecStart=__EXEC__ __VELARIS_DIR__ __NPM__ run dev -- --host 0.0.0.0
+
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=velaris-studio
+
+# Vite + esbuild are the most memory-hungry things on the box and node's default
+# heap can outgrow a small server. Capping the heap turns a silent OOM kill into
+# a JS heap error in the journal — which is the difference between a diagnosable
+# outage and today's dead end. Raise if builds start failing.
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+MemoryAccounting=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

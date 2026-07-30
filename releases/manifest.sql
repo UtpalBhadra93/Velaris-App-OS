@@ -73,3 +73,37 @@ VALUES
    'HxDB Manager Security', 'Credential masking, breach detection, account auto-disable, DML before-image log',
    'released', 'v1.0.1', NOW(), NOW(), NOW())
 ON CONFLICT (feature_key) DO NOTHING;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- v2.2.0 — flags shipped after v2.0.0. HxSentinel completed 2026-07-22; voice
+-- input and voice form-fill 2026-07-25 → 2026-07-28. Versions match releases.txt.
+-- Voice degrades honestly without the `intelligence` extra (faster-whisper):
+-- the status endpoint reports no engine and the mic renders nothing at all.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- HxSentinel
+INSERT INTO scheduled_releases
+  (id, feature_key, version, title, description, status, enabled, released_at, created_at, updated_at)
+VALUES
+  (gen_random_uuid(), 'hxsentinel', 'v1.9.0',
+   'HxSentinel', 'Risk engine — ground-truth capture, rules + verify gate, similarity oversight, signal packs, local scoring model',
+   'released', 'v1.9.0', NOW(), NOW(), NOW())
+ON CONFLICT (feature_key) DO NOTHING;
+
+-- Voice Input
+INSERT INTO scheduled_releases
+  (id, feature_key, version, title, description, status, enabled, released_at, created_at, updated_at)
+VALUES
+  (gen_random_uuid(), 'voice_input', 'v1.1.0',
+   'Voice Input', 'Sovereign speech-to-text — local Whisper dictation in Studio ask boxes, form fields, and the customer portal',
+   'released', 'v1.1.0', NOW(), NOW(), NOW())
+ON CONFLICT (feature_key) DO NOTHING;
+
+-- Voice Form-Fill
+INSERT INTO scheduled_releases
+  (id, feature_key, version, title, description, status, enabled, released_at, created_at, updated_at)
+VALUES
+  (gen_random_uuid(), 'voice_fill', 'v1.1.0',
+   'Voice Form-Fill', 'Spoken answers proposed as form values, every candidate quoting the transcript verbatim; never auto-committed',
+   'released', 'v1.1.0', NOW(), NOW(), NOW())
+ON CONFLICT (feature_key) DO NOTHING;

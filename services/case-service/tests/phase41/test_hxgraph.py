@@ -81,7 +81,7 @@ async def case_type(session):
         },
     )
     session.add(ct)
-    await session.flush()
+    await session.commit()
     return ct
 
 @pytest_asyncio.fixture
@@ -102,7 +102,7 @@ async def form(session):
         },
     )
     session.add(f)
-    await session.flush()
+    await session.commit()
     return f
 
 
@@ -228,16 +228,16 @@ class TestQueryEngine:
     async def test_path_returns_none_for_disconnected(self, session):
         a = await _upsert_node(session, "concept", "concept:orphan_a", "Orphan A", source="hxnexus")
         b = await _upsert_node(session, "concept", "concept:orphan_b", "Orphan B", source="hxnexus")
-        await session.flush()
+        await session.commit()
         path = await path_between(session, str(a.id), str(b.id))
         assert path is None
 
     async def test_impact_nodes_finds_upstream(self, session):
         parent = await _upsert_node(session, "module", "module:/test-parent", "Test Parent", source="code")
         child  = await _upsert_node(session, "endpoint", "endpoint:/test-child", "Test Child", source="code")
-        await session.flush()
+        await session.commit()
         await _upsert_edge(session, parent, child, "served_by")
-        await session.flush()
+        await session.commit()
 
         impacts = await impact_nodes(session, str(child.id))
         impact_ids = [i["id"] for i in impacts]
@@ -368,7 +368,7 @@ class TestTenantScoping:
         t_a = TenantModel(slug=f"ten-a-{uuid.uuid4().hex[:8]}", name="Tenant A")
         t_b = TenantModel(slug=f"ten-b-{uuid.uuid4().hex[:8]}", name="Tenant B")
         session.add_all([t_a, t_b])
-        await session.flush()
+        await session.commit()
 
         stages = [{"id": "s1", "name": "Stage One",
                    "steps": [{"id": "st1", "type": "user_task", "label": "Step One"}]}]
@@ -379,7 +379,7 @@ class TestTenantScoping:
         ct_g = CaseTypeModel(name="Global Shared Process", version="1.0",
                              definition_json={"stages": stages})
         session.add_all([ct_a, ct_b, ct_g])
-        await session.flush()
+        await session.commit()
         await sync_graph(session)
         return str(t_a.id), str(t_b.id), ct_a, ct_b, ct_g
 

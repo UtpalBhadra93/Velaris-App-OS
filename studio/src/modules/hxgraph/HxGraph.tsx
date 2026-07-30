@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect } from "react";
 import { useTheme } from "@/theme/ThemeContext";
+import { VoiceInput, appendTranscript } from "@shared/components";
 
 const API = "/api/v1/graph";
 
@@ -454,6 +455,8 @@ export default function HxGraph() {
                     background: "var(--bg-surface)", color: "var(--text-primary)", fontSize: 13,
                   }}
                 />
+                <VoiceInput size={34} disabled={querying}
+                  onText={t => setQuestion(q => appendTranscript(q, t))} />
                 <button type="submit" disabled={querying || !question.trim()} style={{
                   padding: "9px 20px", fontWeight: 700, fontSize: 13,
                   background: "var(--accent)", color: "#fff", border: "none",

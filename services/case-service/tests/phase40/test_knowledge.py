@@ -76,7 +76,7 @@ async def case_type(session) -> CaseTypeModel:
         name="Insurance Claim", version="1.0",
         definition_json=CASE_DEF, portal_enabled=True,
     )
-    session.add(ct); await session.flush(); return ct
+    session.add(ct); await session.commit(); return ct
 
 
 @pytest_asyncio.fixture
@@ -85,7 +85,7 @@ async def open_case(session, case_type) -> CaseInstanceModel:
         case_type_id=case_type.id, case_type_version="1.0",
         status="open", priority="medium",
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 # ── /knowledge/overview ───────────────────────────────────────────────────────

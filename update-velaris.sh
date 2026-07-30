@@ -418,7 +418,14 @@ green "  ✓ Code updated to v$LATEST_VERSION"
 # stale .venv/node_modules break services and Vite until reinstalled.
 step "Step 4b — Refreshing dependencies..."
 if command -v uv >/dev/null 2>&1; then
-  uv sync --all-packages 2>&1 | tail -3
+  # Optional ML extras are NOT part of the default install (a base box stays lean,
+  # no model weights). But `uv sync` is exact by default — it prunes anything not
+  # declared, so an operator who installed an extra would silently lose it on the
+  # next run. Detect what is already present and ask for it again.
+  _EXTRAS=""
+  uv run python -c "import faster_whisper" >/dev/null 2>&1 && _EXTRAS="$_EXTRAS --extra intelligence"
+  uv run python -c "import av" >/dev/null 2>&1 && _EXTRAS="$_EXTRAS --extra kyc"
+  uv sync --all-packages $_EXTRAS 2>&1 | tail -3
   green "  ✓ Python dependencies synced"
 else
   yellow "  ⚠ uv not found — skipping Python dependency sync"

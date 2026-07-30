@@ -108,6 +108,7 @@ import HxStorefront from "@modules/hxstorefront/HxStorefront";
 import HxMigrate from "@modules/hxmigrate/HxMigrate";
 import HxDBMigrate from "@modules/hxdbmigrate/HxDBMigrate";
 import HxReplay from "@modules/hxreplay/HxReplay";
+import RiskReview from "@modules/hxsentinel/RiskReview";
 import HxDeploy from "@modules/hxdeploy/HxDeploy";
 import HxWork from "@modules/hxwork/HxWork";
 import HxCanvas from "@modules/hxcanvas/HxCanvas";
@@ -160,6 +161,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/hxmigrate"    element={<PermRoute path="/hxmigrate"    pageName="HxMigrate">   <HxMigrate />   </PermRoute>} />
           <Route path="/hxdbmigrate"  element={<PermRoute path="/hxdbmigrate"  pageName="HxDBMigrate"> <HxDBMigrate /> </PermRoute>} />
           <Route path="/hxreplay"     element={<PermRoute path="/hxreplay"     pageName="HxReplay">    <HxReplay />    </PermRoute>} />
+          <Route path="/risk-review"  element={<PermRoute path="/risk-review"  pageName="Risk Review"> <RiskReview />  </PermRoute>} />
           <Route path="/scout"        element={<PermRoute path="/scout"        pageName="Scout">        <Scout />        </PermRoute>} />
           <Route path="/scout-ai"     element={<PermRoute path="/scout-ai"     pageName="Scout AI">     <ScoutAI />      </PermRoute>} />
           <Route path="/orchestrator" element={<PermRoute path="/orchestrator" pageName="Orchestrator"> <Orchestrator /> </PermRoute>} />

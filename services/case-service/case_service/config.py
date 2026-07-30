@@ -176,9 +176,15 @@ class Settings(BaseSettings):
 
     # >>> HxGuard Phase B (env: HELIX_CASE_HXGUARD_CASE_ENFORCEMENT)
     # off    = case-level ReBAC checks skipped entirely
-    # shadow = evaluated + would-be denials audited, requests pass (default)
-    # enforce = denials return 403
-    hxguard_case_enforcement: str = "shadow"
+    # shadow = evaluated + would-be denials audited, requests pass
+    # enforce = denials return 404 (anti-oracle) — the DEFAULT
+    #
+    # Defaults to enforce because the rollout it was built for is over. In
+    # shadow EVERY case gate is advisory, including meet.recording.view, so a
+    # fresh install that never sets this env var would serve sealed recordings
+    # and transcripts to any authenticated user. A deployment mid-migration can
+    # still opt back to shadow explicitly; silence must not mean "open".
+    hxguard_case_enforcement: str = "enforce"
     # <<< HxGuard Phase B
 
     # >>> HxNexus Operator (MCP) P1

@@ -90,7 +90,11 @@ from case_service.api.routers.hxdbmanager import router as hxdbmanager_router   
 from case_service.api.routers.hxdbmigrate import router as hxdbmigrate_router          # HxDBMigrate
 from case_service.api.routers.hxreplay import router as hxreplay_router                # HxReplay
 from case_service.api.routers.costing import router as costing_router                  # Case Costing
+from case_service.api.routers.sentinel import router as sentinel_router                # HxSentinel P1
 from case_service.api.routers.meet import router as meet_router                        # HxMeet P1
+from case_service.api.routers.stt import router as stt_router                          # Voice input P1
+from case_service.api.routers.voicefill import router as voicefill_router              # Voice input P3
+from case_service.api.routers.portal_voice import router as portal_voice_router        # Voice input P3b
 from case_service.api.routers.messages import router as messages_router                # Portal v2 P4
 from case_service.api.routers.hxdraft import router as hxdraft_router                  # HxDraft
 from case_service.api.routers.hxevolve import router as hxevolve_router                # HxEvolve
@@ -591,7 +595,11 @@ def create_app() -> FastAPI:
     app.include_router(hxdbmigrate_router, prefix=prefix)  # HxDBMigrate
     app.include_router(hxreplay_router, prefix=prefix)      # HxReplay
     app.include_router(costing_router, prefix=prefix)        # Case Costing
+    app.include_router(sentinel_router, prefix=prefix)       # HxSentinel P1
     app.include_router(meet_router, prefix=prefix)           # HxMeet P1
+    app.include_router(stt_router, prefix=prefix)             # Voice input P1 (local STT)
+    app.include_router(voicefill_router, prefix=prefix)       # Voice input P3 (form-fill)
+    app.include_router(portal_voice_router, prefix=prefix)    # Voice input P3b (portal)
     app.include_router(messages_router, prefix=prefix)       # Portal v2 P4 case messages
     app.include_router(hxdraft_router, prefix=prefix)         # HxDraft
     app.include_router(hxevolve_router, prefix=prefix)        # HxEvolve

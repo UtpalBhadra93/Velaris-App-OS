@@ -52,10 +52,13 @@ async def run_structured(query_def: dict, session: AsyncSession) -> dict:
     metric   = query_def.get("metric", "count")
     group_by = query_def.get("group_by")
     filters  = query_def.get("filters", {})
-    limit    = query_def.get("limit", 20)
     chart_type = query_def.get("chart_type", "bar")
     title    = query_def.get("title", metric.replace("_", " ").title())
-    days     = int(filters.get("days", 30))
+    # `.get(k, default)` only applies the default when the key is ABSENT. An LLM
+    # (or any caller) may send the key present-but-null — `{"days": null}` — and
+    # int(None) would 500 the endpoint. `or default` covers null and 0 alike.
+    limit    = int(query_def.get("limit") or 20)
+    days     = int(filters.get("days") or 30)
     since    = datetime.now(timezone.utc) - timedelta(days=days)
 
     # ── Snapshot ──────────────────────────────────────────────────────────────

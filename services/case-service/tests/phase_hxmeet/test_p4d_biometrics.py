@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
@@ -33,6 +34,15 @@ from case_service.meet import kyc as meet_kyc
 from tests.conftest import create_case, deploy_case_type
 
 MEET = "/api/v1/meet"
+
+# face_match runs over decoded frames, so it needs the optional [kyc] extra
+# (av + numpy) even though the embedding calls themselves are patched. Without
+# it the check skips honestly and carries no score — a supported configuration,
+# so the test skips rather than fails.  Install with:  uv sync --extra kyc
+requires_cv = pytest.mark.skipif(
+    not meet_kyc.cv_available(),
+    reason="optional [kyc] extra (av) not installed — frame-analysis checks skip",
+)
 
 
 @pytest_asyncio.fixture
@@ -238,6 +248,7 @@ class TestFaceMatchScored:
             check = await meet_kyc._face_match_check(session, row, [object()])
         assert check["score"] == 1.0
 
+    @requires_cv
     async def test_job_stores_scores_never_embeddings(self, client, session, kyc_cfg):
         """The compare-and-discard invariant, checked at the storage layer."""
         import numpy as np

@@ -96,7 +96,7 @@ async def _linked_case(session, tenant, case_type, email: str,
         current_stage_id=stage,
         data={"subject": "Rail case"}, created_by=f"portal:{email}",
     )
-    session.add(case); await session.flush()
+    session.add(case); await session.commit()
     customer = (await session.execute(
         __import__("sqlalchemy").select(PortalCustomerModel)
         .where(PortalCustomerModel.primary_email == email,
@@ -236,7 +236,7 @@ class TestCustomerSessions:
             started_by="user:worker-1",
             external_meeting_id=f"vx-acme-{uuid.uuid4()}",
         )
-        session.add(row); await session.flush()
+        session.add(row); await session.commit()
         if identity:
             session.add(CaseSessionParticipantModel(
                 session_id=row.id, tenant_id="acme", identity=identity,
@@ -481,7 +481,7 @@ class TestCaseMessages:
             portal_tracking_token=uuid.uuid4(), current_stage_id="review",
             data={"subject": "Thread case"}, created_by="portal:jane@example.com",
         )
-        session.add(case); await session.flush()
+        session.add(case); await session.commit()
         customer = (await session.execute(
             __import__("sqlalchemy").select(PortalCustomerModel)
             .where(PortalCustomerModel.primary_email == "jane@example.com",

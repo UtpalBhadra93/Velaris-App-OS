@@ -52,7 +52,7 @@ async def _seal_session(session, case_id, tenant_slug="default") -> CaseSessionM
         external_meeting_id=f"vx-{tenant_slug}-{uuid.uuid4()}",
         recording_egress_id="EG_test",
     )
-    session.add(row); await session.flush()
+    session.add(row); await session.commit()
 
     # Drop a fake recording file where ingest expects it, then seal.
     import os

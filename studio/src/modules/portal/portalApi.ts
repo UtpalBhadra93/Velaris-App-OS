@@ -160,6 +160,67 @@ export async function getCaseTypeForm(slug: string, caseTypeId: string): Promise
   return (await r.json()).fields ?? [];
 }
 
+// ── P3b: voice input on the portal ──────────────────────────────────
+
+export type PortalVoiceStatus = {
+  available: boolean; fill_available: boolean;
+  consent_text: string | null; engine: string | null;
+  realtime: boolean | null; max_clip_seconds: number;
+};
+
+export type VoiceCandidate = {
+  field_key: string; label: string; value: unknown; kind: string;
+  quote: string; speaker: string | null; confidence: number;
+};
+
+export const getVoiceStatus = (slug: string) =>
+  custFetch<PortalVoiceStatus>(slug, "/account/voice/status");
+
+/**
+ * POST one PCM16 clip. Raw bytes, not JSON — `custFetch` would stamp a JSON
+ * content-type on it, and the abort ceiling below is specific to this call:
+ * ~1.4 MB up a phone's uplink can take 15 s, and a dropped connection has to
+ * surface as a retryable error rather than a spinner that never ends.
+ */
+export async function transcribeVoice(
+  slug: string, caseId: string, pcm: ArrayBuffer, consent: boolean,
+): Promise<{ text: string; engine: string | null; realtime: boolean | null }> {
+  const tok = getCustomerToken(slug);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 90_000);
+  try {
+    const res = await fetch(
+      `/api/v1/portal/${slug}/account/cases/${caseId}/voice/transcribe?consent=${consent}`,
+      {
+        method: "POST", body: pcm, signal: ctl.signal,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+        },
+      },
+    );
+    if (res.status === 401) {
+      clearCustomerToken(slug);
+      throw new PortalAuthError("Your session has expired — please log in again.");
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(typeof body.detail === "string" ? body.detail : res.statusText);
+    }
+    return await res.json();
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new Error("The upload timed out — please try again.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const voiceFillAction = (slug: string, caseId: string, stepId: string, text: string) =>
+  custFetch<{ candidates: VoiceCandidate[]; fields_considered: number }>(
+    slug, `/account/cases/${caseId}/voice/fill`,
+    { method: "POST", body: JSON.stringify({ text, step_id: stepId }) });
+
 export const getSessionToken = (slug: string, caseId: string, sessionId: string) =>
   custFetch<{ url: string; token: string; title: string | null; record_intent: boolean; session_id?: string }>(
     slug, `/account/cases/${caseId}/sessions/${sessionId}/token`, { method: "POST" });

@@ -219,6 +219,13 @@ export const NAV_DATA: NavEntry[] = [
     roles: ["admin"],
   },
   {
+    path: "/risk-review",
+    label: "Risk Review",
+    description: "HxSentinel supervisor oversight | Per-reviewer score reliability | Outcome-agreement | Dispute rubber-stamped scores",
+    section: "Security",
+    roles: ["admin"],
+  },
+  {
     path: "/scout",
     label: "Scout",
     description: "Legacy BPM scanner | Compatibility analysis | Migration assessment | Artifact classification | Effort estimate",

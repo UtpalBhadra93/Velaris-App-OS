@@ -168,6 +168,10 @@ class PortalSettingsUpdate(BaseModel):
     brand_color: Optional[str] = None
     logo_text: Optional[str] = None
     allowed_case_type_ids: Optional[list[str]] = None
+    # Voice input P3b — recording a customer is the tenant's decision to make
+    # and defend, so it is opt-in and silence means off.
+    voice_input: Optional[bool] = None
+    voice_consent_text: Optional[str] = None
 
 
 # SD-5 / SD-2 schemas
@@ -1053,6 +1057,8 @@ async def list_portal_tenants(
             "brand_color": ps.get("brand_color", "#6366f1"),
             "logo_text": ps.get("logo_text", t.name),
             "allowed_case_type_ids": ps.get("allowed_case_type_ids", []),
+            "voice_input": ps.get("voice_input", False),
+            "voice_consent_text": ps.get("voice_consent_text", ""),
             "portal_case_type_count": len(ct_count),
         })
     return result
@@ -1084,6 +1090,10 @@ async def update_portal_settings(
         portal["logo_text"] = body.logo_text
     if body.allowed_case_type_ids is not None:
         portal["allowed_case_type_ids"] = body.allowed_case_type_ids
+    if body.voice_input is not None:
+        portal["voice_input"] = body.voice_input
+    if body.voice_consent_text is not None:
+        portal["voice_consent_text"] = body.voice_consent_text.strip() or None
 
     settings["portal"] = portal
     tenant.settings = settings

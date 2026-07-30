@@ -48,7 +48,7 @@ async def portal(session) -> PortalModel:
         name="Test Staff Portal", portal_type="staff",
         modules=["work-center", "case-manager"], homepage="/work-center",
     )
-    session.add(p); await session.flush(); return p
+    session.add(p); await session.commit(); return p
 
 
 @pytest_asyncio.fixture
@@ -57,7 +57,7 @@ async def role(session) -> AccessRoleModel:
         name="case_worker", description="Can create and work cases",
         privileges=[{"resource": "case", "case_type_id": "*", "actions": ["create", "read"]}],
     )
-    session.add(r); await session.flush(); return r
+    session.add(r); await session.commit(); return r
 
 
 @pytest_asyncio.fixture
@@ -69,17 +69,17 @@ async def group(session, portal, role) -> AccessGroupModel:
         allowed_case_type_ids=["*"], allowed_queue_ids=["*"],
         is_default=True,
     )
-    session.add(g); await session.flush(); return g
+    session.add(g); await session.commit(); return g
 
 
 @pytest_asyncio.fixture
 async def operator(session, group) -> UserDirectoryModel:
     u = UserDirectoryModel(user_id="op-1", email="op@test.local", display_name="Operator One")
-    session.add(u); await session.flush()
+    session.add(u); await session.commit()
     oag = OperatorAccessGroupModel(
         operator_id="op-1", access_group_id=group.id, is_primary=True, assigned_by="admin-1",
     )
-    session.add(oag); await session.flush()
+    session.add(oag); await session.commit()
     return u
 
 

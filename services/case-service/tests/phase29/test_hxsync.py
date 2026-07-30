@@ -172,7 +172,7 @@ class TestPipeline:
         dest = SyncDestinationModel(name="test-dest", dest_type="bigquery",
                                     connection_config={"project_id": "p", "dataset_id": "d"})
         session.add(dest)
-        await session.flush()
+        await session.commit()
         result = await run_sync(dest.id, session)
         assert result["status"] == "success"
         assert result["rows_synced"] == 0

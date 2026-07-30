@@ -157,10 +157,10 @@ class TestGatesAndDetection:
         if tenant is None:
             tenant = TenantModel(slug="default", name="Default")
             session.add(tenant)
-            await session.flush()
+            await session.commit()
         tenant.settings = {**(tenant.settings or {}), "meet": {"live_captions": True}}
         session.add(tenant)
-        await session.flush()
+        await session.commit()
         assert await tenant_live_captions_enabled(session, "default") is True
 
     def test_backend_override_pins_engine(self):
@@ -221,6 +221,9 @@ async def _staged_ended_session(session, client):
                                          text="I confirm my date of birth.")
     row = await meet_svc.end_session(session, row=row, case_type_id=ct["id"],
                                      actor="user:test-admin")
+    # Release the write lock before the caller hits the API: the request runs on
+    # its own connection and would otherwise wait for a transaction we still hold.
+    await session.commit()
     return row
 
 
@@ -280,18 +283,15 @@ class TestTranscriptEndpoints:
         assert "Hello, this is the live call." in r.text
         assert "I confirm my date of birth." in r.text
         from case_service.db.models import CaseAuditLogModel
-        # Shared-StaticPool hazard: a late teardown rollback can eat the view's
-        # committed audit row — every view audits, so re-view until one sticks.
-        for _ in range(3):
-            session.expire_all()
-            viewed = (await session.execute(
-                select(CaseAuditLogModel)
-                .where(CaseAuditLogModel.action == "transcript_viewed"))).scalars().all()
-            if any(a.details.get("session_id") == sid for a in viewed):
-                break
-            await client.get(f"{MEET}/sessions/{sid}/transcript")
-        else:
-            pytest.fail("transcript_viewed audit row never persisted")
+        # The request commits its own transaction on its own connection, so the
+        # audit row is simply there — no retry loop needed now that sessions are
+        # not sharing one transaction.
+        session.expire_all()
+        viewed = (await session.execute(
+            select(CaseAuditLogModel)
+            .where(CaseAuditLogModel.action == "transcript_viewed"))).scalars().all()
+        assert any(a.details.get("session_id") == sid for a in viewed), \
+            "viewing a transcript must leave a transcript_viewed audit row"
 
     async def test_no_transcript_404(self, session, client, lk_cfg):
         row, ct = await _active_session(session, client)

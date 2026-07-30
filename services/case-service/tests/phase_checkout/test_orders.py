@@ -173,7 +173,7 @@ async def test_idempotent_replay_returns_payment_url(session, client, checkout_i
             amount_cents=amount_cents, currency=currency, status="pending",
             checkout_url="https://checkout.stripe.com/c/pay/cs_replay")
         session.add(pr)
-        await session.flush()
+        await session.commit()
         return pr
     monkeypatch.setattr(svc.payment_svc, "create_payment_request", _fake)
 

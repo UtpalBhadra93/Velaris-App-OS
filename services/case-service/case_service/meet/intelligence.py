@@ -55,8 +55,11 @@ def whisper_available() -> bool:
 async def tenant_intelligence_enabled(session: AsyncSession, tenant_slug: str | None) -> bool:
     """Per-tenant opt-in, default OFF — analysis of recorded conversations is
     an egress-policy-level decision even when it runs locally."""
+    from case_service.tenancy.identity import tenant_slug as canonical_slug
+
+    slug = await canonical_slug(session, tenant_slug)
     tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == (tenant_slug or "default"))
+        select(TenantModel).where(TenantModel.slug == slug)
     )).scalars().first()
     return bool(((tenant.settings or {}).get("meet", {}) if tenant else {}).get("intelligence", False))
 

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Install the Velaris services as systemd units.
+#
+# Run on the SERVER, from the Velaris directory:
+#   sudo ./deploy/systemd/install.sh
+#
+# Replaces the nohup-from-a-shell model in start-velaris.sh with supervised
+# services: they survive logout, restart on crash, start on boot, and log to
+# journald instead of a /tmp file that the next start truncates.
+#
+# Copyright (c) 2024-2026 Velaris Contributors
+# SPDX-License-Identifier: BSL-1.1
+set -euo pipefail
+
+UNIT_DIR=/etc/systemd/system
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELARIS_DIR="$(cd "$SRC_DIR/../.." && pwd)"
+
+[ "$(id -u)" -eq 0 ] || { echo "Run with sudo — installing to $UNIT_DIR"; exit 1; }
+
+# The units must run as the human who owns the checkout and the toolchains, not
+# as root: uv and npm live in that user's home, and root-owned build artefacts
+# in the repo would break the next non-root run.
+VELARIS_USER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
+[ "$VELARIS_USER" != "root" ] || { echo "Refusing to run Velaris as root. Use: sudo -u <user> ... or run sudo from that user's shell."; exit 1; }
+VELARIS_HOME="$(getent passwd "$VELARIS_USER" | cut -d: -f6)"
+
+# Absolute paths — systemd runs with a minimal PATH and no shell profile, so
+# `uv` and `npm` from a version manager would simply not be found.
+UV="$(sudo -u "$VELARIS_USER" bash -lc 'command -v uv' 2>/dev/null || true)"
+NPM="$(sudo -u "$VELARIS_USER" bash -lc 'command -v npm' 2>/dev/null || true)"
+[ -n "$UV" ]  || { echo "uv not found for user $VELARIS_USER"; exit 1; }
+[ -n "$NPM" ] || { echo "npm not found for user $VELARIS_USER"; exit 1; }
+[ -f "$VELARIS_DIR/.env" ] || { echo "No .env at $VELARIS_DIR/.env — the units read it as EnvironmentFile"; exit 1; }
+# velaris.yaml carries DATABASE_BACKEND, which is NOT in .env and whose absence
+# silently defaults to postgresql — wrong on a MySQL/MariaDB install.
+[ -f "$VELARIS_DIR/velaris.yaml" ] || { echo "No velaris.yaml at $VELARIS_DIR — velaris-exec.sh derives DATABASE_BACKEND from it"; exit 1; }
+chmod +x "$SRC_DIR/velaris-exec.sh"
+
+echo "user=$VELARIS_USER  dir=$VELARIS_DIR"
+echo "uv=$UV  npm=$NPM"
+echo "database=$(grep -E '^\s+database:' "$VELARIS_DIR/velaris.yaml" | head -1 | sed -E 's/.*database:[[:space:]]*//')"
+echo
+
+for unit in velaris-engine velaris-case-service velaris-studio; do
+  sed -e "s|__VELARIS_USER__|$VELARIS_USER|g" \
+      -e "s|__VELARIS_DIR__|$VELARIS_DIR|g" \
+      -e "s|__VELARIS_HOME__|$VELARIS_HOME|g" \
+      -e "s|__UV__|$UV|g" \
+      -e "s|__NPM__|$NPM|g" \
+      -e "s|__EXEC__|$SRC_DIR/velaris-exec.sh|g" \
+      "$SRC_DIR/$unit.service" > "$UNIT_DIR/$unit.service"
+  echo "  installed $UNIT_DIR/$unit.service"
+done
+
+systemctl daemon-reload
+systemctl enable velaris-engine velaris-case-service velaris-studio
+echo
+echo "Installed and enabled (start on boot). Now:"
+echo "  ./stop-velaris.sh                                   # clear the nohup'd processes first"
+echo "  sudo systemctl start velaris-engine velaris-case-service velaris-studio"
+echo "  systemctl status velaris-studio"
+echo "  journalctl -u velaris-studio -f"
+echo
+echo "NOTE: start-velaris.sh still launches its own nohup copies. Use systemctl"
+echo "      from now on, or you will end up with two of each fighting for a port."

@@ -1,0 +1,12 @@
+-- HxDBMigrate — shrink hxdbmigrate_row_links.source_pk 512 -> 255 (cross-engine key limit).
+--
+-- source_pk stores a source table's SINGLE-column primary-key value as text
+-- (composite/absent PKs are refused upstream). The unique row-identity key
+-- uq_hxdbmig_link_row = (source_id CHAR(36), table_name VARCHAR(255), source_pk).
+-- Under utf8mb4 that key was 3212 bytes with source_pk(512) — over MySQL 8.4's
+-- 3072-byte InnoDB limit, so the schema could not be built on MySQL 8.4 at all
+-- (MariaDB 11 tolerated it; Postgres has no such limit). 255 brings the key to
+-- 2184 bytes and preserves FULL-VALUE uniqueness on every engine — no prefix
+-- index, no truncation in practice (a single-column PK longer than 255 chars is
+-- pathological). Postgres behaviour is unchanged for every real key.
+ALTER TABLE hxdbmigrate_row_links ALTER COLUMN source_pk TYPE VARCHAR(255);

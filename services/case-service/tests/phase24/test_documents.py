@@ -41,14 +41,14 @@ async def seeded_case(session):
         definition_json={"stages": []},
     )
     session.add(ct)
-    await session.flush()
+    await session.commit()
 
     case = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0",
         status="new", priority="medium", data={},
     )
     session.add(case)
-    await session.flush()
+    await session.commit()
     return case
 
 

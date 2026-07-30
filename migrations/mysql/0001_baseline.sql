@@ -24,7 +24,7 @@ CREATE TABLE access_roles (
 	description TEXT NOT NULL, 
 	privileges JSON NOT NULL, 
 	tenant_id VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT access_roles_name_tenant_uq UNIQUE (name, tenant_id)
@@ -41,7 +41,7 @@ CREATE TABLE app_packages (
 	manifest JSON NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_app_packages_name_version UNIQUE (name, version)
 );
@@ -56,7 +56,7 @@ CREATE TABLE audit_anchors (
 	tip_hash VARCHAR(64) NOT NULL, 
 	tsa_url VARCHAR(512) NOT NULL, 
 	tsr_der BLOB NOT NULL, 
-	anchored_at DATETIME NOT NULL, 
+	anchored_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -71,7 +71,7 @@ CREATE TABLE auth_devices (
 	user_agent_hash VARCHAR(64) NOT NULL, 
 	first_ip VARCHAR(64), 
 	last_ip VARCHAR(64), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	last_seen_at DATETIME NOT NULL, 
 	revoked_at DATETIME, 
 	revoked_by VARCHAR(255), 
@@ -90,7 +90,7 @@ CREATE TABLE bpm_concepts (
 	example TEXT, 
 	confidence VARCHAR(10) NOT NULL, 
 	notes TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -107,7 +107,7 @@ CREATE TABLE branch_audit_events (
 	actor_id TEXT, 
 	actor_name TEXT, 
 	metadata JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -124,7 +124,7 @@ CREATE TABLE business_calendars (
 	work_end_hour INTEGER NOT NULL, 
 	holidays JSON NOT NULL, 
 	description TEXT NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name)
@@ -136,7 +136,7 @@ CREATE TABLE case_audit_log_chain (
 	audit_log_id CHAR(36) NOT NULL, 
 	prev_hash VARCHAR(64) NOT NULL, 
 	content_hash VARCHAR(64) NOT NULL, 
-	sealed_at DATETIME NOT NULL, 
+	sealed_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (sequence)
 );
@@ -146,6 +146,195 @@ CREATE INDEX idx_audit_chain_audit_id ON case_audit_log_chain (audit_log_id);
 CREATE INDEX idx_audit_chain_seq ON case_audit_log_chain (sequence);
 
 CREATE INDEX ix_case_audit_log_chain_sealed_at ON case_audit_log_chain (sealed_at);
+
+CREATE TABLE case_outcome_labels (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255) NOT NULL, 
+	`key` VARCHAR(64) NOT NULL, 
+	display VARCHAR(128) NOT NULL, 
+	description TEXT, 
+	is_negative BOOL NOT NULL, 
+	active BOOL NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_outcome_labels_tenant_key UNIQUE (tenant_id, `key`)
+);
+
+CREATE TABLE case_outcomes (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	case_id CHAR(36) NOT NULL, 
+	outcome VARCHAR(64) NOT NULL, 
+	note TEXT, 
+	source VARCHAR(20) NOT NULL, 
+	labelled_by VARCHAR(255) NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_case_outcomes_case ON case_outcomes (case_id, created_at);
+
+CREATE INDEX ix_case_outcomes_tenant ON case_outcomes (tenant_id, outcome);
+
+CREATE TABLE case_risk_config (
+	tenant_id VARCHAR(255) NOT NULL, 
+	verify_gate_severity VARCHAR(16), 
+	updated_by VARCHAR(255) NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (tenant_id)
+);
+
+CREATE TABLE case_risk_feedback (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	case_id CHAR(36) NOT NULL, 
+	finding_id CHAR(36) NOT NULL, 
+	reviewer VARCHAR(255) NOT NULL, 
+	score SMALLINT NOT NULL, 
+	note TEXT, 
+	created_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_risk_feedback_finding ON case_risk_feedback (finding_id, created_at);
+
+CREATE INDEX ix_risk_feedback_tenant ON case_risk_feedback (tenant_id, reviewer);
+
+CREATE TABLE case_risk_findings (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	case_id CHAR(36) NOT NULL, 
+	rule_key VARCHAR(64) NOT NULL, 
+	severity VARCHAR(16) NOT NULL, 
+	title VARCHAR(200) NOT NULL, 
+	message TEXT NOT NULL, 
+	evidence JSON NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_risk_findings_case_rule UNIQUE (case_id, rule_key)
+);
+
+CREATE INDEX ix_risk_findings_tenant ON case_risk_findings (tenant_id, severity, status);
+
+CREATE TABLE case_risk_holds (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	case_id CHAR(36) NOT NULL, 
+	finding_id CHAR(36) NOT NULL, 
+	rule_key VARCHAR(64) NOT NULL, 
+	severity VARCHAR(16) NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	opened_at DATETIME NOT NULL, 
+	resolved_by VARCHAR(255), 
+	resolved_at DATETIME, 
+	resolution_note TEXT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_risk_holds_case_status ON case_risk_holds (case_id, status);
+
+CREATE TABLE case_risk_models (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255) NOT NULL, 
+	version INTEGER NOT NULL, 
+	coefficients JSON NOT NULL, 
+	intercept FLOAT NOT NULL, 
+	feature_means JSON NOT NULL, 
+	feature_stds JSON NOT NULL, 
+	threshold FLOAT NOT NULL, 
+	trained_on INTEGER NOT NULL, 
+	metrics JSON NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	activated_by VARCHAR(255), 
+	activated_at DATETIME, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_risk_models_tenant_version UNIQUE (tenant_id, version)
+);
+
+CREATE INDEX ix_risk_models_tenant_status ON case_risk_models (tenant_id, status);
+
+CREATE TABLE case_risk_rule_proposals (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255) NOT NULL, 
+	rule_key VARCHAR(64) NOT NULL, 
+	proposed_change JSON NOT NULL, 
+	rationale TEXT NOT NULL, 
+	evidence JSON NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	decided_by VARCHAR(255), 
+	decided_at DATETIME, 
+	decision_note TEXT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_risk_proposals_rule ON case_risk_rule_proposals (tenant_id, rule_key, status);
+
+CREATE INDEX ix_risk_proposals_tenant_status ON case_risk_rule_proposals (tenant_id, status);
+
+CREATE TABLE case_risk_rules (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255) NOT NULL, 
+	rule_key VARCHAR(64) NOT NULL, 
+	enabled BOOL NOT NULL, 
+	severity VARCHAR(16), 
+	params JSON, 
+	updated_by VARCHAR(255) NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_risk_rules_tenant_key UNIQUE (tenant_id, rule_key)
+);
+
+CREATE TABLE case_risk_score_disputes (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	feedback_id CHAR(36) NOT NULL, 
+	disputed_by VARCHAR(255) NOT NULL, 
+	note TEXT NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_risk_disputes_feedback ON case_risk_score_disputes (feedback_id);
+
+CREATE INDEX ix_risk_disputes_tenant ON case_risk_score_disputes (tenant_id);
+
+CREATE TABLE case_risk_signal_packs (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255) NOT NULL, 
+	pack_id VARCHAR(128) NOT NULL, 
+	name VARCHAR(200) NOT NULL, 
+	vertical VARCHAR(64), 
+	version VARCHAR(32) NOT NULL, 
+	manifest JSON NOT NULL, 
+	enabled BOOL NOT NULL, 
+	installed_by VARCHAR(255) NOT NULL, 
+	installed_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_risk_packs_tenant_pack UNIQUE (tenant_id, pack_id)
+);
+
+CREATE INDEX ix_risk_packs_tenant_enabled ON case_risk_signal_packs (tenant_id, enabled);
+
+CREATE TABLE case_risk_signals (
+	id CHAR(36) NOT NULL, 
+	tenant_id VARCHAR(255), 
+	case_id CHAR(36) NOT NULL, 
+	signal_type VARCHAR(48) NOT NULL, 
+	signal_key VARCHAR(128) NOT NULL, 
+	hashed BOOL NOT NULL, 
+	value JSON NOT NULL, 
+	computed_at DATETIME(6) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ux_risk_signals_unique UNIQUE (case_id, signal_type, signal_key)
+);
+
+CREATE INDEX ix_risk_signals_case ON case_risk_signals (case_id);
+
+CREATE INDEX ix_risk_signals_lookup ON case_risk_signals (tenant_id, signal_type, signal_key);
 
 CREATE TABLE case_time_entries (
 	id CHAR(36) NOT NULL, 
@@ -159,7 +348,7 @@ CREATE TABLE case_time_entries (
 	duration_seconds INTEGER NOT NULL, 
 	billable BOOL NOT NULL, 
 	note TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -200,7 +389,7 @@ CREATE TABLE checkout_service_tokens (
 	revoked_at DATETIME, 
 	suspended BOOL NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_checkout_tokens_prefix UNIQUE (token_prefix)
 );
@@ -216,7 +405,7 @@ CREATE TABLE checkout_webhook_integrations (
 	field_map JSON NOT NULL, 
 	enabled BOOL NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -276,7 +465,7 @@ CREATE TABLE connector_registry (
 	credential_expires_at DATETIME, 
 	credentials_updated_at DATETIME, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_connector_name_tenant UNIQUE (name, tenant_id)
@@ -297,7 +486,7 @@ CREATE TABLE data_lineage_events (
 	after_value JSON, 
 	actor_id VARCHAR(255), 
 	source VARCHAR(64) NOT NULL, 
-	at DATETIME NOT NULL, 
+	at DATETIME(6) NOT NULL, 
 	tenant_id VARCHAR(64), 
 	PRIMARY KEY (id)
 );
@@ -313,7 +502,7 @@ CREATE TABLE data_models (
 	name VARCHAR(255) NOT NULL, 
 	version VARCHAR(50) NOT NULL, 
 	definition_json JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name, version)
@@ -329,7 +518,7 @@ CREATE TABLE db_manager_query_log (
 	rows_affected INTEGER, 
 	status VARCHAR(20) NOT NULL, 
 	error_detail TEXT, 
-	ran_at DATETIME NOT NULL, 
+	ran_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -381,7 +570,7 @@ CREATE TABLE email_accounts (
 	is_active BOOL NOT NULL, 
 	is_default_outbound BOOL NOT NULL, 
 	tenant_id VARCHAR(64), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -410,7 +599,7 @@ CREATE TABLE email_messages (
 	is_read BOOL NOT NULL, 
 	sent_at DATETIME, 
 	received_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	tenant_id VARCHAR(64), 
 	PRIMARY KEY (id)
 );
@@ -444,7 +633,7 @@ CREATE TABLE environment_registry (
 	webhook_url TEXT, 
 	webhook_secret TEXT, 
 	import_api_key TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -461,7 +650,7 @@ CREATE TABLE gdpr_requests (
 	reason TEXT, 
 	result_file TEXT, 
 	completed_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -487,7 +676,7 @@ CREATE TABLE graph_nodes (
 	community_id INTEGER, 
 	tenant_id VARCHAR(255), 
 	last_synced_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -541,7 +730,7 @@ CREATE TABLE helix_users (
 	mfa_secret_enc JSON, 
 	sso_provider VARCHAR(255), 
 	sso_subject VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	last_login_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -566,7 +755,7 @@ CREATE TABLE hxdbmigrate_analyses (
 	report JSON NOT NULL, 
 	error TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -592,7 +781,7 @@ CREATE TABLE hxdbmigrate_migration_runs (
 	excluded_columns JSON NOT NULL, 
 	error TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -607,12 +796,12 @@ CREATE TABLE hxdbmigrate_row_links (
 	source_id CHAR(36) NOT NULL, 
 	tenant_id VARCHAR(255), 
 	table_name VARCHAR(255) NOT NULL, 
-	source_pk VARCHAR(512) NOT NULL, 
+	source_pk VARCHAR(255) NOT NULL, 
 	case_id CHAR(36) NOT NULL, 
 	case_type_id CHAR(36), 
 	row_checksum VARCHAR(64), 
 	last_synced_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_hxdbmig_link_row UNIQUE (source_id, table_name, source_pk)
 );
@@ -640,7 +829,7 @@ CREATE TABLE hxdbmigrate_sources (
 	last_connected_at DATETIME, 
 	last_connect_ok BOOL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_hxdbmig_src_name_tenant UNIQUE (name, tenant_id)
@@ -656,7 +845,7 @@ CREATE TABLE hxdocs_spaces (
 	description TEXT, 
 	is_public BOOL NOT NULL, 
 	created_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -671,7 +860,7 @@ CREATE TABLE hxevolve_baselines (
 	frozen BOOL NOT NULL, 
 	frozen_reason TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	rebaselined_at DATETIME, 
 	PRIMARY KEY (case_type_id)
 );
@@ -710,7 +899,7 @@ CREATE TABLE hxevolve_insights (
 	branch_id CHAR(36), 
 	staged_rule_id CHAR(36), 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -730,7 +919,7 @@ CREATE TABLE hxguard_tuples (
 	subject_type VARCHAR(30) NOT NULL, 
 	subject_id VARCHAR(255) NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_hxguard_tuple UNIQUE (object_type, object_id, relation, subject_type, subject_id)
 );
@@ -744,7 +933,7 @@ CREATE TABLE hxnexus_conversations (
 	user_id VARCHAR(255) NOT NULL, 
 	case_id CHAR(36), 
 	tenant_id VARCHAR(64), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -761,7 +950,7 @@ CREATE TABLE hxnexus_document_chunks (
 	chunk_text TEXT NOT NULL, 
 	embedding JSON NOT NULL, 
 	tenant_id VARCHAR(64), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -780,7 +969,7 @@ CREATE TABLE hxtest_results (
 	duration_ms INTEGER NOT NULL, 
 	error_detail TEXT, 
 	step_results JSON NOT NULL, 
-	ran_at DATETIME NOT NULL, 
+	ran_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -797,7 +986,7 @@ CREATE TABLE hxtest_runs (
 	skipped INTEGER NOT NULL, 
 	app_package_id CHAR(36), 
 	ephemeral_tenant_id VARCHAR(255), 
-	started_at DATETIME NOT NULL, 
+	started_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id)
 );
@@ -811,7 +1000,7 @@ CREATE TABLE hxtest_suites (
 	definition JSON NOT NULL, 
 	version VARCHAR(40) NOT NULL, 
 	ai_stale BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -828,7 +1017,7 @@ CREATE TABLE import_jobs (
 	report JSON NOT NULL, 
 	error TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id)
 );
@@ -862,7 +1051,7 @@ CREATE TABLE marketplace_blacklist (
 	reason TEXT NOT NULL, 
 	blacklisted_by VARCHAR(255) NOT NULL, 
 	notify_velaris BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -880,7 +1069,7 @@ CREATE TABLE marketplace_installs (
 	licence_expires VARCHAR(32), 
 	approved_by VARCHAR(255) NOT NULL, 
 	workspace_id CHAR(36), 
-	installed_at DATETIME NOT NULL, 
+	installed_at DATETIME(6) NOT NULL, 
 	revoked_at DATETIME, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_mi_tenant_package UNIQUE (tenant_id, package_id)
@@ -896,7 +1085,7 @@ CREATE TABLE marketplace_release_requests (
 	requested_by VARCHAR(255) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	included_in_deploy_id VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	deployed_at DATETIME, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_mrr_tenant_package_status UNIQUE (tenant_id, package_id, status)
@@ -911,7 +1100,7 @@ CREATE TABLE marketplace_sandbox_datasets (
 	description TEXT, 
 	data_json TEXT NOT NULL, 
 	created_by VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -927,7 +1116,7 @@ CREATE TABLE marketplace_sources (
 	last_error TEXT, 
 	package_count INTEGER NOT NULL, 
 	added_by VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_mks_url UNIQUE (url)
 );
@@ -963,7 +1152,7 @@ CREATE TABLE marketplace_workspaces (
 	created_by VARCHAR(255) NOT NULL, 
 	reviewed_by VARCHAR(255), 
 	review_note TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	expires_at DATETIME NOT NULL, 
 	submitted_at DATETIME, 
 	reviewed_at DATETIME, 
@@ -993,7 +1182,7 @@ CREATE TABLE mcp_action_proposals (
 	decided_by VARCHAR(255), 
 	decided_at DATETIME, 
 	expires_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1014,7 +1203,7 @@ CREATE TABLE mcp_idempotency_keys (
 	status VARCHAR(20) NOT NULL, 
 	response_json JSON, 
 	is_error BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_mcp_idem_user_key UNIQUE (user_id, idempotency_key)
 );
@@ -1031,7 +1220,7 @@ CREATE TABLE mcp_token_grants (
 	revoked_at DATETIME, 
 	revoked_by VARCHAR(255), 
 	expires_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1054,7 +1243,7 @@ CREATE TABLE migration_pipeline_runs (
 	source_filename TEXT, 
 	source_size BIGINT, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id)
 );
@@ -1075,7 +1264,7 @@ CREATE TABLE migration_scans (
 	artifacts_found JSON NOT NULL, 
 	scan_report JSON NOT NULL, 
 	error_message TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id)
 );
@@ -1088,7 +1277,7 @@ CREATE TABLE notification_logs (
 	channel VARCHAR(32) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	error TEXT, 
-	sent_at DATETIME NOT NULL, 
+	sent_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1121,7 +1310,7 @@ CREATE TABLE payment_webhook_events (
 	verified BOOL NOT NULL, 
 	processed BOOL NOT NULL, 
 	error TEXT, 
-	received_at DATETIME NOT NULL, 
+	received_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1141,7 +1330,7 @@ CREATE TABLE platform_update_plans (
 	prod_approved_by TEXT, 
 	prod_approved_at DATETIME, 
 	soak_started_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1162,7 +1351,7 @@ CREATE TABLE portal_ask_feedback (
 	tenant_slug VARCHAR(255) NOT NULL, 
 	question TEXT NOT NULL, 
 	helpful BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1177,7 +1366,7 @@ CREATE TABLE portals (
 	theme JSON NOT NULL, 
 	tenant_id VARCHAR(255), 
 	is_active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1196,7 +1385,7 @@ CREATE TABLE process_definitions (
 	status VARCHAR(20) NOT NULL, 
 	created_by VARCHAR(255), 
 	tenant_id VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1214,7 +1403,7 @@ CREATE TABLE push_device_tokens (
 	label VARCHAR(255), 
 	is_active BOOL NOT NULL, 
 	last_seen_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	tenant_id VARCHAR(64), 
 	PRIMARY KEY (id)
 );
@@ -1232,7 +1421,7 @@ CREATE TABLE rate_cards (
 	hourly_rate FLOAT NOT NULL, 
 	currency VARCHAR(8) NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_rate_cards_tenant_role UNIQUE (tenant_id, `role`)
@@ -1245,7 +1434,7 @@ CREATE TABLE refresh_tokens (
 	expires_at DATETIME NOT NULL, 
 	revoked_at DATETIME, 
 	revoked_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	device_id CHAR(36), 
 	PRIMARY KEY (token_hash)
 );
@@ -1265,7 +1454,7 @@ CREATE TABLE region_registry (
 	connection_config JSON NOT NULL, 
 	is_primary BOOL NOT NULL, 
 	enabled BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name)
@@ -1289,7 +1478,7 @@ CREATE TABLE replay_runs (
 	anchored BOOL NOT NULL, 
 	error TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	started_at DATETIME, 
 	finished_at DATETIME, 
 	PRIMARY KEY (id)
@@ -1309,7 +1498,7 @@ CREATE TABLE retention_policies (
 	action VARCHAR(20) NOT NULL, 
 	enabled BOOL NOT NULL, 
 	last_run_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (resource_type)
 );
@@ -1338,7 +1527,7 @@ CREATE TABLE rule_definitions (
 	definition_json JSON NOT NULL, 
 	enabled BOOL NOT NULL, 
 	priority INTEGER NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name, version)
@@ -1354,7 +1543,7 @@ CREATE TABLE saved_reports (
 	created_by VARCHAR(255), 
 	tenant_id VARCHAR(255), 
 	is_public BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1375,7 +1564,7 @@ CREATE TABLE scheduled_releases (
 	release_date DATE, 
 	status VARCHAR(20) NOT NULL, 
 	enabled VARCHAR(20), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	released_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -1398,7 +1587,7 @@ CREATE TABLE security_events (
 	action VARCHAR(100), 
 	outcome VARCHAR(20), 
 	details JSON NOT NULL, 
-	timestamp DATETIME NOT NULL, 
+	timestamp DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1414,7 +1603,7 @@ CREATE TABLE security_rules (
 	enabled BOOL NOT NULL, 
 	tenant_id VARCHAR(255), 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1433,7 +1622,7 @@ CREATE TABLE shield_events (
 	score FLOAT NOT NULL, 
 	patterns_matched JSON NOT NULL, 
 	raw_context JSON NOT NULL, 
-	recorded_at DATETIME NOT NULL, 
+	recorded_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1451,7 +1640,7 @@ CREATE TABLE sso_providers (
 	client_secret_enc JSON, 
 	enabled BOOL NOT NULL, 
 	config JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1466,7 +1655,7 @@ CREATE TABLE storefront_stores (
 	locale VARCHAR(20) NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
 	settings JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_storefront_stores_slug UNIQUE (slug)
@@ -1484,7 +1673,7 @@ CREATE TABLE sync_destinations (
 	created_by VARCHAR(255), 
 	last_synced_at DATETIME, 
 	last_sync_status VARCHAR(20), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1510,7 +1699,7 @@ CREATE TABLE telemetry_events (
 	trace_id VARCHAR(64), 
 	tenant_id VARCHAR(64), 
 	user_id VARCHAR(128), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -1534,7 +1723,7 @@ CREATE TABLE tenant_deks (
 	key_version INTEGER NOT NULL, 
 	wrapped_dek TEXT NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (tenant_id)
@@ -1549,7 +1738,7 @@ CREATE TABLE tenants (
 	settings JSON NOT NULL, 
 	max_cases INTEGER, 
 	max_users INTEGER, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (slug)
@@ -1568,7 +1757,7 @@ CREATE TABLE user_directory (
 	is_active BOOL NOT NULL, 
 	metadata_json JSON NOT NULL, 
 	current_access_group_id CHAR(36), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (user_id)
@@ -1586,7 +1775,7 @@ CREATE TABLE variable_namespaces (
 	sensitivity VARCHAR(10) NOT NULL, 
 	status VARCHAR(10) NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name)
 );
@@ -1602,7 +1791,7 @@ CREATE TABLE webauthn_challenges (
 	user_id VARCHAR(255), 
 	challenge BLOB NOT NULL, 
 	purpose VARCHAR(20) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	expires_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
@@ -1618,7 +1807,7 @@ CREATE TABLE webauthn_credentials (
 	transports JSON NOT NULL, 
 	aaguid VARCHAR(64), 
 	device_name VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	last_used_at DATETIME, 
 	revoked_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -1638,7 +1827,7 @@ CREATE TABLE access_groups (
 	allowed_queue_ids JSON NOT NULL, 
 	is_default BOOL NOT NULL, 
 	is_active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT access_groups_name_tenant_uq UNIQUE (name, tenant_id), 
@@ -1655,7 +1844,7 @@ CREATE TABLE app_deployments (
 	environment VARCHAR(50) NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
 	deployed_by VARCHAR(255), 
-	deployed_at DATETIME NOT NULL, 
+	deployed_at DATETIME(6) NOT NULL, 
 	notes TEXT, 
 	config_overrides JSON NOT NULL, 
 	PRIMARY KEY (id), 
@@ -1685,7 +1874,7 @@ CREATE TABLE artifact_analyses (
 	generated_code TEXT, 
 	confidence FLOAT, 
 	ai_model VARCHAR(100), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(scan_id) REFERENCES migration_scans (id) ON DELETE CASCADE
 );
@@ -1711,7 +1900,7 @@ CREATE TABLE artifact_branches (
 	created_by TEXT NOT NULL, 
 	reviewed_by TEXT, 
 	merged_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	merged_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -1734,7 +1923,7 @@ CREATE TABLE auth_otp (
 	purpose VARCHAR(30) NOT NULL, 
 	expires_at DATETIME NOT NULL, 
 	used_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES helix_users (id) ON DELETE CASCADE
 );
@@ -1756,7 +1945,7 @@ CREATE TABLE case_types (
 	description TEXT NOT NULL, 
 	tags JSON NOT NULL, 
 	portal_enabled BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	is_deleted BOOL NOT NULL, 
 	deleted_at DATETIME, 
@@ -1781,7 +1970,7 @@ CREATE TABLE checkout_webhook_events (
 	status VARCHAR(50) NOT NULL, 
 	order_id CHAR(36), 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(integration_id) REFERENCES checkout_webhook_integrations (id) ON DELETE CASCADE
 );
@@ -1801,7 +1990,7 @@ CREATE TABLE dead_letter_queue (
 	max_retries INTEGER NOT NULL, 
 	next_retry_at DATETIME, 
 	resolution VARCHAR(20), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	resolved_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE SET NULL
@@ -1829,7 +2018,7 @@ CREATE TABLE deployment_runs (
 	initiated_by TEXT NOT NULL, 
 	deploy_notes TEXT, 
 	deployed_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(from_env_id) REFERENCES environment_registry (id) ON DELETE SET NULL, 
@@ -1866,7 +2055,7 @@ CREATE TABLE field_population_audit (
 	connector_id CHAR(36), 
 	user_id VARCHAR(255), 
 	response_hash VARCHAR(64), 
-	populated_at DATETIME NOT NULL, 
+	populated_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE SET NULL
 );
@@ -1883,7 +2072,7 @@ CREATE TABLE form_definitions (
 	version VARCHAR(50) NOT NULL, 
 	data_model_id CHAR(36), 
 	definition_json JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (name, version), 
@@ -1897,7 +2086,7 @@ CREATE TABLE graph_edges (
 	edge_type VARCHAR(50) NOT NULL, 
 	weight FLOAT NOT NULL, 
 	properties JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_graph_edges UNIQUE (from_node_id, to_node_id, edge_type), 
 	FOREIGN KEY(from_node_id) REFERENCES graph_nodes (id) ON DELETE CASCADE, 
@@ -1927,7 +2116,7 @@ CREATE TABLE hxdocs_articles (
 	tags JSON NOT NULL, 
 	created_by TEXT, 
 	updated_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(space_id) REFERENCES hxdocs_spaces (id) ON DELETE CASCADE
@@ -1946,7 +2135,7 @@ CREATE TABLE hxnexus_messages (
 	conversation_id CHAR(36) NOT NULL, 
 	`role` VARCHAR(16) NOT NULL, 
 	content TEXT NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(conversation_id) REFERENCES hxnexus_conversations (id)
 );
@@ -1965,7 +2154,7 @@ CREATE TABLE integration_calls (
 	latency_ms INTEGER, 
 	retry_count INTEGER NOT NULL, 
 	next_retry_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE SET NULL
@@ -2049,7 +2238,7 @@ CREATE TABLE marketplace_whitelist (
 	status VARCHAR(32) NOT NULL, 
 	requested_by VARCHAR(255) NOT NULL, 
 	decided_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	decided_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(workspace_id) REFERENCES marketplace_workspaces (id) ON DELETE CASCADE
@@ -2064,7 +2253,7 @@ CREATE TABLE marketplace_workspace_items (
 	package_version VARCHAR(64) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	licence_key_enc TEXT, 
-	installed_at DATETIME NOT NULL, 
+	installed_at DATETIME(6) NOT NULL, 
 	approved_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(workspace_id) REFERENCES marketplace_workspaces (id) ON DELETE CASCADE
@@ -2085,7 +2274,7 @@ CREATE TABLE migration_projects (
 	roadmap JSON NOT NULL, 
 	dependencies JSON NOT NULL, 
 	settings JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(scan_id) REFERENCES migration_scans (id) ON DELETE SET NULL
@@ -2114,7 +2303,7 @@ CREATE TABLE outbound_connector_rules (
 	connector_id CHAR(36), 
 	input_mapping JSON NOT NULL, 
 	enabled BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE SET NULL
@@ -2134,7 +2323,7 @@ CREATE TABLE pipeline_stage_events (
 	status VARCHAR(50) NOT NULL, 
 	summary JSON NOT NULL, 
 	error TEXT, 
-	started_at DATETIME, 
+	started_at DATETIME(6), 
 	finished_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(run_id) REFERENCES migration_pipeline_runs (id) ON DELETE CASCADE
@@ -2152,7 +2341,7 @@ CREATE TABLE platform_update_runs (
 	detail TEXT, 
 	triggered_at DATETIME, 
 	finished_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(plan_id) REFERENCES platform_update_plans (id) ON DELETE CASCADE, 
 	FOREIGN KEY(environment_id) REFERENCES environment_registry (id) ON DELETE CASCADE
@@ -2172,7 +2361,7 @@ CREATE TABLE portal_customers (
 	otp_code VARCHAR(64), 
 	otp_expires_at DATETIME, 
 	notify_email BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	last_active_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_portal_customer_email_tenant UNIQUE (tenant_id, primary_email), 
@@ -2192,7 +2381,7 @@ CREATE TABLE process_instances (
 	context JSON NOT NULL, 
 	error_node VARCHAR(255), 
 	error_message TEXT, 
-	started_at DATETIME NOT NULL, 
+	started_at DATETIME(6) NOT NULL, 
 	ended_at DATETIME, 
 	tenant_id VARCHAR(255), 
 	PRIMARY KEY (id), 
@@ -2215,7 +2404,7 @@ CREATE TABLE region_access_log (
 	action VARCHAR(50) NOT NULL, 
 	resource VARCHAR(255), 
 	legal_basis VARCHAR(100), 
-	recorded_at DATETIME NOT NULL, 
+	recorded_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(region_id) REFERENCES region_registry (id) ON DELETE CASCADE
 );
@@ -2234,7 +2423,7 @@ CREATE TABLE region_health_log (
 	active_cases INTEGER, 
 	replication_lag_ms INTEGER, 
 	error_msg TEXT, 
-	recorded_at DATETIME NOT NULL, 
+	recorded_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(region_id) REFERENCES region_registry (id) ON DELETE CASCADE
 );
@@ -2254,7 +2443,7 @@ CREATE TABLE replay_results (
 	baseline_metrics JSON NOT NULL, 
 	counterfactual_metrics JSON, 
 	trace JSON, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(run_id) REFERENCES replay_runs (id) ON DELETE CASCADE
 );
@@ -2273,7 +2462,7 @@ CREATE TABLE report_subscriptions (
 	enabled BOOL NOT NULL, 
 	last_sent_at DATETIME, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(report_id) REFERENCES saved_reports (id) ON DELETE CASCADE
 );
@@ -2314,7 +2503,7 @@ CREATE TABLE sovereignty_rules (
 	regulation VARCHAR(50) NOT NULL, 
 	description TEXT, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(region_id) REFERENCES region_registry (id) ON DELETE CASCADE
 );
@@ -2331,7 +2520,7 @@ CREATE TABLE storefront_analytics_events (
 	event VARCHAR(50) NOT NULL, 
 	data JSON NOT NULL, 
 	session VARCHAR(128), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
 );
@@ -2366,7 +2555,7 @@ CREATE TABLE storefront_domains (
 	domain_type VARCHAR(20) NOT NULL, 
 	dns_verified BOOL NOT NULL, 
 	ssl_status VARCHAR(20) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_storefront_domains_domain UNIQUE (domain), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
@@ -2382,7 +2571,7 @@ CREATE TABLE storefront_media (
 	size_bytes BIGINT NOT NULL, 
 	alt_text VARCHAR(512) NOT NULL, 
 	folder VARCHAR(512) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
 );
@@ -2407,7 +2596,7 @@ CREATE TABLE storefront_pages (
 	title VARCHAR(512) NOT NULL, 
 	sections JSON NOT NULL, 
 	is_published BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_storefront_pages_slug UNIQUE (store_id, page_slug), 
@@ -2435,7 +2624,7 @@ CREATE TABLE storefront_products (
 	is_featured BOOL NOT NULL, 
 	is_digital BOOL NOT NULL, 
 	metadata JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_storefront_products_slug UNIQUE (store_id, slug), 
@@ -2460,7 +2649,7 @@ CREATE TABLE storefront_promotions (
 	valid_until DATETIME, 
 	stackable BOOL NOT NULL, 
 	active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
 );
@@ -2489,7 +2678,7 @@ CREATE TABLE storefront_subscribers (
 	id CHAR(36) NOT NULL, 
 	store_id CHAR(36) NOT NULL, 
 	email VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_storefront_subscribers_email UNIQUE (store_id, email), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
@@ -2501,7 +2690,7 @@ CREATE TABLE storefront_themes (
 	config JSON NOT NULL, 
 	version INTEGER NOT NULL, 
 	is_active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(store_id) REFERENCES storefront_stores (id) ON DELETE CASCADE
 );
@@ -2516,7 +2705,7 @@ CREATE TABLE sync_field_mappings (
 	dest_column VARCHAR(255) NOT NULL, 
 	transform VARCHAR(30) NOT NULL, 
 	pii BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(destination_id) REFERENCES sync_destinations (id) ON DELETE CASCADE
 );
@@ -2528,7 +2717,7 @@ CREATE TABLE sync_redaction_rules (
 	field_path VARCHAR(255) NOT NULL, 
 	action VARCHAR(10) NOT NULL, 
 	reason TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(destination_id) REFERENCES sync_destinations (id) ON DELETE CASCADE
 );
@@ -2543,7 +2732,7 @@ CREATE TABLE sync_runs (
 	watermark_to DATETIME, 
 	started_at DATETIME NOT NULL, 
 	finished_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(destination_id) REFERENCES sync_destinations (id) ON DELETE CASCADE
 );
@@ -2559,7 +2748,7 @@ CREATE TABLE tenant_memberships (
 	tenant_id CHAR(36) NOT NULL, 
 	user_id VARCHAR(255) NOT NULL, 
 	`role` VARCHAR(50) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (tenant_id, user_id), 
 	FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE
@@ -2571,7 +2760,7 @@ CREATE TABLE tenant_region_assignments (
 	region_id CHAR(36) NOT NULL, 
 	assignment_type VARCHAR(20) NOT NULL, 
 	migrated_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_tra UNIQUE (tenant_id, region_id, assignment_type), 
 	FOREIGN KEY(region_id) REFERENCES region_registry (id) ON DELETE CASCADE
@@ -2590,7 +2779,7 @@ CREATE TABLE webhook_receiver_rules (
 	field_updates JSON NOT NULL, 
 	advance_stage BOOL NOT NULL, 
 	enabled BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE CASCADE
 );
@@ -2611,7 +2800,7 @@ CREATE TABLE work_queues (
 	auto_assignment BOOL NOT NULL, 
 	urgency_formula TEXT, 
 	max_items INTEGER, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(tenant_id) REFERENCES tenants (id)
@@ -2625,7 +2814,7 @@ CREATE TABLE branch_reviews (
 	reviewer_id TEXT NOT NULL, 
 	decision VARCHAR(30) NOT NULL, 
 	comments TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(branch_id) REFERENCES artifact_branches (id) ON DELETE CASCADE
 );
@@ -2646,7 +2835,7 @@ CREATE TABLE case_instances (
 	parent_case_id CHAR(36), 
 	data JSON NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	resolved_at DATETIME, 
 	closed_at DATETIME, 
@@ -2720,7 +2909,7 @@ CREATE TABLE case_type_variables (
 	required BOOL NOT NULL, 
 	indexed BOOL NOT NULL, 
 	promoted_source VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (case_type_id, full_key), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id) ON DELETE CASCADE, 
@@ -2758,7 +2947,7 @@ CREATE TABLE email_templates (
 	case_type_id CHAR(36), 
 	tenant_id VARCHAR(64), 
 	is_active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id)
@@ -2778,7 +2967,7 @@ CREATE TABLE escalation_trees (
 	tree_json JSON NOT NULL, 
 	is_active BOOL NOT NULL, 
 	created_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id)
@@ -2818,7 +3007,7 @@ CREATE TABLE hxwork_boards (
 	artifact_id TEXT, 
 	column_config JSON NOT NULL, 
 	created_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id) ON DELETE SET NULL
 );
@@ -2838,7 +3027,7 @@ CREATE TABLE intake_events (
 	created_case_id CHAR(36), 
 	process_instance_id CHAR(36), 
 	error TEXT, 
-	received_at DATETIME NOT NULL, 
+	received_at DATETIME(6) NOT NULL, 
 	processed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id) ON DELETE SET NULL
@@ -2868,7 +3057,7 @@ CREATE TABLE marketplace_containers (
 	pulled_at DATETIME, 
 	started_at DATETIME, 
 	stopped_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	error TEXT, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(grant_id) REFERENCES marketplace_capability_grants (id) ON DELETE SET NULL, 
@@ -2892,7 +3081,7 @@ CREATE TABLE marketplace_network_log (
 	status VARCHAR(16) NOT NULL, 
 	http_status_code INTEGER, 
 	is_declared BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(workspace_id) REFERENCES marketplace_workspaces (id) ON DELETE CASCADE, 
 	FOREIGN KEY(grant_id) REFERENCES marketplace_capability_grants (id) ON DELETE SET NULL
@@ -2920,7 +3109,7 @@ CREATE TABLE migration_tasks (
 	notes TEXT, 
 	started_at DATETIME, 
 	completed_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(project_id) REFERENCES migration_projects (id) ON DELETE CASCADE, 
 	FOREIGN KEY(analysis_id) REFERENCES artifact_analyses (id) ON DELETE SET NULL
@@ -2932,7 +3121,7 @@ CREATE TABLE operator_access_groups (
 	access_group_id CHAR(36) NOT NULL, 
 	is_primary BOOL NOT NULL, 
 	assigned_by VARCHAR(255), 
-	assigned_at DATETIME NOT NULL, 
+	assigned_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT oag_operator_group_uq UNIQUE (operator_id, access_group_id), 
 	FOREIGN KEY(access_group_id) REFERENCES access_groups (id) ON DELETE CASCADE
@@ -2947,7 +3136,7 @@ CREATE TABLE outbox (
 	event_type TEXT NOT NULL, 
 	payload JSON NOT NULL, 
 	case_type_id CHAR(36), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	claimed_at DATETIME, 
 	delivered_at DATETIME, 
 	attempts INTEGER NOT NULL, 
@@ -2967,7 +3156,7 @@ CREATE TABLE process_case_bindings (
 	status VARCHAR(20) NOT NULL, 
 	stage_id VARCHAR(255), 
 	step_id VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	resolved_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(instance_id) REFERENCES process_instances (id) ON DELETE CASCADE
@@ -2989,7 +3178,7 @@ CREATE TABLE process_task_log (
 	input_context JSON NOT NULL, 
 	result JSON, 
 	error TEXT, 
-	started_at DATETIME NOT NULL, 
+	started_at DATETIME(6) NOT NULL, 
 	ended_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(instance_id) REFERENCES process_instances (id) ON DELETE CASCADE
@@ -3076,7 +3265,7 @@ CREATE TABLE webhook_receiver_events (
 	matched_case_id CHAR(36), 
 	status VARCHAR(50) NOT NULL, 
 	error TEXT, 
-	received_at DATETIME NOT NULL, 
+	received_at DATETIME(6) NOT NULL, 
 	processed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(connector_id) REFERENCES connector_registry (id) ON DELETE SET NULL, 
@@ -3100,7 +3289,7 @@ CREATE TABLE webhook_subscriptions (
 	headers JSON NOT NULL, 
 	retry_count INTEGER NOT NULL, 
 	timeout_seconds INTEGER NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_type_id) REFERENCES case_types (id)
@@ -3113,7 +3302,7 @@ CREATE TABLE case_assignments (
 	assignee_type VARCHAR(20) NOT NULL, 
 	assignee_id VARCHAR(255) NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
-	assigned_at DATETIME NOT NULL, 
+	assigned_at DATETIME(6) NOT NULL, 
 	due_at DATETIME, 
 	claimed_at DATETIME, 
 	completed_at DATETIME, 
@@ -3138,7 +3327,7 @@ CREATE TABLE case_audit_log (
 	action VARCHAR(100) NOT NULL, 
 	actor_id VARCHAR(255), 
 	actor_type VARCHAR(20) NOT NULL, 
-	timestamp DATETIME NOT NULL, 
+	timestamp DATETIME(6) NOT NULL, 
 	details JSON NOT NULL, 
 	previous_value JSON, 
 	new_value JSON, 
@@ -3158,7 +3347,7 @@ CREATE TABLE case_event_log (
 	step_id VARCHAR(255), 
 	actor_id VARCHAR(255), 
 	actor_type VARCHAR(20), 
-	timestamp DATETIME NOT NULL, 
+	timestamp DATETIME(6) NOT NULL, 
 	duration_seconds INTEGER, 
 	resource_id VARCHAR(255), 
 	outcome VARCHAR(50), 
@@ -3194,7 +3383,7 @@ CREATE TABLE case_messages (
 	author_name VARCHAR(255), 
 	body TEXT NOT NULL, 
 	portal_visible BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE
 );
@@ -3209,7 +3398,7 @@ CREATE TABLE case_relationships (
 	propagate_status BOOL NOT NULL, 
 	propagate_priority BOOL NOT NULL, 
 	required BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (source_case_id, target_case_id, relationship_type), 
 	FOREIGN KEY(source_case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3222,7 +3411,7 @@ CREATE TABLE case_sla_instances (
 	sla_policy_id VARCHAR(255) NOT NULL, 
 	target_id VARCHAR(255) NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
-	started_at DATETIME NOT NULL, 
+	started_at DATETIME(6) NOT NULL, 
 	goal_at DATETIME NOT NULL, 
 	deadline_at DATETIME NOT NULL, 
 	paused_at DATETIME, 
@@ -3291,7 +3480,7 @@ CREATE TABLE checkout_orders (
 	integration_id CHAR(36), 
 	payment_request_id CHAR(36), 
 	is_test BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_checkout_orders_tracking UNIQUE (tracking_token), 
@@ -3319,7 +3508,7 @@ CREATE TABLE crm_sync_records (
 	status VARCHAR(50) NOT NULL, 
 	sync_data JSON NOT NULL, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	synced_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3347,7 +3536,7 @@ CREATE TABLE doc_extraction_jobs (
 	confidence FLOAT, 
 	status VARCHAR(50) NOT NULL, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3374,7 +3563,7 @@ CREATE TABLE doc_storage_routes (
 	content_type VARCHAR(255), 
 	status VARCHAR(50) NOT NULL, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	uploaded_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3400,7 +3589,7 @@ CREATE TABLE documents (
 	deleted_by VARCHAR(255), 
 	portal_visible BOOL NOT NULL, 
 	portal_source VARCHAR(20), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id)
@@ -3426,7 +3615,7 @@ CREATE TABLE esign_requests (
 	signer_name TEXT, 
 	status VARCHAR(50) NOT NULL, 
 	signed_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3446,7 +3635,7 @@ CREATE TABLE hxcanvas_boards (
 	description TEXT, 
 	case_id CHAR(36), 
 	created_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE SET NULL
@@ -3462,7 +3651,7 @@ CREATE TABLE hxwork_card_relations (
 	from_case_id CHAR(36) NOT NULL, 
 	to_case_id CHAR(36) NOT NULL, 
 	relation_type VARCHAR(30) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(board_id) REFERENCES hxwork_boards (id) ON DELETE CASCADE
 );
@@ -3483,7 +3672,7 @@ CREATE TABLE hxwork_sprints (
 	start_date DATETIME, 
 	end_date DATETIME, 
 	velocity INTEGER, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(board_id) REFERENCES hxwork_boards (id) ON DELETE CASCADE
@@ -3507,7 +3696,7 @@ CREATE TABLE identity_verifications (
 	status VARCHAR(50) NOT NULL, 
 	result VARCHAR(50), 
 	result_hash TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -3536,7 +3725,7 @@ CREATE TABLE invoice_records (
 	status VARCHAR(50) NOT NULL, 
 	contact_name TEXT, 
 	line_items JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	issued_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3566,7 +3755,7 @@ CREATE TABLE payment_disbursements (
 	disbursement_executed BOOL NOT NULL, 
 	disbursement_executed_at DATETIME, 
 	updated_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE
 );
@@ -3591,7 +3780,7 @@ CREATE TABLE payment_requests (
 	status VARCHAR(50) NOT NULL, 
 	description TEXT, 
 	metadata JSON NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (id), 
@@ -3612,7 +3801,7 @@ CREATE TABLE portal_csat (
 	customer_id CHAR(36) NOT NULL, 
 	rating INTEGER NOT NULL, 
 	comment TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (case_id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
 	FOREIGN KEY(customer_id) REFERENCES portal_customers (id) ON DELETE CASCADE
@@ -3635,7 +3824,7 @@ CREATE TABLE portal_submission_refs (
 	client_ref CHAR(36) NOT NULL, 
 	tenant_slug VARCHAR(255) NOT NULL, 
 	case_id CHAR(36) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (client_ref), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE
 );
@@ -3654,7 +3843,7 @@ CREATE TABLE slack_notifications (
 	slack_ts VARCHAR(100), 
 	status VARCHAR(50) NOT NULL, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	sent_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3678,7 +3867,7 @@ CREATE TABLE sms_messages (
 	message_sid VARCHAR(255), 
 	status VARCHAR(50) NOT NULL, 
 	error TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	sent_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
@@ -3696,7 +3885,7 @@ CREATE TABLE storefront_inventory_log (
 	new_quantity INTEGER, 
 	reason VARCHAR(100) NOT NULL, 
 	actor VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(variant_id) REFERENCES storefront_product_variants (id) ON DELETE CASCADE
 );
@@ -3711,7 +3900,7 @@ CREATE TABLE trace_events (
 	actor_user_id VARCHAR(255), 
 	actor_ip VARCHAR(45), 
 	payload JSON NOT NULL, 
-	occurred_at DATETIME NOT NULL, 
+	occurred_at DATETIME(6) NOT NULL, 
 	session_id VARCHAR(255), 
 	latency_ms INTEGER, 
 	PRIMARY KEY (id), 
@@ -3740,7 +3929,7 @@ CREATE TABLE webhook_deliveries (
 	next_retry_at DATETIME, 
 	status VARCHAR(20) NOT NULL, 
 	error_message TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(subscription_id) REFERENCES webhook_subscriptions (id) ON DELETE CASCADE
 );
@@ -3768,7 +3957,7 @@ CREATE TABLE case_sessions (
 	transcript_status VARCHAR(20) NOT NULL, 
 	transcript_document_id CHAR(36), 
 	transcript_anchor_ref TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
 	FOREIGN KEY(recording_document_id) REFERENCES documents (id), 
@@ -3787,7 +3976,7 @@ CREATE TABLE checkout_notifications_log (
 	event VARCHAR(100) NOT NULL, 
 	channel VARCHAR(20) NOT NULL, 
 	status VARCHAR(50) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(order_id) REFERENCES checkout_orders (id) ON DELETE CASCADE
 );
@@ -3816,7 +4005,7 @@ CREATE TABLE document_verifications (
 	checks JSON NOT NULL, 
 	verified_by VARCHAR(255) NOT NULL, 
 	notes TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(case_id) REFERENCES case_instances (id) ON DELETE CASCADE, 
 	FOREIGN KEY(document_id) REFERENCES documents (id) ON DELETE CASCADE
@@ -3834,7 +4023,7 @@ CREATE TABLE document_versions (
 	size_bytes INTEGER NOT NULL, 
 	sha256 VARCHAR(64) NOT NULL, 
 	uploaded_by VARCHAR(255), 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_document_version UNIQUE (document_id, version), 
 	FOREIGN KEY(document_id) REFERENCES documents (id) ON DELETE CASCADE
@@ -3854,7 +4043,7 @@ CREATE TABLE hxcanvas_items (
 	data JSON NOT NULL, 
 	z_index INTEGER NOT NULL, 
 	created_by TEXT, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(board_id) REFERENCES hxcanvas_boards (id) ON DELETE CASCADE
@@ -3889,7 +4078,7 @@ CREATE TABLE hxwork_stories (
 	assigned_to TEXT, 
 	linked_commit_ids JSON NOT NULL, 
 	created_by TEXT NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(board_id) REFERENCES hxwork_boards (id) ON DELETE CASCADE, 
@@ -3912,7 +4101,7 @@ CREATE TABLE case_session_caption_segments (
 	speaker VARCHAR(255) NOT NULL, 
 	text TEXT NOT NULL, 
 	spoken_at DATETIME NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(session_id) REFERENCES case_sessions (id) ON DELETE CASCADE
 );
@@ -3948,7 +4137,7 @@ CREATE TABLE case_session_intelligence (
 	model_versions JSON NOT NULL, 
 	error TEXT, 
 	requested_by VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (session_id), 
 	FOREIGN KEY(session_id) REFERENCES case_sessions (id) ON DELETE CASCADE
@@ -3963,7 +4152,7 @@ CREATE TABLE case_session_kyc_signals (
 	model_versions JSON NOT NULL, 
 	error TEXT, 
 	requested_by VARCHAR(255) NOT NULL, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	completed_at DATETIME, 
 	PRIMARY KEY (session_id), 
 	FOREIGN KEY(session_id) REFERENCES case_sessions (id) ON DELETE CASCADE
@@ -3984,7 +4173,7 @@ CREATE TABLE case_session_participants (
 	left_at DATETIME, 
 	consent_recorded_at DATETIME, 
 	biometric_consent_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	created_at DATETIME(6) NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(session_id) REFERENCES case_sessions (id) ON DELETE CASCADE, 
 	UNIQUE (invite_token_hash)

@@ -6,6 +6,13 @@ Called as the very first step of start-velaris.sh.
 Exit codes:
   0 — key is valid, proceed with startup
   1 — key is revoked, invalid, or grace period expired — BLOCK startup
+  2 — not activated yet (no setup marker / no key cache) — startup may continue
+
+Why 2 exists: a brand-new install cannot obtain a key until the platform API is
+running, because the registration website calls it to create the customer's
+user. Blocking startup on a key the operator has no way to get yet is a
+deadlock, so "never activated" is a warning and "was activated, now revoked"
+stays a hard block.
 """
 from __future__ import annotations
 
@@ -83,14 +90,15 @@ def main() -> int:
     # ── 2. Read key cache ──────────────────────────────────────────────
     cache = read_cache()
     if not cache:
-        print(red("  ✗  No product key found."))
-        print(red("     Run ./setup-velaris.sh to configure your key."))
-        return 1
+        print(yellow("  ⚠  No product key activated yet."))
+        print(yellow("     Register on your Velaris website, then run ./activate-velaris.sh"))
+        return 2
 
     key_id = cache.get("key_id", "")
     if not key_id:
-        print(red("  ✗  Key cache is corrupted. Run ./setup-velaris.sh again."))
-        return 1
+        print(yellow("  ⚠  Key cache is unreadable — treating this install as not activated."))
+        print(yellow("     Re-activate with ./activate-velaris.sh"))
+        return 2
 
     # ── 3. Immediate local revocation check (cached) ──────────────────
     if cache.get("status") == "revoked":

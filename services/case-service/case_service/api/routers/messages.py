@@ -30,6 +30,7 @@ from case_service.db.models import (
     PortalCustomerModel,
 )
 from case_service.db.session import get_session
+from case_service.tenancy.identity import same_tenant
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def _tenant(user: AuthenticatedUser) -> str:
 
 async def _authorized_case(session, user, case_id: uuid.UUID, action: str):
     case = await repo.get_case_instance(session, case_id)
-    if case is None or (case.tenant_id is not None and str(case.tenant_id) != _tenant(user)):
+    if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
         raise HTTPException(404, "Case not found")
     await hxguard.require_case(session, user, action, case_id)
     return case

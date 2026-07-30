@@ -21,7 +21,7 @@ async def _reg_docling(session: AsyncSession, tenant_id: str = "t1") -> Connecto
         credentials=encrypt_credentials({}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _reg_s3(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRegistryModel:
@@ -31,7 +31,7 @@ async def _reg_s3(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRegi
         credentials=encrypt_credentials({"access_key_id": "AKIATEST", "secret_access_key": "secret"}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _extract_case(client: AsyncClient) -> dict:

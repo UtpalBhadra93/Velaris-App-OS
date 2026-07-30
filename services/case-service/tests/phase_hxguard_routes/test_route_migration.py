@@ -71,23 +71,30 @@ class TestRouteMigration:
         case = await create_case(client, ct["id"])       # admin-owned
         other = await create_case(client, ct["id"])
         hdrs = _limited_headers(["user"])                # unrelated human
+        # The autouse _isolate_settings fixture snapshots and restores the whole
+        # Settings object, so no manual teardown is needed here.
         get_settings().hxguard_case_enforcement = "enforce"
-        try:
-            for method, path, body in _routes(case["id"], other["id"]):
-                resp = await client.request(method, path, json=body, headers=hdrs)
-                assert resp.status_code == 404, f"{method} {path} -> {resp.status_code}"
-            # stage transition (had auth, lacked the case check before)
-            resp = await client.post(
-                f"/api/v1/cases/{case['id']}/stage",
-                json={"target_stage_id": "s2"}, headers=hdrs)
-            assert resp.status_code == 404
-        finally:
-            get_settings().hxguard_case_enforcement = "shadow"
+        for method, path, body in _routes(case["id"], other["id"]):
+            resp = await client.request(method, path, json=body, headers=hdrs)
+            assert resp.status_code == 404, f"{method} {path} -> {resp.status_code}"
+        # stage transition (had auth, lacked the case check before)
+        resp = await client.post(
+            f"/api/v1/cases/{case['id']}/stage",
+            json={"target_stage_id": "s2"}, headers=hdrs)
+        assert resp.status_code == 404
 
     async def test_shadow_mode_passes_unrelated_user(self, client):
-        """Back-compat: in shadow (the code default) nothing is blocked."""
+        """Back-compat: in shadow mode nothing is blocked.
+
+        Set the mode explicitly rather than leaning on the code default — a
+        deployment .env that sets HELIX_CASE_HXGUARD_CASE_ENFORCEMENT=enforce
+        is read into Settings and would otherwise make this test fail on a
+        configured box while passing on a bare one.
+        """
+        from case_service.config import get_settings
         ct = await deploy_case_type(client, name="Routes Shadow CT")
         case = await create_case(client, ct["id"])
         hdrs = _limited_headers(["user"])
+        get_settings().hxguard_case_enforcement = "shadow"
         resp = await client.get(f"/api/v1/cases/{case['id']}/history", headers=hdrs)
         assert resp.status_code == 200

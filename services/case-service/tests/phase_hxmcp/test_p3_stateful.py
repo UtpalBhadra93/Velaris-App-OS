@@ -12,6 +12,7 @@ from tests.conftest import deploy_case_type, create_case
 from tests.phase_hxmcp.test_p1_server import (
     MCP, rpc, call, tool_payload, _limited_headers,
 )
+from tests.phase_hxmcp.test_p2_writes import REQUIRES_CONCURRENT_WRITERS
 
 
 @pytest.fixture
@@ -173,6 +174,7 @@ class TestConfirmAuthz:
 
 
 class TestNoConfirm:
+    @REQUIRES_CONCURRENT_WRITERS
     async def test_stateful_executes_immediately_when_confirm_off(self, client, _stateful_on, monkeypatch):
         from case_service.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_confirm_stateful", False)

@@ -52,7 +52,7 @@ async def _mk_linked_cases(session, source, n=3):
     ct = CaseTypeModel(name=f"Migrated CT {uuid.uuid4().hex[:6]}", version="1.0.0",
                        definition_json={"stages": [{"id": "intake", "steps": []}]})
     session.add(ct)
-    await session.flush()
+    await session.commit()
     case_ids = []
     for i in range(n):
         # cases inherit the case-type tenant (None = global), like real migrations
@@ -60,7 +60,7 @@ async def _mk_linked_cases(session, source, n=3):
                                  status="new", priority="medium",
                                  data={"row": i}, tenant_id=None)
         session.add(case)
-        await session.flush()
+        await session.commit()
         session.add(HxDBMigrateRowLinkModel(
             source_id=source.id, tenant_id=source.tenant_id, table_name="orders",
             source_pk=str(i), case_id=case.id, case_type_id=ct.id,

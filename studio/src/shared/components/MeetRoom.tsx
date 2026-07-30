@@ -19,6 +19,8 @@ import {
   Track,
 } from "livekit-client";
 
+import { WORKLET_SRC, toPcm16k } from "@shared/audio/pcm";
+
 export interface MeetRoomProps {
   url: string;
   token: string;
@@ -61,24 +63,8 @@ const displayName = (p: Participant) =>
 
 type Caption = { speaker: string; text: string; isFinal: boolean; ts: number };
 
-const WORKLET_SRC = `class VxPcm extends AudioWorkletProcessor {
-  process(inputs){ const c = inputs[0] && inputs[0][0]; if (c) this.port.postMessage(c.slice(0)); return true; }
-}
-registerProcessor("vx-pcm", VxPcm);`;
-
-/** Linear-interpolation downsample to 16 kHz int16 — safe on any context rate. */
-function toPcm16k(samples: Float32Array, fromRate: number): Int16Array {
-  const ratio = fromRate / 16000;
-  const out = new Int16Array(Math.floor(samples.length / ratio));
-  for (let i = 0; i < out.length; i++) {
-    const pos = i * ratio;
-    const i0 = Math.floor(pos);
-    const frac = pos - i0;
-    const s = samples[i0] * (1 - frac) + (samples[Math.min(i0 + 1, samples.length - 1)] || 0) * frac;
-    out[i] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
-  }
-  return out;
-}
+/* The worklet + downsampler live in @shared/audio/pcm — captions and voice
+ * input speak the same PCM16 16 kHz format to the same server-side engine. */
 
 /** Attach exactly one LiveKit track (video or audio) to the DOM. */
 function MediaView({ track, fit }: { track: Track; fit?: "cover" | "contain" }) {
@@ -345,7 +331,7 @@ export default function MeetRoom({
             let sum = 0;
             for (let i = 0; i < all.length; i += 4) sum += all[i] * all[i];
             setMicLevel(Math.min(100, Math.round(Math.sqrt(sum / (all.length / 4)) * 300)));
-            if (ws.readyState === WebSocket.OPEN) ws.send(toPcm16k(all, sampleRate).buffer);
+            if (ws.readyState === WebSocket.OPEN) ws.send(toPcm16k(all, sampleRate).buffer as ArrayBuffer);
           }
         };
       } catch (e: any) {

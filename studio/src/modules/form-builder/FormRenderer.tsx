@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Button, Spinner } from "@shared/components";
+import { Button, Spinner, VoiceFillPanel, VoiceInput, appendTranscript } from "@shared/components";
 import type { FormFieldDef, FormSectionDef } from "./FormBuilder";
 
 function _authHdr(): Record<string, string> {
@@ -79,6 +79,7 @@ interface FormRendererProps {
   onCancel: () => void;
   readOnly?: boolean;
   caseId?: string;   // when provided, file_upload fields upload to this case
+  formId?: string;   // scopes voice fill to this form's fields
 }
 
 export default function FormRenderer({
@@ -89,6 +90,7 @@ export default function FormRenderer({
   onCancel,
   readOnly = false,
   caseId,
+  formId,
 }: FormRendererProps) {
   const [values, setValues] = useState<Record<string, any>>(initialValues);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -188,6 +190,15 @@ export default function FormRenderer({
 
       {/* Sections */}
       <div style={{ padding: "var(--space-lg)" }}>
+        {/* Voice fill proposes values into the fields below; it never submits. */}
+        {caseId && !readOnly && (
+          <VoiceFillPanel
+            caseId={caseId}
+            formId={formId}
+            disabled={submitting}
+            onAccept={(fieldKey, value) => setValue(fieldKey, value)}
+          />
+        )}
         {sections.map((section, si) => (
           <div key={section.id} style={{ marginBottom: si < sections.length - 1 ? "var(--space-xl)" : 0 }}>
             <div style={{
@@ -532,13 +543,34 @@ function FieldRenderer({ field, value, error, onChange, readOnly, caseId, allVal
       {field.description && (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{field.description}</div>
       )}
-      {renderInput()}
+      {/* Dictation on the free-text fields (voice input P2). Only the kinds a
+          person would actually speak into — a dropdown or a date picker gains
+          nothing from a mic. The control hides itself when the flag is off or
+          no engine is installed, so this is opt-in by capability, and it
+          APPENDS rather than replacing half-typed text.
+          Distinct from the VoiceFillPanel above the form: that one talks
+          through the model to propose values across many fields; this puts
+          your words in one box. */}
+      {DICTATABLE_FIELDS.has(field.type) && !readOnly ? (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>{renderInput()}</div>
+          <VoiceInput
+            size={30}
+            caseId={caseId}
+            onText={t => onChange(appendTranscript(typeof value === "string" ? value : "", t))}
+          />
+        </div>
+      ) : renderInput()}
       {error && (
         <div style={{ fontSize: 11, color: "var(--status-failed)", marginTop: 3 }}>{error}</div>
       )}
     </div>
   );
 }
+
+/** Field kinds worth a mic: free text a person would dictate. A dropdown, a
+ *  date picker or a rating gains nothing from one. */
+const DICTATABLE_FIELDS = new Set(["text", "textarea", "email", "phone"]);
 
 /* ── File Upload Field ────────────────────────────────────────── */
 

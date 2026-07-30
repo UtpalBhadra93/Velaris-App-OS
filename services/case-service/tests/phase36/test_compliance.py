@@ -29,12 +29,12 @@ async def case(session):
         lifecycle_process_id="lp-p36",
         definition_json={"stages": []},
     )
-    session.add(ct); await session.flush()
+    session.add(ct); await session.commit()
     c = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0",
         status="new", priority="medium", data={},
     )
-    session.add(c); await session.flush()
+    session.add(c); await session.commit()
     return c
 
 
@@ -101,7 +101,7 @@ async def test_05_tampered_audit_row_detected(session, case):
     from sqlalchemy import select
     audit = (await session.execute(select(CaseAuditLogModel))).scalar_one()
     audit.action = "tampered_action"
-    await session.flush()
+    await session.commit()
 
     res = await verify_chain(session)
     assert res["verified"] is False
@@ -120,7 +120,7 @@ async def test_06_broken_link_detected(session, case):
         select(AuditChainModel).order_by(AuditChainModel.sequence.asc())
     )).scalars().all()
     chains[1].prev_hash = "deadbeef" * 8  # 64 chars
-    await session.flush()
+    await session.commit()
 
     res = await verify_chain(session)
     assert res["verified"] is False
@@ -292,7 +292,7 @@ async def test_19_pack_detects_unverified_chain(session, case):
     from sqlalchemy import select
     audit = (await session.execute(select(CaseAuditLogModel))).scalar_one()
     audit.action = "altered"
-    await session.flush()
+    await session.commit()
 
     result = await generate_evidence_pack(
         session, framework="soc2",

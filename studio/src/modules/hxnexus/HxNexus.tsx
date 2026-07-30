@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { VoiceInput, appendTranscript } from "@shared/components";
 import { useAuth } from "../../auth/AuthContext";
 
 type Tab = "chat" | "suggest" | "qa" | "translator";
@@ -659,6 +660,8 @@ export default function HxNexus() {
               placeholder="Ask HxNexus…"
               style={{ flex: 1, padding: "10px 14px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", fontSize: 13, outline: "none", background: "var(--bg-input)", color: "var(--text-primary)" }}
             />
+            <VoiceInput size={36} caseId={caseId.trim() || undefined} disabled={chatLoading}
+              onText={t => setInput(v => appendTranscript(v, t))} />
             <button
               onClick={sendChat} disabled={chatLoading || !input.trim()}
               style={{ padding: "9px 20px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "var(--radius-sm)", cursor: "pointer", fontWeight: 600, fontSize: 13, opacity: chatLoading || !input.trim() ? 0.5 : 1 }}
@@ -743,6 +746,8 @@ export default function HxNexus() {
                 placeholder="Ask a question about the case documents…"
                 style={{ flex: 1, padding: "9px 12px", border: "1px solid var(--border-default)", borderRadius: 6, fontSize: 14 }}
               />
+              <VoiceInput size={34} caseId={qaCaseId.trim() || undefined} disabled={qaLoading}
+                onText={t => setQaQuestion(v => appendTranscript(v, t))} />
               <button
                 onClick={fetchQA} disabled={qaLoading || !qaQuestion.trim()}
                 style={{ padding: "9px 20px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, opacity: qaLoading || !qaQuestion.trim() ? 0.5 : 1 }}

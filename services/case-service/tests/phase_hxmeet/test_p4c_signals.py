@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
@@ -29,6 +30,16 @@ from case_service.db.models import (
 )
 from case_service.meet import kyc as meet_kyc
 from tests.conftest import create_case, deploy_case_type
+
+# The frame-analysis checks need the optional [kyc] extra (av + numpy). The
+# module's own contract is that checks whose dependency is absent skip honestly,
+# so tests that assert those checks RAN must skip too rather than fail — a box
+# without the extra is a supported configuration, not a broken one.
+# Install with:  uv sync --extra kyc
+requires_cv = pytest.mark.skipif(
+    not meet_kyc.cv_available(),
+    reason="optional [kyc] extra (av) not installed — frame-analysis checks skip",
+)
 
 MEET = "/api/v1/meet"
 
@@ -198,7 +209,12 @@ class TestKycAnalysisGates:
         session.add(CaseSessionKycSignalsModel(
             session_id=row.id, status="running", requested_by="u"))
         await session.commit()
-        r = await client.post(f"{MEET}/sessions/{row.id}/kyc-analysis")
+        # This session has a recording but no transcript, so the route's
+        # "nothing runnable" guard fires BEFORE the running-check unless CV is
+        # available. Pin it — this test is about the 409 gate, not about
+        # whether opencv happens to be installed on the host.
+        with patch("case_service.meet.kyc.cv_available", return_value=True):
+            r = await client.post(f"{MEET}/sessions/{row.id}/kyc-analysis")
         assert r.status_code == 409
 
 
@@ -219,6 +235,7 @@ class TestKycJob:
             await meet_kyc.run_kyc_job(row.id)
         return (await client.get(f"{MEET}/sessions/{row.id}/kyc-analysis")).json()
 
+    @requires_cv
     async def test_full_run_scores_and_audits(self, client, session, kyc_cfg):
         await _enable_kyc(session)
         row = await _sealed_session(session, client, sealed_transcript=True)

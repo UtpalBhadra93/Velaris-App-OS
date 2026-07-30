@@ -58,7 +58,7 @@ async def _register_stripe_connector(session: AsyncSession, tenant_id: str = "t1
         enabled        = True,
     )
     session.add(row)
-    await session.flush()
+    await session.commit()
     return row
 
 

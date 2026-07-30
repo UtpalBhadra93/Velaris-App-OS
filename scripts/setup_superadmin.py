@@ -208,71 +208,95 @@ def create_superadmin_sync(username: str, password: str, email: str) -> None:
 # ── Main flow ─────────────────────────────────────────────────────────────────
 
 def main():
+    # --skip-key   → superadmin only (a fresh box has no key yet; the website
+    #                that issues one needs this platform running first)
+    # --key-only   → activation only, used by ./activate-velaris.sh afterwards
+    skip_key  = "--skip-key" in sys.argv or os.environ.get("VELARIS_SKIP_KEY") == "1"
+    key_only  = "--key-only" in sys.argv
+    total     = 1 if (skip_key or key_only) else 3
+
     print()
     print("╔══════════════════════════════════════════════════╗")
     print("║         Velaris Superadmin Setup                 ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
 
-    # ── Step 1: Product key ───────────────────────────────────────────
-    print(bold("Step 1/3 — Product Key"))
-    print("  Register at your Velaris website to receive a product key.")
-    print()
-
-    for attempt in range(3):
-        key_input = input("  Enter your product key: ").strip()
-        if not key_input:
-            print(red("  ✗ No key entered."))
-            continue
-        valid, key_id = validate_key_format(key_input)
-        if valid:
-            print(green(f"  ✓ Key format valid (ID: {key_id})"))
-            break
-        print(red(f"  ✗ {key_id}"))
-        if attempt == 2:
-            print(red("  Too many invalid attempts. Exiting."))
-            sys.exit(1)
-
-    # ── Step 2: Activate with registration server ─────────────────────
-    print()
-    print(bold("Step 2/3 — Activating with Velaris registration server…"))
-    mac        = get_mac()
-    machine_id = get_machine_id(mac)
-    print(f"  Machine MAC: {mac[:8]}??:??:??  (first 3 octets shown)")
-
-    result = activate_key(key_input, key_id, mac, machine_id)
-
-    if "error" in result and result["error"] == "unreachable":
-        print(yellow("  ⚠  Registration server unreachable. Proceeding offline."))
-        print(yellow("     Your key will be verified on first startup."))
-    elif result.get("status") == "revoked":
-        print(red("  ✗ This key has been revoked. Contact support."))
-        sys.exit(1)
-    elif result.get("status") == "mac_mismatch":
-        print(red("  ✗ Key already activated on a different machine."))
-        print(red("     Contact support to transfer your key."))
-        sys.exit(1)
-    elif result.get("status") in ("activated", "active"):
-        print(green("  ✓ Key activated and bound to this machine."))
-    elif "error" in result:
-        print(yellow(f"  ⚠  Activation server error: {result['error']}. Continuing."))
+    if skip_key:
+        print(yellow("  Skipping product key — activate later with ./activate-velaris.sh"))
+        print()
     else:
-        print(green("  ✓ Key verified."))
+        # ── Step 1: Product key ───────────────────────────────────────
+        print(bold(f"Step 1/{total} — Product Key"))
+        print("  Register at your Velaris website to receive a product key.")
+        print("  Leave blank to skip and activate later with ./activate-velaris.sh")
+        print()
 
-    # ── Write key cache ───────────────────────────────────────────────
-    cache = {
-        "key_id":        key_id,
-        "status":        "active",
-        "mac":           mac,
-        "last_verified": datetime.now(timezone.utc).isoformat(),
-        "grace_days":    int(os.environ.get("KEY_GRACE_DAYS", "7")),
-    }
-    KEY_CACHE.write_text(json.dumps(cache, indent=2))
-    print(green(f"  ✓ Key cache written to {KEY_CACHE}"))
+        key_input = ""
+        for attempt in range(3):
+            key_input = input("  Enter your product key (or blank to skip): ").strip()
+            if not key_input:
+                print(yellow("  ⚠ Skipped — this install will run unactivated."))
+                skip_key = True
+                break
+            valid, key_id = validate_key_format(key_input)
+            if valid:
+                print(green(f"  ✓ Key format valid (ID: {key_id})"))
+                break
+            print(red(f"  ✗ {key_id}"))
+            if attempt == 2:
+                print(yellow("  Too many invalid attempts — skipping activation."))
+                print(yellow("  Activate later with ./activate-velaris.sh"))
+                skip_key = True
+
+    if not skip_key:
+        # ── Step 2: Activate with registration server ─────────────────
+        print()
+        print(bold(f"Step 2/{total} — Activating with Velaris registration server…"))
+        mac        = get_mac()
+        machine_id = get_machine_id(mac)
+        print(f"  Machine MAC: {mac[:8]}??:??:??  (first 3 octets shown)")
+
+        result = activate_key(key_input, key_id, mac, machine_id)
+
+        if "error" in result and result["error"] == "unreachable":
+            print(yellow("  ⚠  Registration server unreachable. Proceeding offline."))
+            print(yellow("     Your key will be verified on first startup."))
+        elif result.get("status") == "revoked":
+            print(red("  ✗ This key has been revoked. Contact support."))
+            sys.exit(1)
+        elif result.get("status") == "mac_mismatch":
+            print(red("  ✗ Key already activated on a different machine."))
+            print(red("     Contact support to transfer your key."))
+            sys.exit(1)
+        elif result.get("status") in ("activated", "active"):
+            print(green("  ✓ Key activated and bound to this machine."))
+        elif "error" in result:
+            print(yellow(f"  ⚠  Activation server error: {result['error']}. Continuing."))
+        else:
+            print(green("  ✓ Key verified."))
+
+        # ── Write key cache ───────────────────────────────────────────
+        cache = {
+            "key_id":        key_id,
+            "status":        "active",
+            "mac":           mac,
+            "last_verified": datetime.now(timezone.utc).isoformat(),
+            "grace_days":    int(os.environ.get("KEY_GRACE_DAYS", "7")),
+        }
+        KEY_CACHE.write_text(json.dumps(cache, indent=2))
+        print(green(f"  ✓ Key cache written to {KEY_CACHE}"))
+
+    if key_only:
+        print()
+        if skip_key:
+            print(yellow("  No key entered — nothing was activated."))
+            sys.exit(1)
+        print(green("  Activation complete. Restart with ./start-velaris.sh"))
+        return
 
     # ── Step 3: Create superadmin ─────────────────────────────────────
     print()
-    print(bold("Step 3/3 — Create Superadmin Account"))
+    print(bold(f"Step {total}/{total} — Create Superadmin Account"))
     print("  This is the god-mode account. Choose credentials carefully.")
     print("  Username can be anything. Password minimum 12 characters.")
     print()

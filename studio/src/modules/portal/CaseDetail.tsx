@@ -14,6 +14,7 @@ import {
   postCaseMessage, postCsat, sendCaseChat, uploadCaseDocument,
 } from "./portalApi";
 import { C, Skeleton, SkeletonCard, StatusBadge, fmtDate, fmtDateTime } from "./portalUi";
+import PortalVoice, { appendSpoken } from "./PortalVoice";
 
 const ACTION_ICON: Record<string, string> = {
   case_created: "🎫", stage_transitioned: "➡️", status_changed: "🔄",
@@ -250,11 +251,29 @@ export default function CaseDetail({ slug, caseId, brand, onBack, onAuthLost }: 
           <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>{a.name}</div>
           {a.prompt && <div style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.6, marginBottom: 14 }}>{a.prompt}</div>}
 
+          {/* P3b — speak the answer. Accepting writes the SAME local state the
+              Submit button below already reads; the endpoint cannot write. */}
+          {(a.type === "approval" || a.type === "form") && (
+            <PortalVoice
+              slug={slug} caseId={caseId} action={a} brand={brand}
+              onAccept={(key, value) =>
+                setFormVals(v => ({ ...v, [`${a.step_id}::${key}`]: value }))}
+              onDictate={text =>
+                setFormVals(v => ({
+                  ...v,
+                  [`${a.step_id}::comment`]: appendSpoken(v[`${a.step_id}::comment`] || "", text),
+                }))}
+            />
+          )}
+
           {a.type === "approval" && (
             <>
               <input value={formVals[`${a.step_id}::comment`] || ""}
                      onChange={e => setFormVals(v => ({ ...v, [`${a.step_id}::comment`]: e.target.value }))}
-                     placeholder="Add a comment (optional)" style={{ ...C.input, marginBottom: 12 }} />
+                     placeholder="Add a comment (optional)"
+                     /* 16px: iOS zooms the whole page when a focused input is
+                        smaller, which throws the card off screen mid-answer. */
+                     style={{ ...C.input, marginBottom: 12, fontSize: 16 }} />
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={() => act(a, "approved")} disabled={actionBusy === a.step_id}
                         style={{ ...C.primary("#16a34a"), opacity: actionBusy === a.step_id ? 0.6 : 1 }}>
@@ -276,11 +295,11 @@ export default function CaseDetail({ slug, caseId, brand, onBack, onAuthLost }: 
                   {f.type === "textarea" ? (
                     <textarea rows={3} value={formVals[`${a.step_id}::${f.key}`] || ""}
                               onChange={e => setFormVals(v => ({ ...v, [`${a.step_id}::${f.key}`]: e.target.value }))}
-                              style={{ ...C.input, resize: "vertical" }} />
+                              style={{ ...C.input, resize: "vertical", fontSize: 16 }} />
                   ) : (
                     <input type={f.type || "text"} value={formVals[`${a.step_id}::${f.key}`] || ""}
                            onChange={e => setFormVals(v => ({ ...v, [`${a.step_id}::${f.key}`]: e.target.value }))}
-                           style={C.input} />
+                           style={{ ...C.input, fontSize: 16 }} />
                   )}
                 </div>
               ))}

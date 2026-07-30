@@ -22,7 +22,7 @@ async def _reg_custom(session: AsyncSession, tenant_id: str = "t1") -> Connector
         credentials=encrypt_credentials({}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _webhook_case(client: AsyncClient) -> dict:

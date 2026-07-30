@@ -45,6 +45,16 @@ def _clear():
     app.dependency_overrides.pop(get_current_user, None)
 
 
+# ── No-LLM helper ─────────────────────────────────────────────────────────────
+# autodoc takes the LLM path when `llm and llm.available`, and auto-discovers a
+# backend when llm is None. On a box with Ollama running that discovery SUCCEEDS,
+# so the "template / no-LLM" tests would silently assert against generated prose
+# and fail. Pass this stub (truthy, but not available) to pin the template path
+# regardless of what the host happens to have running.
+class _NoLLM:
+    available = False
+
+
 # ── Seed helper ───────────────────────────────────────────────────────────────
 
 async def _seed(session, tool="pega", concept="Assignment shape",
@@ -55,7 +65,7 @@ async def _seed(session, tool="pega", concept="Assignment shape",
         confidence=confidence,
     )
     session.add(c)
-    await session.flush()
+    await session.commit()
     return c
 
 
@@ -150,12 +160,12 @@ class TestCompare:
 
 class TestAutodoc:
     async def test_business_guide_template_no_llm(self, session):
-        content = await get_business_guide(session, force=True)
+        content = await get_business_guide(session, force=True, llm=_NoLLM())
         assert "Velaris" in content   # rebrand 2026-05-17
         assert "Business Guide" in content
 
     async def test_dev_guide_template_no_llm(self, session):
-        content = await get_dev_guide(session, force=True)
+        content = await get_dev_guide(session, force=True, llm=_NoLLM())
         assert "Developer Guide" in content
         assert "FastAPI" in content or "API" in content
 
@@ -170,7 +180,7 @@ class TestAutodoc:
     async def test_staleness_detected_on_node_count_change(self, session):
         # Save doc with node_count=0
         session.add(GeneratedDocModel(doc_type="dev_guide", content="old", node_count=999))
-        await session.flush()
+        await session.commit()
         stale = await _is_stale(session, "dev_guide")
         assert stale is True
 
@@ -180,7 +190,7 @@ class TestAutodoc:
             name="Test Process", version="1.0",
             definition_json={"stages": [{"id": "s1", "name": "Start", "steps": []}]},
         ))
-        await session.flush()
+        await session.commit()
         await sync_graph(session)
         content = await get_dev_guide(session, force=True)
         assert len(content) > 100
@@ -243,7 +253,14 @@ class TestPolyglotAPI:
         assert r.status_code == 200
         assert "answer" in r.json()
 
-    async def test_business_guide_endpoint(self, client: AsyncClient, session):
+    async def test_business_guide_endpoint(self, client: AsyncClient, session, monkeypatch):
+        # The endpoint auto-discovers an LLM backend, so pin it to the template
+        # path — otherwise this asserts against generated prose on any box with
+        # a model server running. autodoc imports the factory at call time, so
+        # patching the factory attribute is what takes effect.
+        monkeypatch.setattr(
+            "case_service.hxnexus.factory.get_llm_backend", lambda *a, **k: _NoLLM()
+        )
         _override()
         try:
             r = await client.get("/api/v1/hxnexus/docs/business")

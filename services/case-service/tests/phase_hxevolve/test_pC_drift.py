@@ -37,7 +37,7 @@ async def _mk_merged_changes(session, ct, n: int) -> None:
                                 branch_type="artifact", artifact_type="case_type",
                                 artifact_id=str(ct.id), status="merged")
         session.add(b)
-        await session.flush()
+        await session.commit()
         session.add(HxEvolveInsightModel(
             tenant_id=TENANT, case_type_id=ct.id, signal={"kind": "bottleneck"},
             proposal={}, proposal_kind="sla_duration", status="staged",

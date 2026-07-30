@@ -181,7 +181,7 @@ async def test_sensitivity_override_tightens_only(session):
     ct_id = uuid.uuid4()
     ns = VariableNamespaceModel(name="crm", sensitivity="internal", owner_type="platform")
     session.add(ns)
-    await session.flush()
+    await session.commit()
     session.add(CaseTypeVariableModel(case_type_id=ct_id, namespace_id=ns.id,
                                       full_key="crm.email", name="email", var_type="str",
                                       sensitivity_override="pii"))

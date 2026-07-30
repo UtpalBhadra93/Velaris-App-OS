@@ -190,7 +190,7 @@ class TestGuestInvites:
 
     async def test_customer_invite_pins_customer_identity(self, client, session, livekit_cfg):
         t = TenantModel(slug="default", name="Default", settings={})
-        session.add(t); await session.flush()
+        session.add(t); await session.commit()
         cust = PortalCustomerModel(tenant_id=t.id, primary_email="c@example.com",
                                    display_name="Cust Omer")
         session.add(cust); await session.commit()
@@ -202,7 +202,7 @@ class TestGuestInvites:
 
     async def test_cross_tenant_customer_rejected(self, client, session, livekit_cfg):
         other = TenantModel(slug="other", name="Other", settings={})
-        session.add(other); await session.flush()
+        session.add(other); await session.commit()
         cust = PortalCustomerModel(tenant_id=other.id, primary_email="x@example.com",
                                    display_name="Not Yours")
         session.add(cust); await session.commit()

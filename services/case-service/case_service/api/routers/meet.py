@@ -30,6 +30,7 @@ from case_service.config import get_settings
 from case_service.db import repository as repo
 from case_service.db.models import CaseSessionModel
 from case_service.db.session import get_session
+from case_service.tenancy.identity import same_tenant
 from case_service.hxnexus.guard import _RateLimiter
 from case_service.meet import livekit
 from case_service.meet import service as meet
@@ -47,7 +48,7 @@ async def _authorized_case(session, user, case_id: str, action: str):
     except ValueError:
         raise HTTPException(404, "Case not found")
     case = await repo.get_case_instance(session, cid)
-    if case is None or (case.tenant_id is not None and str(case.tenant_id) != _tenant(user)):
+    if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
         raise HTTPException(404, "Case not found")
     await hxguard.require_case(session, user, action, cid)
     return case

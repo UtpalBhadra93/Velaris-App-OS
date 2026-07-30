@@ -647,6 +647,18 @@ async def transition_stage(
     # same case-level check the MCP case_advance_stage tool applies
     from case_service import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
+
+    # HxSentinel verify gate (opt-in per tenant): refuse a manual advance while
+    # an open risk hold exists. 409, not a silent no-op, so the operator sees
+    # WHY. Fails OPEN (off/fault -> not blocked); a human clears the hold first.
+    from case_service.sentinel import engine as _risk_engine
+    if await _risk_engine.advance_blocked(session, case_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Stage advance is held by an open HxSentinel risk verification. "
+                   "Clear the hold on the case's risk panel first.",
+        )
+
     prev = case.current_stage_id
     await repo.update_case_instance(
         session, case_id, values={"current_stage_id": body.target_stage_id}
@@ -1095,6 +1107,15 @@ async def _auto_advance_if_complete(
     completed_ids = {c.step_id for c in completed}
     if not required_step_ids.issubset(completed_ids):
         return None  # not all required steps done yet
+
+    # HxSentinel verify gate (opt-in per tenant): an open risk hold blocks the
+    # advance until a human clears it. Fails OPEN — a HxSentinel fault never
+    # wedges the workflow, and it short-circuits with no DB work when off.
+    from case_service.sentinel import engine as _risk_engine
+    if await _risk_engine.advance_blocked(session, case_id):
+        await _audit(session, case_id, "stage_advance_held_by_risk",
+                     new_value={"stage_id": stage_id})
+        return None
 
     # Find the next stage
     current_idx = next((i for i, s in enumerate(stages) if s["id"] == stage_id), -1)

@@ -162,7 +162,7 @@ async def ct(session):
         definition_json={"stages": []},
     )
     session.add(c)
-    await session.flush()
+    await session.commit()
     return c
 
 
@@ -332,7 +332,7 @@ async def test_22_resolve_channels_respects_user_pref(session):
         enabled=True,
     )
     session.add(pref)
-    await session.flush()
+    await session.commit()
 
     channels = await resolve_channels(session, "pref-resolve-user", "case.created")
     assert channels == ["fcm"]
@@ -347,7 +347,7 @@ async def test_23_resolve_channels_disabled_returns_empty(session):
         enabled=False,
     )
     session.add(pref)
-    await session.flush()
+    await session.commit()
 
     channels = await resolve_channels(session, "disabled-user", "case.closed")
     assert channels == []
@@ -369,7 +369,7 @@ async def test_24_case_type_override_takes_priority(session, ct):
     )
     session.add(pref)
     session.add(override)
-    await session.flush()
+    await session.commit()
 
     channels = await resolve_channels(session, "override-user", "case.assigned", ct.id)
     assert channels == ["webpush"]   # override wins
@@ -385,7 +385,7 @@ async def test_25_send_to_user_marks_stale_token_inactive(session):
         is_active=True,
     )
     session.add(device)
-    await session.flush()
+    await session.commit()
 
     mock_channel = MagicMock()
     mock_channel.channel_name = "fcm"

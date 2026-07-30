@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { VoiceInput, appendTranscript } from "@shared/components";
 
 const API = "/api/v1/analytics";
 
@@ -320,6 +321,8 @@ function QueryTab() {
       <form onSubmit={handleQuery} style={{ display: "flex", gap: 10, marginBottom: 16 }}>
         <input style={{ ...S.input, flex: 1 }} value={question} onChange={e => setQuestion(e.target.value)}
                placeholder="e.g. Show me SLA breach rate for the last 30 days" required />
+        <VoiceInput size={34} disabled={loading}
+                    onText={t => setQuestion(q => appendTranscript(q, t))} />
         <button type="submit" disabled={loading} style={{ ...S.btn, ...S.btnP, flexShrink: 0 }}>
           {loading ? "Thinking…" : "▶ Ask"}
         </button>

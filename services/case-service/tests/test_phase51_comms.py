@@ -21,7 +21,7 @@ async def _reg_twilio(session: AsyncSession, tenant_id: str = "t1") -> Connector
         credentials=encrypt_credentials({"account_sid": "ACtest", "auth_token": "token"}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _reg_slack(session: AsyncSession, tenant_id: str = "t1") -> ConnectorRegistryModel:
@@ -31,7 +31,7 @@ async def _reg_slack(session: AsyncSession, tenant_id: str = "t1") -> ConnectorR
         credentials=encrypt_credentials({"webhook_url": "https://hooks.slack.com/test"}),
         tenant_id=tenant_id, enabled=True,
     )
-    session.add(row); await session.flush(); return row
+    session.add(row); await session.commit(); return row
 
 
 async def _sms_case(client: AsyncClient) -> dict:

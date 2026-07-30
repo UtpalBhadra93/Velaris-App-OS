@@ -30,7 +30,7 @@ async def tenant(session) -> TenantModel:
         name="ACME Corp",
         settings={"portal": {"enabled": True, "welcome_text": "Hello", "brand_color": "#ff0000", "logo_text": "ACME"}},
     )
-    session.add(t); await session.flush(); return t
+    session.add(t); await session.commit(); return t
 
 
 @pytest_asyncio.fixture
@@ -40,7 +40,7 @@ async def portal_ct(session) -> CaseTypeModel:
         definition_json={"stages": []},
         portal_enabled=True,
     )
-    session.add(ct); await session.flush(); return ct
+    session.add(ct); await session.commit(); return ct
 
 
 @pytest_asyncio.fixture
@@ -56,7 +56,7 @@ async def submitted_case(session, tenant, portal_ct) -> CaseInstanceModel:
         extra_metadata={"portal_slug": "acme"},
         created_by="portal:jane@example.com",
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 # ── 1. Portal config (public) ─────────────────────────────────────
@@ -79,7 +79,7 @@ async def test_02_get_portal_unknown_slug(client: AsyncClient):
 async def test_03_get_portal_disabled(client: AsyncClient, session):
     t = TenantModel(slug="disabled-co", name="Disabled Co",
                     settings={"portal": {"enabled": False}})
-    session.add(t); await session.flush()
+    session.add(t); await session.commit()
     resp = await client.get("/api/v1/portal/disabled-co")
     assert resp.status_code == 403
 
@@ -88,7 +88,7 @@ async def test_04_portal_only_shows_portal_enabled_case_types(client: AsyncClien
     # Add a non-portal case type
     ct2 = CaseTypeModel(name="Internal Only", version="1.0.0",
                         definition_json={"stages": []}, portal_enabled=False)
-    session.add(ct2); await session.flush()
+    session.add(ct2); await session.commit()
     resp = await client.get("/api/v1/portal/acme")
     assert resp.status_code == 200
     names = [ct["name"] for ct in resp.json()["case_types"]]
@@ -98,7 +98,7 @@ async def test_04_portal_only_shows_portal_enabled_case_types(client: AsyncClien
 async def test_05_portal_no_case_types_returns_empty_list(client: AsyncClient, session):
     t = TenantModel(slug="empty-co", name="Empty Co",
                     settings={"portal": {"enabled": True}})
-    session.add(t); await session.flush()
+    session.add(t); await session.commit()
     resp = await client.get("/api/v1/portal/empty-co")
     assert resp.status_code == 200
     assert resp.json()["case_types"] == []
@@ -133,7 +133,7 @@ async def test_07_submit_returns_unique_token_each_time(client: AsyncClient, ten
 async def test_08_submit_to_disabled_portal_rejected(client: AsyncClient, session, portal_ct):
     t = TenantModel(slug="off-co", name="Off Co",
                     settings={"portal": {"enabled": False}})
-    session.add(t); await session.flush()
+    session.add(t); await session.commit()
     resp = await client.post("/api/v1/portal/off-co/submit", json={
         "case_type_id": str(portal_ct.id), "submitter_name": "X",
         "submitter_email": "x@x.com", "subject": "S", "description": "D",
@@ -144,7 +144,7 @@ async def test_08_submit_to_disabled_portal_rejected(client: AsyncClient, sessio
 async def test_09_submit_non_portal_case_type_rejected(client: AsyncClient, tenant, session):
     ct2 = CaseTypeModel(name="Restricted", version="1.0.0",
                         definition_json={"stages": []}, portal_enabled=False)
-    session.add(ct2); await session.flush()
+    session.add(ct2); await session.commit()
     resp = await client.post("/api/v1/portal/acme/submit", json={
         "case_type_id": str(ct2.id), "submitter_name": "X",
         "submitter_email": "x@x.com", "subject": "S", "description": "D",
@@ -179,7 +179,7 @@ async def test_12_track_invalid_token_returns_404(client: AsyncClient, tenant):
 
 async def test_13_track_shows_resolved_status(client: AsyncClient, submitted_case, session):
     submitted_case.status = "resolved"
-    await session.flush()
+    await session.commit()
     token = str(submitted_case.portal_tracking_token)
     resp = await client.get(f"/api/v1/portal/acme/track/{token}")
     assert resp.status_code == 200
@@ -213,7 +213,7 @@ async def test_15_upload_with_invalid_token_rejected(client: AsyncClient, tenant
 
 async def test_16_upload_to_closed_case_rejected(client: AsyncClient, submitted_case, session):
     submitted_case.status = "closed"
-    await session.flush()
+    await session.commit()
     token = str(submitted_case.portal_tracking_token)
     with patch("case_service.api.routers.portal.get_storage_backend"):
         resp = await client.post(
@@ -236,7 +236,7 @@ async def test_17_admin_list_portal_tenants(client: AsyncClient, tenant):
 
 async def test_18_admin_enable_portal(client: AsyncClient, session):
     t = TenantModel(slug="new-co", name="New Co", settings={})
-    session.add(t); await session.flush()
+    session.add(t); await session.commit()
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_admin()
     resp = await client.patch("/api/v1/portal-admin/tenants/new-co",

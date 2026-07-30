@@ -47,14 +47,14 @@ def _mock_backend(complete_return: str = "", embed_return: list | None = None):
 async def ct(session):
     c = CaseTypeModel(name="P30-Type", version="1.0",
                       lifecycle_process_id="lp-p30", definition_json={"stages": []})
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 @pytest_asyncio.fixture
 async def case(session, ct):
     c = CaseInstanceModel(case_type_id=ct.id, case_type_version="1.0",
                           status="open", priority="high", data={"subject": "Test case"})
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 # ── Chunker unit tests ────────────────────────────────────────────────

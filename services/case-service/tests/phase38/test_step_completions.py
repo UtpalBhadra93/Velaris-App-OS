@@ -79,7 +79,7 @@ async def case_no_stages(session) -> CaseInstanceModel:
         name="No Stages", version="1.0.0",
         definition_json={"stages": []}, default_priority="medium",
     )
-    session.add(ct); await session.flush()
+    session.add(ct); await session.commit()
     c = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0",
         status="open", priority="medium", data={}, created_by="w",
@@ -287,12 +287,12 @@ async def test_auto_advance_single_required_step(client: AsyncClient, session):
         ]},
         default_priority="medium",
     )
-    session.add(ct); await session.flush()
+    session.add(ct); await session.commit()
     c = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0", status="open",
         priority="medium", data={}, current_stage_id="s1", created_by="w",
     )
-    session.add(c); await session.flush()
+    session.add(c); await session.commit()
 
     app.dependency_overrides[get_current_user] = lambda: _user()
     r = await client.post(f"/api/v1/cases/{c.id}/steps/only/complete", json={
@@ -316,12 +316,12 @@ async def test_no_auto_advance_optional_steps_not_counted(client: AsyncClient, s
         ]},
         default_priority="medium",
     )
-    session.add(ct); await session.flush()
+    session.add(ct); await session.commit()
     c = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0", status="open",
         priority="medium", data={}, current_stage_id="s1", created_by="w",
     )
-    session.add(c); await session.flush()
+    session.add(c); await session.commit()
 
     app.dependency_overrides[get_current_user] = lambda: _user()
     # Only complete required step — should still auto-advance
@@ -372,12 +372,12 @@ async def test_automated_step_not_counted_for_advance(client: AsyncClient, sessi
         ]},
         default_priority="medium",
     )
-    session.add(ct); await session.flush()
+    session.add(ct); await session.commit()
     c = CaseInstanceModel(
         case_type_id=ct.id, case_type_version="1.0.0", status="open",
         priority="medium", data={}, current_stage_id="s1", created_by="w",
     )
-    session.add(c); await session.flush()
+    session.add(c); await session.commit()
 
     app.dependency_overrides[get_current_user] = lambda: _user()
     # Completing only the manual step should auto-advance (automated excluded from count)

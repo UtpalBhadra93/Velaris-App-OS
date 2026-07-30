@@ -30,7 +30,7 @@ async def seeded_case_type(session):
         definition_json={"stages": []},
     )
     session.add(ct)
-    await session.flush()
+    await session.commit()
     return ct
 
 
@@ -41,7 +41,7 @@ async def seeded_case(session, seeded_case_type):
         status="new", priority="medium", data={},
     )
     session.add(case)
-    await session.flush()
+    await session.commit()
     return case
 
 
@@ -54,7 +54,7 @@ async def active_assignment(session, seeded_case):
         status="active",
     )
     session.add(a)
-    await session.flush()
+    await session.commit()
     return a
 
 
@@ -134,7 +134,7 @@ async def test_07_resolve_case_type_tree_wins_over_global(session, seeded_case_t
         is_active=True,
     )
     session.add(global_tree); session.add(ct_tree)
-    await session.flush()
+    await session.commit()
 
     resolved = await resolve_escalation_tree(session, seeded_case_type.id)
     assert resolved is not None
@@ -148,7 +148,7 @@ async def test_08_resolve_falls_back_to_global(session, seeded_case_type):
         tree_json={"levels": []}, is_active=True,
     )
     session.add(global_tree)
-    await session.flush()
+    await session.commit()
 
     resolved = await resolve_escalation_tree(session, seeded_case_type.id)
     assert resolved is not None
@@ -162,7 +162,7 @@ async def test_09_inactive_trees_ignored(session, seeded_case_type):
         tree_json={"levels": []}, is_active=False,
     )
     session.add(inactive)
-    await session.flush()
+    await session.commit()
 
     resolved = await resolve_escalation_tree(session, seeded_case_type.id)
     assert resolved is None
@@ -179,7 +179,7 @@ async def test_10_start_sla_v2_snapshots_tree(session, seeded_case, seeded_case_
         ]}, is_active=True,
     )
     session.add(tree)
-    await session.flush()
+    await session.commit()
 
     policy = {"id": "policy-1", "goal_duration": "PT4H", "deadline_duration": "PT24H"}
     sla = await start_sla_v2(
@@ -216,7 +216,7 @@ async def test_12_apply_level_reassigns_active_assignments(
         escalation_history=[], pause_reasons_log=[], escalation_level=0,
         escalation_tree_snapshot={},
     )
-    session.add(sla); await session.flush()
+    session.add(sla); await session.commit()
 
     level_entry = {
         "level": 1, "name": "escalate-to-managers",
@@ -244,7 +244,7 @@ async def test_13_apply_level_records_failures(session, seeded_case):
         escalation_history=[], pause_reasons_log=[], escalation_level=0,
         escalation_tree_snapshot={},
     )
-    session.add(sla); await session.flush()
+    session.add(sla); await session.commit()
 
     level_entry = {
         "level": 1,
@@ -271,7 +271,7 @@ async def test_14_pause_reason_is_logged(session, seeded_case):
         pause_reasons_log=[], escalation_history=[], escalation_level=0,
         escalation_tree_snapshot={},
     )
-    session.add(sla); await session.flush()
+    session.add(sla); await session.commit()
 
     await record_pause_with_reason(session, sla, "waiting on customer", actor_id="alice")
     assert sla.pause_reason == "waiting on customer"
@@ -289,7 +289,7 @@ async def test_15_resume_clears_reason_and_logs(session, seeded_case):
         pause_reason="waiting", pause_reasons_log=[{"type": "pause", "reason": "waiting"}],
         escalation_history=[], escalation_level=0, escalation_tree_snapshot={},
     )
-    session.add(sla); await session.flush()
+    session.add(sla); await session.commit()
 
     await record_resume(session, sla, actor_id="bob")
     assert sla.pause_reason is None

@@ -39,8 +39,11 @@ def _utcnow() -> datetime:
 async def tenant_kyc_enabled(session: AsyncSession, tenant_slug: str | None) -> bool:
     """Per-tenant opt-in, default OFF — KYC analysis is a policy decision
     even though every model runs locally."""
+    from case_service.tenancy.identity import tenant_slug as canonical_slug
+
+    slug = await canonical_slug(session, tenant_slug)
     tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == (tenant_slug or "default"))
+        select(TenantModel).where(TenantModel.slug == slug)
     )).scalars().first()
     return bool(((tenant.settings or {}).get("meet", {}) if tenant else {}).get("kyc", False))
 
@@ -48,8 +51,11 @@ async def tenant_kyc_enabled(session: AsyncSession, tenant_slug: str | None) -> 
 async def tenant_kyc_biometrics_enabled(session: AsyncSession, tenant_slug: str | None) -> bool:
     """P4d — a SECOND opt-in on top of `kyc`, default OFF: biometric matching
     is GDPR Art. 9 territory and never rides along implicitly."""
+    from case_service.tenancy.identity import tenant_slug as canonical_slug
+
+    slug = await canonical_slug(session, tenant_slug)
     tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == (tenant_slug or "default"))
+        select(TenantModel).where(TenantModel.slug == slug)
     )).scalars().first()
     meet = (tenant.settings or {}).get("meet", {}) if tenant else {}
     return bool(meet.get("kyc", False)) and bool(meet.get("kyc_biometrics", False))
@@ -518,8 +524,11 @@ async def run_kyc_job(session_id: uuid.UUID) -> None:
 async def tenant_review_threshold(session: AsyncSession, tenant_slug: str | None) -> float:
     """Per-tenant score-above-which-review-is-recommended — a bank and a
     helpdesk have different risk appetites."""
+    from case_service.tenancy.identity import tenant_slug as canonical_slug
+
+    slug = await canonical_slug(session, tenant_slug)
     tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == (tenant_slug or "default"))
+        select(TenantModel).where(TenantModel.slug == slug)
     )).scalars().first()
     raw = ((tenant.settings or {}).get("meet", {}) if tenant else {}).get("kyc_review_threshold", 0.5)
     try:

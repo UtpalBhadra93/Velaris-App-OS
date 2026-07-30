@@ -79,7 +79,7 @@ async def case_type(session) -> CaseTypeModel:
         definition_json=CASE_TYPE_DEF, default_priority="medium",
     )
     session.add(ct)
-    await session.flush()
+    await session.commit()
     return ct
 
 
@@ -93,7 +93,7 @@ async def case_inst(session, case_type) -> CaseInstanceModel:
         current_stage_id=STAGE_ID,
     )
     session.add(ci)
-    await session.flush()
+    await session.commit()
     return ci
 
 
@@ -110,7 +110,7 @@ class TestEmitter:
             actor_user_id="alice",
             session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.event_type == "stage_transition")
         )).scalar_one()
@@ -165,7 +165,7 @@ class TestEmitter:
             "step_complete", {"step_id": STEP_ID},
             case_id=str(case_inst.id), tenant_id="t1", session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.event_type == "step_complete")
         )).scalar_one()
@@ -177,7 +177,7 @@ class TestEmitter:
             "error", {"msg": "bad id"}, case_id="not-a-uuid",
             tenant_id="t1", session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.event_type == "error")
         )).scalar_one()
@@ -240,7 +240,7 @@ class TestListEvents:
             actor_user_id="alice",
             payload={"from_stage": "intake", "to_stage": "review"},
         ))
-        await session.flush()
+        await session.commit()
 
         _override(_admin())
         try:
@@ -264,7 +264,7 @@ class TestListEvents:
                 case_id=case_inst.id, tenant_id="t1",
                 event_type=et, actor_user_id="u1", payload={},
             ))
-        await session.flush()
+        await session.commit()
 
         _override(_admin())
         try:
@@ -279,7 +279,7 @@ class TestListEvents:
             case_id=case_inst.id, tenant_id="t1",
             event_type="ui_interaction", actor_user_id="bob", payload={},
         ))
-        await session.flush()
+        await session.commit()
 
         _override(_admin())
         try:
@@ -299,7 +299,7 @@ class TestReplay:
                 case_id=case_inst.id, tenant_id="t1",
                 event_type=et, actor_user_id="u1", payload={},
             ))
-        await session.flush()
+        await session.commit()
 
         _override(_admin())
         try:
@@ -338,7 +338,7 @@ class TestCasesRouterEmits:
             case_id=case_inst.id, tenant_id="t1",
             event_type="lock_acquire", actor_user_id="u1", payload={},
         ))
-        await session.flush()
+        await session.commit()
 
         _override(_admin())
         try:
@@ -355,7 +355,7 @@ class TestCasesRouterEmits:
             case_id=case_inst.id, tenant_id="t1",
             actor_user_id="alice", latency_ms=342, session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.event_type == "ai_invoke")
         )).scalar_one()
@@ -369,7 +369,7 @@ class TestCasesRouterEmits:
             case_id=case_inst.id, tenant_id="t1",
             session_id=sid, session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.session_id == sid)
         )).scalar_one()
@@ -381,7 +381,7 @@ class TestCasesRouterEmits:
             "queue_route", {"queue": "claims-q", "case_count": 7},
             tenant_id="t1", session=session,
         )
-        await session.flush()
+        await session.commit()
         row = (await session.execute(
             select(TraceEventModel).where(TraceEventModel.event_type == "queue_route")
         )).scalar_one()

@@ -61,10 +61,10 @@ async def installed_with_data(session):
     core = TestSuiteModel(name="Platform Smoke", suite_type="platform",
                           source="builtin", definition=[], version="1.0.0")
     session.add_all([inst, gen, core])
-    await session.flush()
+    await session.commit()
     run = TestRunModel(suite_id=gen.id, suite_name="gen", status="passed", tenant_id="default")
     session.add(run)
-    await session.flush()
+    await session.commit()
     session.add(TestResultModel(run_id=run.id, test_id="t1", status="passed"))
     await session.commit()
     return {"install_id": str(inst.id), "gen_id": gen.id, "core_id": core.id}

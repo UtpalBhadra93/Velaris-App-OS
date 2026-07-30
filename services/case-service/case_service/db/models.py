@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    SmallInteger,
     Boolean,
     Date,
     DateTime,
@@ -123,6 +124,27 @@ class PortableArray(TypeDecorator):
         return value
 
 
+class MicroDateTime(TypeDecorator):
+    """Timezone-aware timestamp that keeps MICROSECOND precision on every backend.
+
+    PostgreSQL ``TIMESTAMPTZ`` is already microsecond, but MySQL/MariaDB ``DATETIME``
+    defaults to SECOND precision. That makes "latest row wins" ordering
+    (``ORDER BY created_at DESC``) non-deterministic for append-only rows written in
+    the same second — the tiebreak then falls to a random UUID id. Emitting
+    ``DATETIME(6)`` on MySQL/MariaDB restores the sub-second ordering the append-only
+    sentinel tables (case_outcomes, case_risk_feedback) depend on. SQLite keeps its
+    native (microsecond) datetime handling.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect) -> TypeEngine:
+        if dialect.name in ("mysql", "mariadb"):
+            return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+        return dialect.type_descriptor(DateTime(timezone=True))
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -171,7 +193,7 @@ class CaseTypeModel(Base):
     )
     portal_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # P33
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -317,7 +339,7 @@ class CaseInstanceModel(Base):
         String(255), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -385,7 +407,7 @@ class CaseAssignmentModel(Base):
         String(20), nullable=False, default="active"
     )
     assigned_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -447,7 +469,7 @@ class CaseRelationshipModel(Base):
     )
     required: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
 
     source_case: Mapped[CaseInstanceModel] = relationship(
@@ -477,7 +499,7 @@ class CaseSLAInstanceModel(Base):
         String(20), nullable=False, default="on_track"
     )
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+        MicroDateTime(), nullable=False
     )
     goal_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -532,7 +554,7 @@ class CaseAuditLogModel(Base):
     )
     actor_type: Mapped[str] = mapped_column(String(20), default="user")
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     details: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     previous_value: Mapped[dict | None] = mapped_column(
@@ -572,7 +594,7 @@ class WorkQueueModel(Base):
         Integer, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -595,7 +617,7 @@ class DataModelModel(Base):
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     definition_json: Mapped[dict] = mapped_column(PortableJSON(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -618,7 +640,7 @@ class FormDefinitionModel(Base):
     )
     definition_json: Mapped[dict] = mapped_column(PortableJSON(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -643,7 +665,7 @@ class RuleDefinitionModel(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -665,7 +687,7 @@ class BusinessCalendarModel(Base):
     holidays: Mapped[list] = mapped_column(PortableJSON(), default=list)
     description: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        MicroDateTime(), default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -688,7 +710,7 @@ class WebhookSubscriptionModel(Base):
     headers: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=3)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -709,7 +731,7 @@ class WebhookDeliveryModel(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseEventLogModel(Base):
@@ -733,7 +755,7 @@ class CaseEventLogModel(Base):
     step_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    timestamp: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     outcome: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -755,7 +777,7 @@ class MigrationScanModel(Base):
     artifacts_found: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     scan_report: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -771,7 +793,7 @@ class TenantModel(Base):
     settings: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     max_cases: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_users: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -786,7 +808,7 @@ class TenantMembershipModel(Base):
     )
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), default="member")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class TenantDekModel(Base):
@@ -804,7 +826,7 @@ class TenantDekModel(Base):
     key_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     wrapped_dek: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
@@ -827,7 +849,7 @@ class TestSuiteModel(Base):
     # AI scenarios are stale vs the current case-type definition/rules/integrations
     # (set by the regen hooks; cleared when AI scenarios are regenerated). #27 Part B.
     ai_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
@@ -851,7 +873,7 @@ class TestRunModel(Base):
     skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     app_package_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     ephemeral_tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -869,7 +891,7 @@ class TestResultModel(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     step_results: Mapped[list] = mapped_column(PortableJSON(), default=list)
-    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ran_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class ArtifactAnalysisModel(Base):
@@ -894,7 +916,7 @@ class ArtifactAnalysisModel(Base):
     generated_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class SecurityEventModel(Base):
@@ -912,7 +934,7 @@ class SecurityEventModel(Base):
     action: Mapped[str | None] = mapped_column(String(100), nullable=True)
     outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
     details: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    timestamp: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class RetentionPolicyModel(Base):
@@ -926,7 +948,7 @@ class RetentionPolicyModel(Base):
     action: Mapped[str] = mapped_column(String(20), default="archive")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class GDPRRequestModel(Base):
@@ -941,7 +963,7 @@ class GDPRRequestModel(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MigrationProjectModel(Base):
@@ -962,7 +984,7 @@ class MigrationProjectModel(Base):
     roadmap: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     dependencies: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     settings: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -991,7 +1013,7 @@ class MigrationTaskModel(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 # >>> P23 observability models
@@ -1007,7 +1029,7 @@ class TelemetryEventModel(Base):
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, index=True,
+        MicroDateTime(), nullable=False, default=_utcnow, index=True,
     )
 
 
@@ -1054,7 +1076,7 @@ class DocumentModel(Base):
     portal_visible: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     portal_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # 'staff' | 'customer'
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False,
     )
@@ -1081,7 +1103,7 @@ class DocumentVersionModel(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     uploaded_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow, nullable=False)
 
     document: Mapped["DocumentModel"] = relationship(
         "DocumentModel", back_populates="versions",
@@ -1114,7 +1136,7 @@ class EscalationTreeModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False,
+        MicroDateTime(), default=_utcnow, nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False,
@@ -1148,7 +1170,7 @@ class UserDirectoryModel(Base):
     metadata_json: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     # P37 — persists the operator's active access group across sessions
     current_access_group_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1177,7 +1199,7 @@ class AuditChainModel(Base):
     prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     sealed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False, index=True,
+        MicroDateTime(), default=_utcnow, nullable=False, index=True,
     )
 
 
@@ -1201,7 +1223,7 @@ class AuditAnchorModel(Base):
     tsa_url: Mapped[str] = mapped_column(String(512), nullable=False)
     tsr_der: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     anchored_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False, index=True,
+        MicroDateTime(), default=_utcnow, nullable=False, index=True,
     )
 
 
@@ -1228,7 +1250,7 @@ class DataLineageEventModel(Base):
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False, default="api")
     at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False,
+        MicroDateTime(), default=_utcnow, nullable=False,
     )
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -1289,7 +1311,7 @@ class EmailAccountModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default_outbound: Mapped[bool] = mapped_column(Boolean, default=False)
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1316,7 +1338,7 @@ class EmailTemplateModel(Base):
     )
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1353,7 +1375,7 @@ class EmailMessageModel(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 # <<< P25 email
 
@@ -1376,7 +1398,7 @@ class DeviceTokenModel(Base):
     label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
@@ -1433,7 +1455,7 @@ class NotificationLogModel(Base):
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)        # delivered | failed
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    sent_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 # <<< P27 push notifications
 
 
@@ -1454,7 +1476,7 @@ class DocumentChunkModel(Base):
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list] = mapped_column(PortableJSON(), default=list)  # list[float]
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CopilotConversationModel(Base):
@@ -1469,7 +1491,7 @@ class CopilotConversationModel(Base):
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     case_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1488,7 +1510,7 @@ class CopilotMessageModel(Base):
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)   # user | assistant
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 # <<< P30 HxNexus AI Copilot
 
 
@@ -1518,7 +1540,7 @@ class PortalModel(Base):
     theme: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)  # NULL = system-wide
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1547,7 +1569,7 @@ class AccessRoleModel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     privileges: Mapped[list] = mapped_column(PortableJSON(), default=list)
     tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)  # NULL = built-in
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1578,7 +1600,7 @@ class AccessGroupModel(Base):
     allowed_queue_ids: Mapped[list] = mapped_column(PortableJSON(), default=lambda: ["*"])
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
@@ -1610,7 +1632,7 @@ class OperatorAccessGroupModel(Base):
     )
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     assigned_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    assigned_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
     access_group: Mapped[AccessGroupModel] = relationship(back_populates="members")
 
@@ -1676,7 +1698,7 @@ class TraceEventModel(Base):
     actor_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     payload: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False,
+        MicroDateTime(), default=_utcnow, nullable=False,
     )
     session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1714,7 +1736,7 @@ class GraphNodeModel(Base):
     community_id:   Mapped[int | None]     = mapped_column(Integer, nullable=True)
     tenant_id:      Mapped[str | None]     = mapped_column(String(255), nullable=True)
     last_synced_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
-    created_at:     Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
     outgoing_edges: Mapped[list["GraphEdgeModel"]] = relationship(
         "GraphEdgeModel", foreign_keys="GraphEdgeModel.from_node_id",
@@ -1747,7 +1769,7 @@ class GraphEdgeModel(Base):
     edge_type:    Mapped[str]       = mapped_column(String(50), nullable=False)
     weight:       Mapped[float]     = mapped_column(Float, nullable=False, default=1.0)
     properties:   Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
-    created_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
     from_node: Mapped["GraphNodeModel"] = relationship(
         "GraphNodeModel", foreign_keys=[from_node_id], back_populates="outgoing_edges",
@@ -1780,7 +1802,7 @@ class BpmConceptModel(Base):
     example:         Mapped[str | None]    = mapped_column(Text,        nullable=True)
     confidence:      Mapped[str]           = mapped_column(String(10),  nullable=False, default="exact")
     notes:           Mapped[str | None]    = mapped_column(Text,        nullable=True)
-    created_at:      Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class GeneratedDocModel(Base):
@@ -1817,7 +1839,7 @@ class AppPackageModel(Base):
     manifest:    Mapped[dict]          = mapped_column(PortableJSON(), default=dict)
     status:      Mapped[str]           = mapped_column(String(20), nullable=False, default="draft")
     created_by:  Mapped[str | None]    = mapped_column(String(255), nullable=True)
-    created_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
     deployments: Mapped[list["AppDeploymentModel"]] = relationship(
         "AppDeploymentModel", back_populates="package", cascade="all, delete-orphan",
@@ -1841,7 +1863,7 @@ class AppDeploymentModel(Base):
     environment:      Mapped[str]       = mapped_column(String(50),  nullable=False)
     status:           Mapped[str]       = mapped_column(String(20),  nullable=False, default="deployed")
     deployed_by:      Mapped[str | None]= mapped_column(String(255), nullable=True)
-    deployed_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    deployed_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     notes:            Mapped[str | None]= mapped_column(Text, nullable=True)
     config_overrides: Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
 
@@ -1873,7 +1895,7 @@ class ImportJobModel(Base):
     report:       Mapped[dict]          = mapped_column(PortableJSON(), default=dict)
     error:        Mapped[str | None]    = mapped_column(Text,        nullable=True)
     created_by:   Mapped[str | None]    = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 # <<< P44 BPM Importer
@@ -1906,7 +1928,7 @@ class ConnectorRegistryModel(Base):
     credential_expires_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     credentials_updated_at:Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True, default=_utcnow)
     created_by:            Mapped[str | None]    = mapped_column(String(255), nullable=True)
-    created_at:            Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:            Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:            Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     calls: Mapped[list["IntegrationCallModel"]] = relationship(
@@ -1939,7 +1961,7 @@ class IntegrationCallModel(Base):
     latency_ms:   Mapped[int | None]    = mapped_column(Integer,     nullable=True)
     retry_count:  Mapped[int]           = mapped_column(Integer,     default=0)
     next_retry_at:Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped["ConnectorRegistryModel | None"] = relationship(
@@ -1967,7 +1989,7 @@ class DeadLetterQueueModel(Base):
     max_retries:   Mapped[int]           = mapped_column(Integer,     default=3)
     next_retry_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution:    Mapped[str | None]    = mapped_column(String(20),  nullable=True)
-    created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     resolved_at:   Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped["ConnectorRegistryModel | None"] = relationship(
@@ -2003,7 +2025,7 @@ class PaymentRequestModel(Base):
     status:       Mapped[str]            = mapped_column(String(50),   nullable=False, default="pending")
     description:  Mapped[str | None]     = mapped_column(Text,         nullable=True)
     payment_meta: Mapped[dict]           = mapped_column("metadata", PortableJSON(), default=dict)
-    created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     completed_at: Mapped[datetime|None]  = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -2025,7 +2047,7 @@ class PaymentWebhookEventModel(Base):
     verified:     Mapped[bool]         = mapped_column(Boolean,      default=False)
     processed:    Mapped[bool]         = mapped_column(Boolean,      default=False)
     error:        Mapped[str | None]   = mapped_column(Text,         nullable=True)
-    received_at:  Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow)
+    received_at:  Mapped[datetime]     = mapped_column(MicroDateTime(), default=_utcnow)
 
 class PaymentDisbursementModel(Base):
     """An outgoing payment disbursed to a customer from a case step."""
@@ -2053,7 +2075,7 @@ class PaymentDisbursementModel(Base):
     disbursement_executed:    Mapped[bool]          = mapped_column(Boolean, default=False, nullable=False)
     disbursement_executed_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at:               Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
-    created_at:               Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:               Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
 # <<< P48 HxConnect Payments
 
@@ -2082,7 +2104,7 @@ class IdentityVerificationModel(Base):
     status:           Mapped[str]          = mapped_column(String(50),   nullable=False, default="pending")
     result:           Mapped[str|None]     = mapped_column(String(50),   nullable=True)
     result_hash:      Mapped[str|None]     = mapped_column(Text,         nullable=True)
-    created_at:       Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]     = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:       Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     completed_at:     Mapped[datetime|None]= mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -2110,7 +2132,7 @@ class ESignRequestModel(Base):
     signer_name:   Mapped[str|None]     = mapped_column(Text,         nullable=True)
     status:        Mapped[str]          = mapped_column(String(50),   nullable=False, default="pending")
     signed_at:     Mapped[datetime|None]= mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:    Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]     = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:    Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 # <<< P49 HxConnect KYC & E-Sign
@@ -2137,7 +2159,7 @@ class CrmSyncRecordModel(Base):
     status:         Mapped[str]          = mapped_column(String(50),   nullable=False, default="pending")
     sync_data:      Mapped[dict]         = mapped_column(PortableJSON(), default=dict)
     error:          Mapped[str|None]     = mapped_column(Text,         nullable=True)
-    created_at:     Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]     = mapped_column(MicroDateTime(), default=_utcnow)
     synced_at:      Mapped[datetime|None]= mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2163,7 +2185,7 @@ class InvoiceRecordModel(Base):
     status:         Mapped[str]          = mapped_column(String(50),   nullable=False, default="pending")
     contact_name:   Mapped[str|None]     = mapped_column(Text,         nullable=True)
     line_items:     Mapped[list]         = mapped_column(PortableJSON(), default=list)
-    created_at:     Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]     = mapped_column(MicroDateTime(), default=_utcnow)
     issued_at:      Mapped[datetime|None]= mapped_column(DateTime(timezone=True), nullable=True)
 
 # <<< P50 HxConnect CRM & Accounting
@@ -2190,7 +2212,7 @@ class SavedReportModel(Base):
     created_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
     tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_public:   Mapped[bool]       = mapped_column(Boolean,     default=False)
-    created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     subscriptions: Mapped[list["ReportSubscriptionModel"]] = relationship(
@@ -2212,7 +2234,7 @@ class ReportSubscriptionModel(Base):
     enabled:       Mapped[bool]          = mapped_column(Boolean,     default=True)
     last_sent_at:  Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by:    Mapped[str | None]    = mapped_column(String(255), nullable=True)
-    created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
     report: Mapped["SavedReportModel"] = relationship(back_populates="subscriptions")
 
@@ -2239,7 +2261,7 @@ class SyncDestinationModel(Base):
     created_by:         Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_synced_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_sync_status:   Mapped[str | None] = mapped_column(String(20), default="never")
-    created_at:         Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:         Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:         Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     runs:     Mapped[list["SyncRunModel"]]          = relationship(back_populates="destination", cascade="all, delete-orphan")
@@ -2266,7 +2288,7 @@ class SyncRunModel(Base):
     watermark_to:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at:     Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:     Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
     destination: Mapped["SyncDestinationModel"] = relationship(back_populates="runs")
 
@@ -2283,7 +2305,7 @@ class SyncFieldMappingModel(Base):
     dest_column:    Mapped[str]        = mapped_column(String(255), nullable=False)
     transform:      Mapped[str]        = mapped_column(String(30),  nullable=False, default="passthrough")
     pii:            Mapped[bool]       = mapped_column(Boolean, default=False)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     destination: Mapped["SyncDestinationModel"] = relationship(back_populates="mappings")
 
@@ -2299,7 +2321,7 @@ class SyncRedactionRuleModel(Base):
     field_path:     Mapped[str]        = mapped_column(String(255), nullable=False)
     action:         Mapped[str]        = mapped_column(String(10),  nullable=False, default="hash")
     reason:         Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     destination: Mapped["SyncDestinationModel"] = relationship(back_populates="redactions")
 
@@ -2322,7 +2344,7 @@ class RegionModel(Base):
     connection_config: Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
     is_primary:        Mapped[bool]       = mapped_column(Boolean, default=False)
     enabled:           Mapped[bool]       = mapped_column(Boolean, default=True)
-    created_at:        Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:        Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:        Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     sovereignty_rules: Mapped[list["SovereigntyRuleModel"]]      = relationship(back_populates="region", cascade="all, delete-orphan")
@@ -2348,7 +2370,7 @@ class SovereigntyRuleModel(Base):
     regulation:   Mapped[str]        = mapped_column(String(50),  nullable=False, default="GDPR")
     description:  Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     region: Mapped["RegionModel"] = relationship(back_populates="sovereignty_rules")
 
@@ -2367,7 +2389,7 @@ class TenantRegionAssignmentModel(Base):
     region_id:       Mapped[uuid.UUID]      = mapped_column(GUID(), ForeignKey("region_registry.id", ondelete="CASCADE"), nullable=False)
     assignment_type: Mapped[str]            = mapped_column(String(20),  nullable=False, default="primary")
     migrated_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:      Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
     region: Mapped["RegionModel"] = relationship(back_populates="tenant_assignments")
 
@@ -2388,7 +2410,7 @@ class RegionHealthLogModel(Base):
     active_cases:       Mapped[int | None] = mapped_column(Integer, nullable=True)
     replication_lag_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_msg:          Mapped[str | None] = mapped_column(Text, nullable=True)
-    recorded_at:        Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    recorded_at:        Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     region: Mapped["RegionModel"] = relationship(back_populates="health_logs")
 
@@ -2410,7 +2432,7 @@ class RegionAccessLogModel(Base):
     action:      Mapped[str]        = mapped_column(String(50),  nullable=False)
     resource:    Mapped[str | None] = mapped_column(String(255), nullable=True)
     legal_basis: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    recorded_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    recorded_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     region: Mapped["RegionModel"] = relationship(back_populates="access_logs")
 
@@ -2439,7 +2461,7 @@ class SecurityRuleModel(Base):
     enabled:        Mapped[bool]       = mapped_column(Boolean, default=True)
     tenant_id:      Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     incidents: Mapped[list["SecurityIncidentModel"]] = relationship(back_populates="rule")
@@ -2493,7 +2515,7 @@ class ShieldEventModel(Base):
     score:            Mapped[float]      = mapped_column(Float, default=0.0)
     patterns_matched: Mapped[list]       = mapped_column(PortableJSON(), default=list)
     raw_context:      Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
-    recorded_at:      Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    recorded_at:      Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 # <<< P59 HxShield
 
@@ -2518,7 +2540,7 @@ class ProcessDefinitionModel(Base):
     status:       Mapped[str]        = mapped_column(String(20), nullable=False, default="active")
     created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
     tenant_id:    Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:   Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     instances: Mapped[list["ProcessInstanceModel"]] = relationship(back_populates="definition")
@@ -2543,7 +2565,7 @@ class ProcessInstanceModel(Base):
     context:       Mapped[dict]           = mapped_column(PortableJSON(), default=dict)
     error_node:    Mapped[str | None]     = mapped_column(String(255), nullable=True)
     error_message: Mapped[str | None]     = mapped_column(Text, nullable=True)
-    started_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     ended_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tenant_id:     Mapped[str | None]     = mapped_column(String(255), nullable=True)
 
@@ -2570,7 +2592,7 @@ class ProcessCaseBindingModel(Base):
     status:       Mapped[str]            = mapped_column(String(20), nullable=False, default="active")
     stage_id:     Mapped[str | None]     = mapped_column(String(255), nullable=True)
     step_id:      Mapped[str | None]     = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     resolved_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     instance: Mapped["ProcessInstanceModel"] = relationship(back_populates="bindings")
@@ -2595,7 +2617,7 @@ class ProcessTaskLogModel(Base):
     input_context: Mapped[dict]           = mapped_column(PortableJSON(), default=dict)
     result:        Mapped[dict | None]    = mapped_column(PortableJSON(), nullable=True)
     error:         Mapped[str | None]     = mapped_column(Text, nullable=True)
-    started_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     ended_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     instance: Mapped["ProcessInstanceModel"] = relationship(back_populates="task_log")
@@ -2626,7 +2648,7 @@ class SmsMessageModel(Base):
     message_sid:  Mapped[str | None]     = mapped_column(String(255), nullable=True)
     status:       Mapped[str]            = mapped_column(String(50), nullable=False, default="pending")
     error:        Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     sent_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2650,7 +2672,7 @@ class SlackNotificationModel(Base):
     slack_ts:     Mapped[str | None]     = mapped_column(String(100), nullable=True)
     status:       Mapped[str]            = mapped_column(String(50), nullable=False, default="pending")
     error:        Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     sent_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2679,7 +2701,7 @@ class DocExtractionJobModel(Base):
     confidence:       Mapped[float | None]   = mapped_column(Float, nullable=True)
     status:           Mapped[str]            = mapped_column(String(50), nullable=False, default="pending")
     error:            Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:       Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2707,7 +2729,7 @@ class DocStorageRouteModel(Base):
     content_type:  Mapped[str | None]     = mapped_column(String(255), nullable=True)
     status:        Mapped[str]            = mapped_column(String(50), nullable=False, default="pending")
     error:         Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     uploaded_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2732,7 +2754,7 @@ class WebhookReceiverRuleModel(Base):
     field_updates:      Mapped[dict]           = mapped_column(PortableJSON(), nullable=False, default=dict)
     advance_stage:      Mapped[bool]           = mapped_column(Boolean, nullable=False, default=False)
     enabled:            Mapped[bool]           = mapped_column(Boolean, nullable=False, default=True)
-    created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:         Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class WebhookReceiverEventModel(Base):
@@ -2753,7 +2775,7 @@ class WebhookReceiverEventModel(Base):
     matched_case_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     status:          Mapped[str]            = mapped_column(String(50), nullable=False, default="received")
     error:           Mapped[str | None]     = mapped_column(Text, nullable=True)
-    received_at:     Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    received_at:     Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     processed_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2784,7 +2806,7 @@ class IntakeEventModel(Base):
     created_case_id:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     process_instance_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     error:            Mapped[str | None]       = mapped_column(Text, nullable=True)
-    received_at:      Mapped[datetime]         = mapped_column(DateTime(timezone=True), default=_utcnow)
+    received_at:      Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
     processed_at:     Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2813,7 +2835,7 @@ class MigrationPipelineRunModel(Base):
     source_filename: Mapped[str | None]     = mapped_column(Text, nullable=True)
     source_size:     Mapped[int | None]     = mapped_column(BigInteger, nullable=True)
     error:           Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:      Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     stages: Mapped[list["PipelineStageEventModel"]] = relationship(
@@ -2836,7 +2858,7 @@ class PipelineStageEventModel(Base):
     status:      Mapped[str]            = mapped_column(String(50), nullable=False, default="pending")
     summary:     Mapped[dict]           = mapped_column(PortableJSON(), nullable=False, default=dict)
     error:       Mapped[str | None]     = mapped_column(Text, nullable=True)
-    started_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at:  Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["MigrationPipelineRunModel"] = relationship(back_populates="stages")
@@ -2894,7 +2916,7 @@ class EnvironmentRegistryModel(Base):
     webhook_url:            Mapped[str | None]       = mapped_column(Text, nullable=True)
     webhook_secret:         Mapped[str | None]       = mapped_column(Text, nullable=True)
     import_api_key:         Mapped[str | None]       = mapped_column(Text, nullable=True)
-    created_at:             Mapped[datetime]         = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:             Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class DeploymentRunModel(Base):
@@ -2922,7 +2944,7 @@ class DeploymentRunModel(Base):
     initiated_by:     Mapped[str]            = mapped_column(Text, nullable=False)
     deploy_notes:     Mapped[str | None]     = mapped_column(Text, nullable=True)
     deployed_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:       Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -2982,7 +3004,7 @@ class HxWorkBoardModel(Base):
     artifact_id:   Mapped[str | None]     = mapped_column(Text, nullable=True)
     column_config: Mapped[list]           = mapped_column(PortableJSON(), nullable=False, default=list)
     created_by:    Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
     sprints:   Mapped[list["HxWorkSprintModel"]]       = relationship(back_populates="board", cascade="all, delete-orphan")
     stories:   Mapped[list["HxWorkStoryModel"]]        = relationship(back_populates="board", cascade="all, delete-orphan")
@@ -3007,7 +3029,7 @@ class HxWorkSprintModel(Base):
     start_date:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     end_date:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     velocity:     Mapped[int | None]     = mapped_column(Integer, nullable=True)
-    created_at:   Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     board: Mapped["HxWorkBoardModel"] = relationship(back_populates="sprints")
@@ -3042,7 +3064,7 @@ class HxWorkCardRelationModel(Base):
     from_case_id:  Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     to_case_id:    Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     relation_type: Mapped[str]       = mapped_column(String(30), nullable=False, default="blocks")
-    created_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
     board: Mapped["HxWorkBoardModel"] = relationship(back_populates="relations")
 
@@ -3096,7 +3118,7 @@ class HxWorkStoryModel(Base):
     assigned_to:         Mapped[str | None]     = mapped_column(Text, nullable=True)
     linked_commit_ids:   Mapped[list]           = mapped_column(PortableJSON(), nullable=False, default=list)
     created_by:          Mapped[str]            = mapped_column(Text, nullable=False, default="system")
-    created_at:          Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:          Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:          Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     board: Mapped["HxWorkBoardModel"] = relationship(back_populates="stories")
@@ -3135,7 +3157,7 @@ class HxCanvasBoardModel(Base):
     description: Mapped[str | None]     = mapped_column(Text, nullable=True)
     case_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("case_instances.id", ondelete="SET NULL"), nullable=True)
     created_by:  Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     items: Mapped[list["HxCanvasItemModel"]] = relationship(back_populates="board", cascade="all, delete-orphan")
@@ -3162,7 +3184,7 @@ class HxCanvasItemModel(Base):
     data:       Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
     z_index:    Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     board: Mapped["HxCanvasBoardModel"] = relationship(back_populates="items")
@@ -3187,7 +3209,7 @@ class HxDocsSpaceModel(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_public:   Mapped[bool]       = mapped_column(Boolean, nullable=False, default=False)
     created_by:  Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     articles: Mapped[list["HxDocsArticleModel"]] = relationship(back_populates="space", cascade="all, delete-orphan")
 
@@ -3219,7 +3241,7 @@ class HxDocsArticleModel(Base):
     tags:            Mapped[list]       = mapped_column(PortableJSON(), nullable=False, default=list)
     created_by:      Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_by:      Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:      Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:      Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     space:    Mapped["HxDocsSpaceModel"]              = relationship(back_populates="articles")
@@ -3287,7 +3309,7 @@ class ArtifactBranchModel(Base):
     created_by:            Mapped[str]            = mapped_column(Text, nullable=False, default="system")
     reviewed_by:           Mapped[str | None]     = mapped_column(Text, nullable=True)
     merged_by:             Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:            Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:            Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:            Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     merged_at:             Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -3310,7 +3332,7 @@ class BranchReviewModel(Base):
     reviewer_id: Mapped[str]        = mapped_column(Text, nullable=False)
     decision:    Mapped[str]        = mapped_column(String(30), nullable=False)
     comments:    Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
     branch: Mapped["ArtifactBranchModel"] = relationship(back_populates="reviews")
 
@@ -3334,7 +3356,7 @@ class BranchAuditEventModel(Base):
     actor_id:       Mapped[str | None] = mapped_column(Text, nullable=True)
     actor_name:     Mapped[str | None] = mapped_column(Text, nullable=True)
     event_metadata: Mapped[dict]       = mapped_column("metadata", PortableJSON(), nullable=False, default=dict)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 # <<< P60 HxBranch
 
@@ -3368,7 +3390,7 @@ class HelixUserModel(Base):
     mfa_secret_enc:           Mapped[dict | None]    = mapped_column(PortableJSON(), nullable=True)
     sso_provider:             Mapped[str | None]     = mapped_column(String(255), nullable=True)
     sso_subject:              Mapped[str | None]     = mapped_column(String(255), nullable=True)
-    created_at:               Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:               Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:               Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     last_login_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -3389,7 +3411,7 @@ class AuthOtpModel(Base):
     purpose:    Mapped[str]            = mapped_column(String(30), nullable=False)
     expires_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False)
     used_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
     user: Mapped["HelixUserModel"] = relationship(back_populates="otps")
 
@@ -3409,7 +3431,7 @@ class SsoProviderModel(Base):
     client_secret_enc: Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
     enabled:           Mapped[bool]        = mapped_column(Boolean, nullable=False, default=True)
     config:            Mapped[dict]        = mapped_column(PortableJSON(), nullable=False, default=dict)
-    created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:        Mapped[datetime]    = mapped_column(MicroDateTime(), default=_utcnow)
 
 # <<< P64 Real Auth
 
@@ -3438,7 +3460,7 @@ class OutboundConnectorRuleModel(Base):
     )
     input_mapping:   Mapped[dict]           = mapped_column(PortableJSON(), nullable=False, default=dict)
     enabled:         Mapped[bool]           = mapped_column(Boolean, nullable=False, default=True)
-    created_at:      Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:      Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -3462,7 +3484,7 @@ class FieldPopulationAuditModel(Base):
     )
     user_id:       Mapped[str | None]     = mapped_column(String(255), nullable=True)
     response_hash: Mapped[str | None]     = mapped_column(String(64), nullable=True)
-    populated_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    populated_at:  Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
 # <<< Connector Intelligence
 
@@ -3500,7 +3522,7 @@ class MarketplaceSourceModel(Base):
     last_error:           Mapped[str | None]= mapped_column(Text, nullable=True)
     package_count:        Mapped[int]       = mapped_column(Integer, default=0)
     added_by:             Mapped[str]       = mapped_column(String(255), nullable=False)
-    created_at:           Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:           Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MarketplacePackageCacheModel(Base):
@@ -3555,7 +3577,7 @@ class MarketplaceWorkspaceModel(Base):
     created_by:   Mapped[str]       = mapped_column(String(255), nullable=False)
     reviewed_by:  Mapped[str | None]= mapped_column(String(255), nullable=True)
     review_note:  Mapped[str | None]= mapped_column(Text, nullable=True)
-    created_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     expires_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), nullable=False)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reviewed_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -3579,7 +3601,7 @@ class MarketplaceWorkspaceItemModel(Base):
     status:          Mapped[str]       = mapped_column(String(32), default="installed")
     # status: installed | approved | rejected
     licence_key_enc: Mapped[str | None]= mapped_column(Text, nullable=True)                 # AES-encrypted licence key
-    installed_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    installed_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     approved_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -3600,7 +3622,7 @@ class MarketplaceInstallModel(Base):
     licence_expires: Mapped[str | None]= mapped_column(String(32), nullable=True)           # ISO date string
     approved_by:     Mapped[str]       = mapped_column(String(255), nullable=False)
     workspace_id:    Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
-    installed_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    installed_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     revoked_at:      Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -3671,7 +3693,7 @@ class MarketplaceContainerModel(Base):
     pulled_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stopped_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     error:         Mapped[str | None]     = mapped_column(Text, nullable=True)
 
 
@@ -3697,7 +3719,7 @@ class MarketplaceNetworkLogModel(Base):
     status:          Mapped[str]       = mapped_column(String(16), nullable=False)           # blocked | allowed
     http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_declared:     Mapped[bool]      = mapped_column(Boolean, default=True)               # False = undeclared domain → SECURITY VIOLATION
-    created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MarketplaceWhitelistModel(Base):
@@ -3715,7 +3737,7 @@ class MarketplaceWhitelistModel(Base):
     status:        Mapped[str]       = mapped_column(String(32), default="pending")         # pending | approved | denied
     requested_by:  Mapped[str]       = mapped_column(String(255), nullable=False)
     decided_by:    Mapped[str | None]= mapped_column(String(255), nullable=True)
-    created_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     decided_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -3766,7 +3788,7 @@ class MarketplaceBlacklistModel(Base):
     reason:          Mapped[str]       = mapped_column(Text, nullable=False)
     blacklisted_by:  Mapped[str]       = mapped_column(String(255), nullable=False)
     notify_velaris:  Mapped[bool]      = mapped_column(Boolean, default=False)       # report to Velaris security webhook
-    created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MarketplaceAccessRuleModel(Base):
@@ -3816,7 +3838,7 @@ class MarketplaceReleaseRequestModel(Base):
     status:          Mapped[str]       = mapped_column(String(32), default="pending")
     # status: pending | included_in_release | deployed | cancelled
     included_in_deploy_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     deployed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -3830,7 +3852,7 @@ class MarketplaceSandboxDatasetModel(Base):
     description: Mapped[str | None]= mapped_column(Text, nullable=True)
     data_json:   Mapped[str]       = mapped_column(Text, default="{}")                      # serialized synthetic records
     created_by:  Mapped[str]       = mapped_column(String(255), nullable=False)
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class DbManagerQueryLogModel(Base):
@@ -3852,7 +3874,7 @@ class DbManagerQueryLogModel(Base):
     rows_affected: Mapped[int | None]     = mapped_column(Integer, nullable=True)
     status:        Mapped[str]            = mapped_column(String(20), nullable=False, default="success")
     error_detail:  Mapped[str | None]     = mapped_column(Text, nullable=True)
-    ran_at:        Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ran_at:        Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class RevokedSessionModel(Base):
@@ -3886,7 +3908,7 @@ class RefreshTokenModel(Base):
     expires_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at:  Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by:  Mapped[str|None]      = mapped_column(String(255), nullable=True)
-    created_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     # Group J: binds the token chain to the auth_devices row it was issued on
     device_id:   Mapped[uuid.UUID|None] = mapped_column(GUID(), nullable=True)
 
@@ -3911,7 +3933,7 @@ class AuthDeviceModel(Base):
     user_agent_hash: Mapped[str]           = mapped_column(String(64), nullable=False)
     first_ip:        Mapped[str|None]      = mapped_column(String(64), nullable=True)
     last_ip:         Mapped[str|None]      = mapped_column(String(64), nullable=True)
-    created_at:      Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     last_seen_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
     revoked_at:      Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by:      Mapped[str|None]      = mapped_column(String(255), nullable=True)
@@ -3936,7 +3958,7 @@ class WebAuthnCredentialModel(Base):
     transports:    Mapped[list]          = mapped_column(PortableJSON(), default=list)
     aaguid:        Mapped[str|None]      = mapped_column(String(64), nullable=True)
     device_name:   Mapped[str]           = mapped_column(String(255), default="Passkey")
-    created_at:    Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
     last_used_at:  Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at:    Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -3958,7 +3980,7 @@ class VariableNamespaceModel(Base):
     sensitivity: Mapped[str]           = mapped_column(String(10), default="internal", nullable=False)
     status:      Mapped[str]           = mapped_column(String(10), default="active", nullable=False)
     created_by:  Mapped[str|None]      = mapped_column(String(255), nullable=True)
-    created_at:  Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class NamespaceGrantModel(Base):
@@ -4000,7 +4022,7 @@ class CaseTypeVariableModel(Base):
     required:             Mapped[bool]       = mapped_column(Boolean, default=False)
     indexed:              Mapped[bool]       = mapped_column(Boolean, default=False)  # UI filter flag ONLY — never DDL
     promoted_source:      Mapped[str|None]   = mapped_column(String(255), nullable=True)  # blob key this was promoted from (088)
-    created_at:           Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:           Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseInstanceVariableModel(Base):
@@ -4039,7 +4061,7 @@ class WebAuthnChallengeModel(Base):
     user_id:    Mapped[str|None]   = mapped_column(String(255), nullable=True)
     challenge:  Mapped[bytes]      = mapped_column(LargeBinary, nullable=False)
     purpose:    Mapped[str]        = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     expires_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False)
 # <<< Group J
 
@@ -4083,7 +4105,7 @@ class ScheduledReleaseModel(Base):
     release_date:  Mapped[date | None]    = mapped_column(Date, nullable=True)
     status:        Mapped[str]            = mapped_column(String(20), nullable=False, default="draft")
     enabled:       Mapped[str | None]     = mapped_column(String(20), nullable=True, default=None)
-    created_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:    Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
     released_at:   Mapped[datetime | None]= mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -4108,7 +4130,7 @@ class PortalCustomerModel(Base):
     otp_code:        Mapped[str | None]      = mapped_column(String(64), nullable=True)   # SHA-256 hash
     otp_expires_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notify_email:    Mapped[bool]            = mapped_column(Boolean, nullable=False, default=True)  # P4 (mig 116)
-    created_at:      Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
     last_active_at:  Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -4142,7 +4164,7 @@ class CaseMessageModel(Base):
     author_name:    Mapped[str | None] = mapped_column(String(255), nullable=True)
     body:           Mapped[str]       = mapped_column(Text, nullable=False)
     portal_visible: Mapped[bool]      = mapped_column(Boolean, default=True, nullable=False)
-    created_at:     Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class PortalCsatModel(Base):
@@ -4153,7 +4175,7 @@ class PortalCsatModel(Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("portal_customers.id", ondelete="CASCADE"), nullable=False)
     rating:      Mapped[int]       = mapped_column(Integer, nullable=False)
     comment:     Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class PortalAskFeedbackModel(Base):
@@ -4167,7 +4189,7 @@ class PortalAskFeedbackModel(Base):
     tenant_slug: Mapped[str]       = mapped_column(String(255), nullable=False)
     question:    Mapped[str]       = mapped_column(Text, nullable=False)
     helpful:     Mapped[bool]      = mapped_column(Boolean, nullable=False)
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class PortalSubmissionRefModel(Base):
@@ -4185,7 +4207,7 @@ class PortalSubmissionRefModel(Base):
     client_ref:  Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True)
     tenant_slug: Mapped[str]       = mapped_column(String(255), nullable=False)
     case_id:     Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class HxGuardTupleModel(Base):
@@ -4209,7 +4231,7 @@ class HxGuardTupleModel(Base):
     subject_type: Mapped[str]       = mapped_column(String(30), nullable=False)
     subject_id:   Mapped[str]       = mapped_column(String(255), nullable=False)
     created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class OutboxEventModel(Base):
@@ -4229,7 +4251,7 @@ class OutboxEventModel(Base):
     event_type:      Mapped[str]             = mapped_column(Text, nullable=False)
     payload:         Mapped[dict]            = mapped_column(PortableJSON(), nullable=False, default=dict)
     case_type_id:    Mapped[uuid.UUID | None]= mapped_column(GUID(), ForeignKey("case_types.id", ondelete="SET NULL"), nullable=True)
-    created_at:      Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
     claimed_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts:        Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
@@ -4257,7 +4279,7 @@ class PlatformUpdatePlanModel(Base):
     prod_approved_by: Mapped[str | None]      = mapped_column(Text, nullable=True)
     prod_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     soak_started_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:       Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:       Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4275,7 +4297,7 @@ class PlatformUpdateRunModel(Base):
     detail:         Mapped[str | None]      = mapped_column(Text, nullable=True)
     triggered_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:     Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class PlatformUpdateSettingsModel(Base):
@@ -4373,7 +4395,7 @@ class CheckoutOrderModel(Base):
     integration_id:     Mapped[uuid.UUID|None] = mapped_column(GUID(),      ForeignKey("checkout_webhook_integrations.id", ondelete="SET NULL"), nullable=True)
     payment_request_id: Mapped[uuid.UUID|None] = mapped_column(GUID(),      nullable=True)
     is_test:            Mapped[bool]           = mapped_column(Boolean,     nullable=False, default=False)
-    created_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:         Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:         Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4417,7 +4439,7 @@ class CheckoutServiceTokenModel(Base):
     revoked_at:   Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     suspended:    Mapped[bool]          = mapped_column(Boolean,     nullable=False, default=False)  # auto-suspend on rate spike
     created_by:   Mapped[str|None]      = mapped_column(String(255), nullable=True)
-    created_at:   Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]      = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CheckoutWebhookIntegrationModel(Base):
@@ -4437,7 +4459,7 @@ class CheckoutWebhookIntegrationModel(Base):
     field_map:       Mapped[dict]      = mapped_column(PortableJSON(), default=dict)  # {} = use built-in platform map
     enabled:         Mapped[bool]      = mapped_column(Boolean,     nullable=False, default=True)
     created_by:      Mapped[str|None]  = mapped_column(String(255), nullable=True)
-    created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CheckoutWebhookEventModel(Base):
@@ -4457,7 +4479,7 @@ class CheckoutWebhookEventModel(Base):
     status:         Mapped[str]            = mapped_column(String(50),  nullable=False, default="received")  # received|order_created|rejected|error
     order_id:       Mapped[uuid.UUID|None] = mapped_column(GUID(),      nullable=True)
     error:          Mapped[str|None]       = mapped_column(Text,        nullable=True)
-    created_at:     Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CheckoutNotificationLogModel(Base):
@@ -4473,7 +4495,7 @@ class CheckoutNotificationLogModel(Base):
     event:      Mapped[str]       = mapped_column(String(100), nullable=False)   # order_received|payment_confirmed|dispatched|…
     channel:    Mapped[str]       = mapped_column(String(20),  nullable=False)   # email|sms|push
     status:     Mapped[str]       = mapped_column(String(50),  nullable=False, default="sent")
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4503,7 +4525,7 @@ class StorefrontStoreModel(Base):
     locale:     Mapped[str]       = mapped_column(String(20),   nullable=False, default="en-GB")
     status:     Mapped[str]       = mapped_column(String(20),   nullable=False, default="active")  # active|archived
     settings:   Mapped[dict]      = mapped_column(PortableJSON(), default=dict)   # tax rules, shipping zones, etc.
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4535,7 +4557,7 @@ class StorefrontProductModel(Base):
     is_featured:         Mapped[bool]      = mapped_column(Boolean,      nullable=False, default=False)
     is_digital:          Mapped[bool]      = mapped_column(Boolean,      nullable=False, default=False)
     product_meta:        Mapped[dict]      = mapped_column("metadata", PortableJSON(), default=dict)
-    created_at:          Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:          Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:          Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4631,7 +4653,7 @@ class StorefrontInventoryLogModel(Base):
     new_quantity: Mapped[int|None]  = mapped_column(Integer,      nullable=True)
     reason:       Mapped[str]       = mapped_column(String(100),  nullable=False, default="adjustment")  # sale|adjustment|restock
     actor:        Mapped[str|None]  = mapped_column(String(255),  nullable=True)
-    created_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontThemeModel(Base):
@@ -4645,7 +4667,7 @@ class StorefrontThemeModel(Base):
     config:     Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
     version:    Mapped[int]       = mapped_column(Integer,      nullable=False, default=1)
     is_active:  Mapped[bool]      = mapped_column(Boolean,      nullable=False, default=True)
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontPageModel(Base):
@@ -4663,7 +4685,7 @@ class StorefrontPageModel(Base):
     title:        Mapped[str]       = mapped_column(String(512),  default="")
     sections:     Mapped[list]      = mapped_column(PortableJSON(), default=list)   # ordered section blocks
     is_published: Mapped[bool]      = mapped_column(Boolean,      nullable=False, default=False)
-    created_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:   Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4704,7 +4726,7 @@ class StorefrontPromotionModel(Base):
     valid_until:       Mapped[datetime|None] = mapped_column(DateTime(timezone=True), nullable=True)
     stackable:         Mapped[bool]        = mapped_column(Boolean,      nullable=False, default=False)
     active:            Mapped[bool]        = mapped_column(Boolean,      nullable=False, default=True)
-    created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:        Mapped[datetime]    = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontPromotionUseModel(Base):
@@ -4735,7 +4757,7 @@ class StorefrontDomainModel(Base):
     domain_type: Mapped[str]       = mapped_column(String(20),   nullable=False, default="cname")  # subdomain|cname|root
     dns_verified:Mapped[bool]      = mapped_column(Boolean,      nullable=False, default=False)
     ssl_status:  Mapped[str]       = mapped_column(String(20),   nullable=False, default="pending")  # pending|active|failed
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontSeoOverrideModel(Base):
@@ -4769,7 +4791,7 @@ class StorefrontSubscriberModel(Base):
     id:         Mapped[uuid.UUID] = mapped_column(GUID(),       primary_key=True, default=_new_uuid)
     store_id:   Mapped[uuid.UUID] = mapped_column(GUID(),       ForeignKey("storefront_stores.id", ondelete="CASCADE"), nullable=False)
     email:      Mapped[str]       = mapped_column(String(255),  nullable=False)
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontMediaModel(Base):
@@ -4785,7 +4807,7 @@ class StorefrontMediaModel(Base):
     size_bytes: Mapped[int]       = mapped_column(BigInteger,   nullable=False, default=0)
     alt_text:   Mapped[str]       = mapped_column(String(512),  default="")
     folder:     Mapped[str]       = mapped_column(String(512),  default="")
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class StorefrontAnalyticsEventModel(Base):
@@ -4802,7 +4824,7 @@ class StorefrontAnalyticsEventModel(Base):
     event:      Mapped[str]       = mapped_column(String(50),   nullable=False)  # store.page_view, store.add_to_basket, …
     data:       Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
     session:    Mapped[str|None]  = mapped_column(String(128),  nullable=True)
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 # ── HxDBMigrate — migrate an external source DB into Velaris (P1: connect + discover) ──
@@ -4837,7 +4859,7 @@ class HxDBMigrateSourceModel(Base):
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_connect_ok:   Mapped[bool | None]     = mapped_column(Boolean, nullable=True)
     created_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
@@ -4861,7 +4883,7 @@ class HxDBMigrateAnalysisModel(Base):
     report:        Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
     error:         Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:    Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class HxDBMigrateMigrationRunModel(Base):
@@ -4889,7 +4911,7 @@ class HxDBMigrateMigrationRunModel(Base):
     excluded_columns: Mapped[list]     = mapped_column(PortableJSON(), default=list)
     error:          Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class HxDBMigrateRowLinkModel(Base):
@@ -4912,12 +4934,12 @@ class HxDBMigrateRowLinkModel(Base):
     source_id:      Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
     tenant_id:      Mapped[str | None] = mapped_column(String(255), nullable=True)
     table_name:     Mapped[str]        = mapped_column(String(255), nullable=False)
-    source_pk:      Mapped[str]        = mapped_column(String(512), nullable=False)
+    source_pk:      Mapped[str]        = mapped_column(String(255), nullable=False)  # single-col PK value; 255 keeps uq_hxdbmig_link_row <3072B on MySQL utf8mb4
     case_id:        Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
     case_type_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     row_checksum:   Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_synced_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class HxEvolveInsightModel(Base):
@@ -4950,7 +4972,7 @@ class HxEvolveInsightModel(Base):
     branch_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     staged_rule_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     created_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class HxEvolveConfigModel(Base):
@@ -5001,7 +5023,7 @@ class HxEvolveBaselineModel(Base):
     frozen:             Mapped[bool]       = mapped_column(Boolean, nullable=False, default=False)
     frozen_reason:      Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by:         Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:         Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:         Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     rebaselined_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -5033,7 +5055,7 @@ class ReplayRunModel(Base):
     anchored:      Mapped[bool]       = mapped_column(Boolean, default=False)
     error:         Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:    Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:    Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     started_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -5057,7 +5079,7 @@ class ReplayResultModel(Base):
     baseline_metrics:       Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
     counterfactual_metrics: Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
     trace:                  Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
-    created_at:             Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:             Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class RateCardModel(Base):
@@ -5078,7 +5100,7 @@ class RateCardModel(Base):
     hourly_rate: Mapped[float]      = mapped_column(Float, nullable=False)
     currency:    Mapped[str]        = mapped_column(String(8), default="USD")
     created_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -5105,7 +5127,7 @@ class MCPIdempotencyKeyModel(Base):
     status:          Mapped[str]        = mapped_column(String(20), default="pending")
     response_json:   Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
     is_error:        Mapped[bool]       = mapped_column(Boolean, default=False)
-    created_at:      Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:      Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MCPActionProposalModel(Base):
@@ -5136,7 +5158,7 @@ class MCPActionProposalModel(Base):
     decided_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
     decided_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at:     Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseTimeEntryModel(Base):
@@ -5165,7 +5187,7 @@ class CaseTimeEntryModel(Base):
     duration_seconds: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
     billable:         Mapped[bool]       = mapped_column(Boolean, nullable=False, default=True)
     note:             Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:       Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class MCPTokenGrantModel(Base):
@@ -5193,7 +5215,7 @@ class MCPTokenGrantModel(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     expires_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseSessionModel(Base):
@@ -5239,7 +5261,7 @@ class CaseSessionModel(Base):
     transcript_status:      Mapped[str]            = mapped_column(String(20), nullable=False, default="none")
     transcript_document_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("documents.id"), nullable=True)
     transcript_anchor_ref:  Mapped[str | None]     = mapped_column(Text, nullable=True)
-    created_at:            Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:            Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseSessionCaptionSegmentModel(Base):
@@ -5259,7 +5281,7 @@ class CaseSessionCaptionSegmentModel(Base):
     speaker:    Mapped[str]       = mapped_column(String(255), nullable=False)
     text:       Mapped[str]       = mapped_column(Text, nullable=False)
     spoken_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
-    created_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseSessionParticipantModel(Base):
@@ -5294,7 +5316,7 @@ class CaseSessionParticipantModel(Base):
     # P4d (mig 121): distinct biometric consent — GDPR Art. 9 explicit consent,
     # never implied by the recording consent alone.
     biometric_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at:          Mapped[datetime]         = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:          Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseSessionIntelligenceModel(Base):
@@ -5316,7 +5338,7 @@ class CaseSessionIntelligenceModel(Base):
     model_versions:         Mapped[dict]           = mapped_column(PortableJSON(), default=dict)
     error:                  Mapped[str | None]     = mapped_column(Text, nullable=True)
     requested_by:           Mapped[str]            = mapped_column(String(255), nullable=False)
-    created_at:             Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:             Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -5364,7 +5386,7 @@ class CaseSessionKycSignalsModel(Base):
     model_versions:   Mapped[dict]           = mapped_column(PortableJSON(), default=dict)
     error:            Mapped[str | None]     = mapped_column(Text, nullable=True)
     requested_by:     Mapped[str]            = mapped_column(String(255), nullable=False)
-    created_at:       Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:       Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -5388,4 +5410,313 @@ class DocumentVerificationModel(Base):
     checks:      Mapped[list]      = mapped_column(PortableJSON(), default=list)
     verified_by: Mapped[str]       = mapped_column(String(255), nullable=False)
     notes:       Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ── HxSentinel P1 (mig 125) ───────────────────────────────────────────────────
+
+
+class CaseOutcomeLabelModel(Base):
+    """HxSentinel P1 — a TENANT-DEFINED outcome label.
+
+    The core taxonomy lives in ``case_service.sentinel.taxonomy`` as a code
+    constant, not here: cross-tenant learning depends on a core label meaning
+    the same thing everywhere, and a code constant cannot drift between the
+    PostgreSQL migration track and the generated MySQL baseline. This table
+    holds only a tenant's own additions.
+    """
+
+    __tablename__ = "case_outcome_labels"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="ux_outcome_labels_tenant_key"),
+    )
+
+    id:          Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str]        = mapped_column(String(255), nullable=False)
+    key:         Mapped[str]        = mapped_column(String(64), nullable=False)
+    display:     Mapped[str]        = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_negative: Mapped[bool]       = mapped_column(Boolean, nullable=False, default=True)
+    active:      Mapped[bool]       = mapped_column(Boolean, nullable=False, default=True)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseOutcomeModel(Base):
+    """HxSentinel P1 — the ground truth: a confirmed outcome for a case.
+
+    APPEND-ONLY. Re-labelling, including retroactive labelling of historical
+    cases, inserts a NEW row; the current label is the most recent one. The
+    label history is itself evidence — who believed what, and when — so these
+    rows are never updated in place.
+    """
+
+    __tablename__ = "case_outcomes"
+    __table_args__ = (
+        Index("ix_case_outcomes_case", "case_id", "created_at"),
+        Index("ix_case_outcomes_tenant", "tenant_id", "outcome"),
+    )
+
+    id:          Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id:     Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    outcome:     Mapped[str]        = mapped_column(String(64), nullable=False)
+    note:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    source:      Mapped[str]        = mapped_column(String(20), nullable=False, default="manual")
+    labelled_by: Mapped[str]        = mapped_column(String(255), nullable=False)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)  # µs: latest-outcome-wins
+
+
+class CaseRiskSignalModel(Base):
+    """HxSentinel P1 — one extracted, matchable feature of a case.
+
+    ``signal_key`` is what makes two cases match. For identity-bearing types it
+    is a keyed BLAKE2b digest computed with the tenant's own DEK, never the raw
+    value: equal values match inside a tenant, the table is useless if it
+    leaks, digests cannot be correlated across tenants, and shredding a
+    tenant's DEK orphans its signal index (crypto-shredding that follows the
+    tenant). Non-identity signals — document hashes, velocity counters, amount
+    z-scores — carry no personal data and are stored literally so findings stay
+    explainable.
+    """
+
+    __tablename__ = "case_risk_signals"
+    __table_args__ = (
+        Index("ix_risk_signals_lookup", "tenant_id", "signal_type", "signal_key"),
+        Index("ix_risk_signals_case", "case_id"),
+        UniqueConstraint("case_id", "signal_type", "signal_key", name="ux_risk_signals_unique"),
+    )
+
+    id:          Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id:     Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    signal_type: Mapped[str]        = mapped_column(String(48), nullable=False)
+    signal_key:  Mapped[str]        = mapped_column(String(128), nullable=False)
+    hashed:      Mapped[bool]       = mapped_column(Boolean, nullable=False, default=False)
+    value:       Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    computed_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseRiskRuleModel(Base):
+    """HxSentinel P2 — a per-tenant OVERRIDE of a code-defined rule.
+
+    Rule definitions live in ``case_service.sentinel.rules`` as a code constant
+    (like the taxonomy). A row here overrides enablement, severity, and/or
+    threshold params for one rule in one tenant; an absent row means the code
+    default applies.
+    """
+
+    __tablename__ = "case_risk_rules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "rule_key", name="ux_risk_rules_tenant_key"),
+    )
+
+    id:         Mapped[uuid.UUID]   = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[str]         = mapped_column(String(255), nullable=False)
+    rule_key:   Mapped[str]         = mapped_column(String(64), nullable=False)
+    enabled:    Mapped[bool]        = mapped_column(Boolean, nullable=False, default=True)
+    severity:   Mapped[str | None]  = mapped_column(String(16), nullable=True)
+    params:     Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    updated_by: Mapped[str]         = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime]    = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class CaseRiskFindingModel(Base):
+    """HxSentinel P2 — a recommendation with cited evidence.
+
+    A CURRENT assessment, not an append-only record: the engine upserts one
+    finding per (case_id, rule_key), marking a no-longer-firing rule's finding
+    ``stale`` rather than deleting it. Persisted so P2b scores reference a stable
+    id and the panel audits exactly what was shown; provenance is the audit log,
+    not this row. Never a decision — a human reviews and acts.
+    """
+
+    __tablename__ = "case_risk_findings"
+    __table_args__ = (
+        UniqueConstraint("case_id", "rule_key", name="ux_risk_findings_case_rule"),
+        Index("ix_risk_findings_tenant", "tenant_id", "severity", "status"),
+    )
+
+    id:         Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id:    Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    rule_key:   Mapped[str]        = mapped_column(String(64), nullable=False)
+    severity:   Mapped[str]        = mapped_column(String(16), nullable=False)
+    title:      Mapped[str]        = mapped_column(String(200), nullable=False)
+    message:    Mapped[str]        = mapped_column(Text, nullable=False)
+    evidence:   Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    status:     Mapped[str]        = mapped_column(String(16), nullable=False, default="active")
+    created_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CaseRiskHoldModel(Base):
+    """HxSentinel P2 — a verify-gate hold on a case's stage advance.
+
+    Deliberately DECOUPLED from the finding that opened it. Opened once when a
+    gating-severity finding first appears (and the tenant opted in via
+    ``verify_gate_severity``); cleared ONLY by a human, with a note. A later
+    re-evaluation never clears or re-opens a hold — that is what keeps the gate
+    honest. The advance check fails OPEN: a case is held only when an open hold
+    affirmatively exists, so a HxSentinel fault can never wedge the workflow.
+    """
+
+    __tablename__ = "case_risk_holds"
+    __table_args__ = (
+        Index("ix_risk_holds_case_status", "case_id", "status"),
+    )
+
+    id:              Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id:         Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    finding_id:      Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    rule_key:        Mapped[str]        = mapped_column(String(64), nullable=False)
+    severity:        Mapped[str]        = mapped_column(String(16), nullable=False)
+    status:          Mapped[str]        = mapped_column(String(16), nullable=False, default="open")
+    opened_at:       Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow)
+    resolved_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolved_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CaseRiskFeedbackModel(Base):
+    """HxSentinel P2b — a human's 1–5 score + note on a finding.
+
+    APPEND-ONLY (like `case_outcomes`): re-scoring inserts a new row, the newest
+    is current, and the history is evidence. `score` is 1 (bad analysis) to 5
+    (best analysis); the note explains why. References a finding's stable id.
+    """
+
+    __tablename__ = "case_risk_feedback"
+    __table_args__ = (
+        Index("ix_risk_feedback_finding", "finding_id", "created_at"),
+        Index("ix_risk_feedback_tenant", "tenant_id", "reviewer"),
+    )
+
+    id:         Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id:    Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    finding_id: Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    reviewer:   Mapped[str]        = mapped_column(String(255), nullable=False)
+    score:      Mapped[int]        = mapped_column(SmallInteger, nullable=False)
+    note:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)  # µs: latest-feedback-wins
+
+
+class CaseRiskModelModel(Base):
+    """HxSentinel P5 — a local, versioned risk-scoring model (logistic regression).
+
+    Trained on LABEL-INDEPENDENT features only, on-platform. Recommends, never
+    decides. One version active per tenant; activation is human-gated.
+    """
+
+    __tablename__ = "case_risk_models"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "version", name="ux_risk_models_tenant_version"),
+        Index("ix_risk_models_tenant_status", "tenant_id", "status"),
+    )
+
+    id:            Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[str]        = mapped_column(String(255), nullable=False)
+    version:       Mapped[int]        = mapped_column(Integer, nullable=False)
+    coefficients:  Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    intercept:     Mapped[float]      = mapped_column(Float, nullable=False, default=0.0)
+    feature_means: Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    feature_stds:  Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    threshold:     Mapped[float]      = mapped_column(Float, nullable=False, default=0.5)
+    trained_on:    Mapped[int]        = mapped_column(Integer, nullable=False)
+    metrics:       Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    status:        Mapped[str]        = mapped_column(String(16), nullable=False, default="pending")
+    created_at:    Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+    activated_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    activated_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CaseRiskSignalPackModel(Base):
+    """HxSentinel P4 — an installed marketplace signal pack (content, not code).
+
+    The manifest holds declarative rules whose `when` conditions are CONFORMING
+    safe-expression strings the in-core engine evaluates against a fixed feature
+    context. Tenant-scoped: installing activates the pack's rules for one tenant.
+    """
+
+    __tablename__ = "case_risk_signal_packs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "pack_id", name="ux_risk_packs_tenant_pack"),
+        Index("ix_risk_packs_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+    id:           Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[str]        = mapped_column(String(255), nullable=False)
+    pack_id:      Mapped[str]        = mapped_column(String(128), nullable=False)
+    name:         Mapped[str]        = mapped_column(String(200), nullable=False)
+    vertical:     Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version:      Mapped[str]        = mapped_column(String(32), nullable=False)
+    manifest:     Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    enabled:      Mapped[bool]       = mapped_column(Boolean, nullable=False, default=True)
+    installed_by: Mapped[str]        = mapped_column(String(255), nullable=False)
+    installed_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseRiskRuleProposalModel(Base):
+    """HxSentinel P3c — a score-driven rule-change proposal (human-approved).
+
+    Generated from reliability-weighted, dispute-excluded scores. Never applied
+    silently: a supervisor approves it, and only then does it change
+    `case_risk_rules`. Provenance for the training loop.
+    """
+
+    __tablename__ = "case_risk_rule_proposals"
+    __table_args__ = (
+        Index("ix_risk_proposals_tenant_status", "tenant_id", "status"),
+        Index("ix_risk_proposals_rule", "tenant_id", "rule_key", "status"),
+    )
+
+    id:              Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[str]        = mapped_column(String(255), nullable=False)
+    rule_key:        Mapped[str]        = mapped_column(String(64), nullable=False)
+    proposed_change: Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    rationale:       Mapped[str]        = mapped_column(Text, nullable=False)
+    evidence:        Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
+    status:          Mapped[str]        = mapped_column(String(16), nullable=False, default="pending")
+    created_at:      Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+    decided_by:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note:   Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CaseRiskScoreDisputeModel(Base):
+    """HxSentinel P3b — a supervisor's dispute of a reviewer's score.
+
+    Append-only and separate from `case_risk_feedback` so the reviewer's score
+    stays immutable. A feedback row is 'disputed' if a dispute row references it;
+    disputed scores are excluded from reliability and from training.
+    """
+
+    __tablename__ = "case_risk_score_disputes"
+    __table_args__ = (
+        Index("ix_risk_disputes_feedback", "feedback_id"),
+        Index("ix_risk_disputes_tenant", "tenant_id"),
+    )
+
+    id:          Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    feedback_id: Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    disputed_by: Mapped[str]        = mapped_column(String(255), nullable=False)
+    note:        Mapped[str]        = mapped_column(Text, nullable=False)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseRiskConfigModel(Base):
+    """HxSentinel P2 — per-tenant engine config (the optional verify gate).
+
+    Keyed on the normalised tenant string the engine uses everywhere, so the
+    gate's tenant key is identical to the findings'/signals' key. A NULL
+    ``verify_gate_severity`` means the gate is OFF (the default).
+    """
+
+    __tablename__ = "case_risk_config"
+
+    tenant_id:            Mapped[str]        = mapped_column(String(255), primary_key=True)
+    verify_gate_severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    updated_by:           Mapped[str]        = mapped_column(String(255), nullable=False)
+    updated_at:           Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

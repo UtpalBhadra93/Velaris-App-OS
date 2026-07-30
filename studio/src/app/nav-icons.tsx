@@ -101,6 +101,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/hxmigrate":      withSparkleBox(BpmImporterIcon),
   "/hxdbmigrate":    withSparkleBox(HxDBManagerIcon),
   "/hxreplay":       withSparkleBox(ProcessMiningIcon),
+  "/risk-review":    ComplianceIcon,
   "/scout":          ScoutIcon,
   "/scout-ai":       withSparkleBox(ScoutAIIcon),
   "/orchestrator":   withSparkleBox(OrchestratorIcon),

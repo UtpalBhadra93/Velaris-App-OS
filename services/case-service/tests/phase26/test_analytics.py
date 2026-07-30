@@ -10,6 +10,8 @@ Covers: platform_snapshot (empty DB), cases_over_time, sla_performance,
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -37,6 +39,18 @@ def _admin():
 
 def _ov(): app.dependency_overrides[get_current_user] = lambda: _admin()
 def _cl(): app.dependency_overrides.pop(get_current_user, None)
+
+
+# These tests cover the NL *keyword fallback* (see module docstring). _parse_nl
+# tries the LLM first when one is reachable, so on a box with Ollama running the
+# "keyword" assertions would instead be checking live model output — flaky and
+# env-dependent. Pin the keyword path for the whole file; no test here asserts
+# LLM-specific behaviour.
+@pytest.fixture(autouse=True)
+def _force_keyword_nl():
+    with patch("case_service.hxnexus.factory.check_ai_available",
+               new=AsyncMock(return_value=False)):
+        yield
 
 
 # ── Unit tests — metrics ──────────────────────────────────────────────────────
@@ -96,6 +110,22 @@ class TestQueryEngine:
             {"metric": "avg_resolution", "filters": {"days": 30}}, session
         )
         assert result["chart_type"] == "number"
+
+    async def test_structured_null_days_does_not_crash(self, session):
+        """A present-but-null filter must fall back to the default, not 500.
+
+        `.get("days", 30)` only defaults on an ABSENT key; a caller (or the LLM)
+        sending {"days": null} previously reached int(None) and crashed the
+        endpoint. Regression for that."""
+        for filt in ({"days": None}, {"days": 0}, {}):
+            result = await run_structured(
+                {"metric": "throughput", "filters": filt}, session)
+            assert "series" in result
+        # null limit must not crash the grouped path either
+        result = await run_structured(
+            {"metric": "count", "group_by": "status",
+             "filters": {"days": None}, "limit": None}, session)
+        assert "series" in result
 
     async def test_nl_keyword_sla(self):
         result = await _parse_nl("show me sla breach rate this month")

@@ -30,7 +30,7 @@ async def alice(session):
         user_id="alice", email="alice@helix.test", display_name="Alice",
         manager_user_id="boss", access_group_ids=["g-sales"], roles=["worker"],
     )
-    session.add(u); await session.flush(); return u
+    session.add(u); await session.commit(); return u
 
 
 @pytest_asyncio.fixture
@@ -39,7 +39,7 @@ async def boss(session):
         user_id="boss", email="boss@helix.test", display_name="Boss",
         manager_user_id="ceo", access_group_ids=["g-managers"], roles=["manager", "admin"],
     )
-    session.add(u); await session.flush(); return u
+    session.add(u); await session.commit(); return u
 
 
 @pytest_asyncio.fixture
@@ -49,7 +49,7 @@ async def ct(session):
         lifecycle_process_id="lp-p34b",
         definition_json={"stages": [], "sla_policies": []},
     )
-    session.add(x); await session.flush(); return x
+    session.add(x); await session.commit(); return x
 
 
 @pytest_asyncio.fixture
@@ -58,7 +58,7 @@ async def case(session, ct):
         case_type_id=ct.id, case_type_version="1.0.0",
         status="new", priority="medium", data={},
     )
-    session.add(c); await session.flush(); return c
+    session.add(c); await session.commit(); return c
 
 
 @pytest_asyncio.fixture
@@ -67,7 +67,7 @@ async def assignment_alice(session, case):
         case_id=case.id, step_id="s1", assignee_type="user", assignee_id="alice",
         status="active",
     )
-    session.add(a); await session.flush(); return a
+    session.add(a); await session.commit(); return a
 
 
 def _sla(case_id) -> CaseSLAInstanceModel:
@@ -122,7 +122,7 @@ async def test_06_users_with_role(session, alice, boss):
 @pytest.mark.asyncio
 async def test_07_inactive_users_filtered(session):
     u = UserDirectoryModel(user_id="retired", is_active=False, roles=["worker"])
-    session.add(u); await session.flush()
+    session.add(u); await session.commit()
     assert await get_user(session, "retired") is None
 
 
@@ -140,7 +140,7 @@ async def test_09_current_assignee_returns_none_for_queue(session, case):
         case_id=case.id, step_id="s2", assignee_type="queue", assignee_id="q1",
         status="active",
     )
-    session.add(a); await session.flush()
+    session.add(a); await session.commit()
     u = await get_current_assignee_for_case(session, case.id)
     assert u is None
 
@@ -165,7 +165,7 @@ async def test_12_resolve_manager_without_manager_returns_empty(session, case, a
     u = UserDirectoryModel(user_id="alice", manager_user_id=None)
     # replace existing alice
     await session.execute(UserDirectoryModel.__table__.delete().where(UserDirectoryModel.user_id == "alice"))
-    session.add(u); await session.flush()
+    session.add(u); await session.commit()
     t, i = await resolve_dynamic_target(session, case.id, "manager_of_current_assignee", None)
     assert t == "" and i == ""
 
@@ -192,7 +192,7 @@ async def test_15_resolve_unknown_passthrough(session, case):
 
 @pytest.mark.asyncio
 async def test_16_reassign_to_manager_resolves(session, case, alice, boss, assignment_alice):
-    sla = _sla(case.id); session.add(sla); await session.flush()
+    sla = _sla(case.id); session.add(sla); await session.commit()
     action = {"type": "reassign", "target_type": "manager_of_current_assignee"}
     res = await execute_action(session, case.id, action, sla)
     assert res["ok"] is True
@@ -203,7 +203,7 @@ async def test_16_reassign_to_manager_resolves(session, case, alice, boss, assig
 
 @pytest.mark.asyncio
 async def test_17_reassign_access_group(session, case, assignment_alice):
-    sla = _sla(case.id); session.add(sla); await session.flush()
+    sla = _sla(case.id); session.add(sla); await session.commit()
     action = {"type": "reassign", "target_type": "access_group", "target_id": "managers"}
     res = await execute_action(session, case.id, action, sla)
     assert res["ok"] is True
@@ -215,7 +215,7 @@ async def test_17_reassign_access_group(session, case, assignment_alice):
 @pytest.mark.asyncio
 async def test_18_reassign_fails_when_target_unresolvable(session, case, assignment_alice):
     # Alice exists in assignment but not in user-directory, no manager
-    sla = _sla(case.id); session.add(sla); await session.flush()
+    sla = _sla(case.id); session.add(sla); await session.commit()
     action = {"type": "reassign", "target_type": "manager_of_current_assignee"}
     res = await execute_action(session, case.id, action, sla)
     assert res["ok"] is False
@@ -234,7 +234,7 @@ async def test_19_policy_tree_override_wins(session, ct):
         name="Override", scope="global", tree_json={"levels": []}, is_active=True,
     )
     session.add(default_tree); session.add(override)
-    await session.flush()
+    await session.commit()
 
     policy = {"id": "p", "escalation_tree_id": str(override.id)}
     resolved = await resolve_escalation_tree_for_policy(session, ct.id, policy)
@@ -248,7 +248,7 @@ async def test_20_policy_override_missing_falls_back(session, ct):
         name="CT-Default", scope="case_type", case_type_id=ct.id,
         tree_json={"levels": []}, is_active=True,
     )
-    session.add(default_tree); await session.flush()
+    session.add(default_tree); await session.commit()
 
     policy = {"id": "p", "escalation_tree_id": str(uuid.uuid4())}  # missing
     resolved = await resolve_escalation_tree_for_policy(session, ct.id, policy)
@@ -266,7 +266,7 @@ async def test_21_policy_override_inactive_falls_back(session, ct):
         name="Dead", scope="global", tree_json={"levels": []}, is_active=False,
     )
     session.add(default_tree); session.add(inactive)
-    await session.flush()
+    await session.commit()
 
     policy = {"id": "p", "escalation_tree_id": str(inactive.id)}
     resolved = await resolve_escalation_tree_for_policy(session, ct.id, policy)
@@ -279,7 +279,7 @@ async def test_22_no_override_uses_case_type_default(session, ct):
         name="CT-Default", scope="case_type", case_type_id=ct.id,
         tree_json={"levels": []}, is_active=True,
     )
-    session.add(default_tree); await session.flush()
+    session.add(default_tree); await session.commit()
 
     policy = {"id": "p"}  # no escalation_tree_id
     resolved = await resolve_escalation_tree_for_policy(session, ct.id, policy)

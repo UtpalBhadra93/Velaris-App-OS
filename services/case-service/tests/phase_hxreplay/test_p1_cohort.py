@@ -160,7 +160,7 @@ async def test_gdpr_anonymizes_replay_rows(session):
     run = ReplayRunModel(tenant_id="default", kind="single", case_id=uuid.uuid4(),
                          created_by="forget-me")
     session.add(run)
-    await session.flush()
+    await session.commit()
     session.add(ReplayResultModel(
         run_id=run.id, case_id=run.case_id, tenant_id="default",
         baseline_metrics={}, trace={"nodes": [

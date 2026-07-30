@@ -8,17 +8,20 @@ SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
 import uuid
 from typing import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
 
 import case_service.db.session as _db_session
 from case_service.db.models import Base
@@ -76,13 +79,48 @@ if EXTERNAL_MODE:
         from case_service.config import get_settings
         get_settings().database_backend = "mysql"
 else:
-    TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+    # A FILE-backed SQLite DB with NullPool — every session gets its OWN
+    # connection, and therefore its own transaction.
+    #
+    # The old harness was `:memory:` + StaticPool, i.e. a single shared
+    # connection: the test's `session` fixture and the request's session were
+    # two AsyncSessions sitting on ONE transaction. A commit or rollback from
+    # either moved the other's ground, each kept a stale identity map, and row
+    # visibility ended up depending on which session last touched the
+    # connection — that is, on test order. That is what produced the years of
+    # intermittent "but it passes in isolation" failures.
+    #
+    # A file DB keeps the data visible across connections while giving each one
+    # real isolation — the same semantics the service gets from Postgres in
+    # production, which is the point: the harness should not be a special case.
+    #
+    # The cost of that honesty: a test may no longer `flush()` and expect the
+    # API to see the row, and it must not hold a write transaction open across
+    # a client call. Both now fail loudly instead of corrupting a later test.
+    #
+    # NullPool for the same reason the external harness uses it: pytest-asyncio
+    # builds a fresh event loop per test and a pooled async connection stays
+    # bound to the loop that created it.
+    from sqlalchemy.pool import NullPool
+
+    _TEST_DB_DIR = tempfile.mkdtemp(prefix="velaris-test-db-")
+    atexit.register(shutil.rmtree, _TEST_DB_DIR, True)
+    TEST_DB_URL = f"sqlite+aiosqlite:///{_TEST_DB_DIR}/helix_test.sqlite"
     engine = create_async_engine(
         TEST_DB_URL,
         echo=False,
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+        # SQLite's busy-wait: with separate connections a writer can briefly
+        # hold the lock, and waiting beats erroring.
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_test_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")   # readers don't block the writer
+        cur.execute("PRAGMA synchronous=OFF")    # throwaway DB — durability is moot
+        cur.close()
 TestSessionFactory = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )

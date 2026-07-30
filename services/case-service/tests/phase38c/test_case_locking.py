@@ -60,7 +60,7 @@ async def case_type(session) -> CaseTypeModel:
         definition_json=CASE_TYPE_DEF, default_priority="medium",
     )
     session.add(ct)
-    await session.flush()
+    await session.commit()
     return ct
 
 
@@ -75,7 +75,7 @@ async def case_inst(session, case_type) -> CaseInstanceModel:
         current_stage_id=STAGE_ID,
     )
     session.add(ci)
-    await session.flush()
+    await session.commit()
     return ci
 
 
@@ -89,7 +89,7 @@ async def assignment(session, case_inst) -> CaseAssignmentModel:
         status="active",
     )
     session.add(a)
-    await session.flush()
+    await session.commit()
     return a
 
 
@@ -243,7 +243,7 @@ class TestCompleteStepWithLocking:
         a.locked_by = "op-1"
         a.locked_at = datetime.now(timezone.utc) - timedelta(hours=2)
         a.lock_expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
-        await session.flush()
+        await session.commit()
 
         _override("op-2")
         try:
