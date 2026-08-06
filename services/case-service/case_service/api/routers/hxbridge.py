@@ -39,6 +39,13 @@ from case_service.hxbridge.executor import execute_connector, form_lookup_connec
 from case_service import hxvault
 from case_service.hxbridge.protocol import list_connector_types, get_connector
 import case_service.hxbridge.connectors  # noqa: F401 — triggers self-registration
+from case_service.core.error_codes import (
+    CONN_DISABLED_400,
+    CONN_NOTFOUND_404,
+    CONN_ROLE_403,
+    CONN_UNKNOWN_TYPE_400,
+    coded,
+)
 
 router = APIRouter(prefix="/hxbridge", tags=["hxbridge"])
 webhook_router = APIRouter(prefix="/webhooks", tags=["hxbridge-webhooks"])
@@ -104,7 +111,7 @@ async def create_connector(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     if body.connector_type not in {ct["connector_type"] for ct in list_connector_types()}:
-        raise HTTPException(400, f"Unknown connector_type: '{body.connector_type}'")
+        raise coded(400, CONN_UNKNOWN_TYPE_400, f"Unknown connector_type: '{body.connector_type}'")
 
     # Application-level duplicate check (handles SQLite NULL inequality edge case)
     existing = (await session.execute(
@@ -292,7 +299,7 @@ async def sandbox_execute(
     """Sandbox: execute a connector with sample input data."""
     connector = await _get_or_404(session, connector_id)
     if not connector.enabled:
-        raise HTTPException(400, "Connector is disabled")
+        raise coded(400, CONN_DISABLED_400, "Connector is disabled")
     try:
         result = await execute_connector(session, connector, body.input_data)
         return {"ok": True, "result": result}
@@ -310,7 +317,7 @@ async def form_lookup(
     """Execute a connector as a form field lookup; logs an audit trail row."""
     connector = await _get_or_404(session, connector_id)
     if not connector.enabled:
-        raise HTTPException(400, "Connector is disabled")
+        raise coded(400, CONN_DISABLED_400, "Connector is disabled")
     tenant_id = getattr(user, "tenant_id", None) or "default"
     try:
         result = await form_lookup_connector(
@@ -337,10 +344,10 @@ async def rotate_connector_credentials(
 ):
     """SD-6: Clear connector credentials so they can be re-entered. Requires admin or integration role."""
     if not (user.is_admin or "integration" in user.roles or "admin" in user.roles):
-        raise HTTPException(403, "admin or integration role required")
+        raise coded(403, CONN_ROLE_403, "admin or integration role required")
     row = await session.get(ConnectorRegistryModel, connector_id)
     if not row:
-        raise HTTPException(404, "Connector not found")
+        raise coded(404, CONN_NOTFOUND_404, "Connector not found")
     row.credentials           = {}
     row.credential_expires_at = None
     row.credentials_updated_at = datetime.now(timezone.utc)
@@ -453,12 +460,12 @@ async def retry_dlq(
 ):
     item = await session.get(DeadLetterQueueModel, item_id)
     if not item:
-        raise HTTPException(404, "DLQ item not found")
+        raise coded(404, CONN_NOTFOUND_404, "DLQ item not found")
     if item.resolution:
         raise HTTPException(409, f"Already resolved: {item.resolution}")
     connector = await session.get(ConnectorRegistryModel, item.connector_id)
     if not connector:
-        raise HTTPException(404, "Connector no longer exists")
+        raise coded(404, CONN_NOTFOUND_404, "Connector no longer exists")
     ok = await retry_dlq_item(session, item, connector)
     return {"ok": ok, "retry_count": item.retry_count, "resolution": item.resolution}
 
@@ -474,7 +481,7 @@ async def receive_webhook(
     """Receive an inbound webhook payload and log it as an integration_call."""
     connector = await session.get(ConnectorRegistryModel, connector_id)
     if not connector or not connector.enabled:
-        raise HTTPException(404, "Connector not found or disabled")
+        raise coded(404, CONN_NOTFOUND_404, "Connector not found or disabled")
 
     try:
         payload = await request.json()
@@ -499,7 +506,7 @@ async def receive_webhook(
 async def _get_or_404(session: AsyncSession, connector_id: uuid.UUID) -> ConnectorRegistryModel:
     c = await session.get(ConnectorRegistryModel, connector_id)
     if not c:
-        raise HTTPException(404, f"Connector {connector_id} not found")
+        raise coded(404, CONN_NOTFOUND_404, f"Connector {connector_id} not found")
     return c
 
 

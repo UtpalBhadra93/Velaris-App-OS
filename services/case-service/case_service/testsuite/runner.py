@@ -4,7 +4,7 @@
 persisting the run + results; `run_suite` drives it to completion. Mutating runs
 provision ephemeral tenants and force-teardown in a finally block (decision D1).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

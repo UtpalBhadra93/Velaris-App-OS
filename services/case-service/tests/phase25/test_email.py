@@ -118,7 +118,7 @@ def test_12_build_message_id_uniqueness():
     a = build_message_id(cid)
     b = build_message_id(cid)
     assert a != b
-    # current format: <case-XXXXXXXX-nonce@domain> (domain from HELIX_AUTH_EMAIL_DOMAIN)
+    # current format: <case-XXXXXXXX-nonce@domain> (domain from VELARIS_AUTH_EMAIL_DOMAIN)
     assert a.startswith("<case-")
     assert a.endswith(">") and "@" in a
 

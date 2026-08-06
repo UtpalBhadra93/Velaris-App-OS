@@ -100,15 +100,26 @@ sudo systemctl daemon-reload
    `systemctl restart` would run the app against an unmigrated database or a
    stale `node_modules`. Keep using `update-velaris.sh` for updates, then
    `systemctl restart`, rather than restarting alone.
-2. **At boot the database may not be ready before case-service.**
-   `After=docker.service` orders startup but does not wait for Postgres to
-   accept connections, so expect a couple of restarts in the journal after a
-   reboot before it settles. `Restart=always` makes that self-correcting rather
-   than fatal.
+2. **The database is waited for, not merely ordered after.** `After=docker.service`
+   orders startup but only guarantees the *daemon* — not that Postgres inside a
+   container has bound its port. The engine and case-service units therefore run
+   `velaris-wait-deps.sh` as `ExecStartPre=`, which blocks until the DB port from
+   `VELARIS_CASE_DATABASE_URL` accepts a connection (90s, then fails the unit so
+   `Restart=always` retries). Temporal is waited for too, but softly — 30s, then
+   it starts anyway and lets the poller retry.
+
+   This is not theoretical. On **2026-08-05** a Docker daemon restart brought
+   back only the five containers that had `restart: unless-stopped`; the
+   database, cache, broker and vault stayed `Exited(255)` while case-service
+   came up healthy and answered every login with a `500` for 30 minutes. Two
+   fixes landed together: every long-running service in `docker-compose.yml` now
+   carries `restart: unless-stopped`, and the units `Require=docker.service`
+   plus the `ExecStartPre` wait above. `install.sh` also enables `docker.service`
+   at boot, without which neither fix fires.
 3. **`DATABASE_BACKEND` is not in `.env`** — `start-velaris.sh` derives it from
    `velaris.yaml`, and `case_service/config.py` silently defaults to
    `postgresql` when it is missing. `velaris-exec.sh` re-derives it at every
-   start (along with `HELIX_SERVICE_REGISTRY`) so the units and the script agree.
+   start (along with `VELARIS_SERVICE_REGISTRY`) so the units and the script agree.
    Without that wrapper, a MySQL/MariaDB install would have run the Postgres
    code paths.
 

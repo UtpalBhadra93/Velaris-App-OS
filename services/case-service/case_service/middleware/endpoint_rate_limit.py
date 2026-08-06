@@ -15,7 +15,7 @@ the goal is reducing attempts by orders of magnitude, not exact counting.
 
 Skipped under pytest so test suites can hammer endpoints freely.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

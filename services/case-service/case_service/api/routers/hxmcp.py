@@ -5,7 +5,7 @@ caller's own Bearer JWT (401 without), and every tool re-checks HxGuard as
 that user. No service token exists on this surface in P1; external-agent
 scoped tokens are P4.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -7,7 +7,7 @@ it. Status values used for stages are non-PII workflow states read from a bounde
 raw row values are never placed in the definition (enum select-options come only from
 low-cardinality columns, and PII columns are high-cardinality → never become selects).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

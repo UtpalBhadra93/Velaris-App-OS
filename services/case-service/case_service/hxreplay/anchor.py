@@ -9,7 +9,7 @@ Cohort runs have no single case, so the chain entry is carried by the first case
 of the cohort — the carrier is arbitrary; the tamper evidence is the chained
 digest, which covers the WHOLE summary.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

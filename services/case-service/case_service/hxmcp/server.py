@@ -12,7 +12,7 @@ Protocol notes (MCP spec 2025-06-18, stateless mode):
   errors; the anti-probing 404 detail for denied case reads passes through
   verbatim so MCP can't be used as an existence oracle
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

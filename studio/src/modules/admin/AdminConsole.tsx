@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import RuleMigrationReport from "./RuleMigrationReport";
 import { useApi } from "@shared/hooks";
 import { useAuth } from "@/auth";
 import { usePermissions } from "@/auth/PermissionsContext";
@@ -71,7 +72,7 @@ export default function AdminConsole() {
       {tab === "audit"       && <AuditLogTab />}
       {tab === "queues"      && <QueuesTab />}
       {tab === "webhooks"    && <WebhooksTab />}
-      {tab === "rules"       && <RulesTab />}
+      {tab === "rules"       && <><RulesTab /><div style={{ marginTop: "var(--space-xl)" }}><RuleMigrationReport /></div></>}
       {tab === "calendars"   && <CalendarsTab />}
       {tab === "permissions" && <PermissionsTab />}
       {tab === "marketplace" && <MarketplaceSourcesTab />}

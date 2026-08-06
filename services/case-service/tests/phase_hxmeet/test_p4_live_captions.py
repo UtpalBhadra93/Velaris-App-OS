@@ -8,7 +8,7 @@ accelerator auto-detect override. The WebSocket transport itself is proven
 live (httpx's ASGI test client speaks no WS); Whisper is mocked throughout —
 no model weights in CI.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

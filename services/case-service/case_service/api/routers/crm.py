@@ -209,6 +209,13 @@ async def list_invoices(
     # receive totals-only with unit_price, amount, and description redacted.
     full_access = _has_sensitive_access(user)
     rows = await crm_svc.list_invoices(session, case_id)
+    # Xero owns invoice status once the invoice exists; refresh still-open ones
+    # on read. Never raises, so an unreachable Xero shows last-known status
+    # rather than an empty panel.
+    rows = await crm_svc.refresh_invoice_statuses(
+        session, rows, tenant_id=getattr(user, "tenant_id", None) or "default",
+    )
+    await session.commit()
     return [InvoiceOut.from_model(r, full_access=full_access) for r in rows]
 
 

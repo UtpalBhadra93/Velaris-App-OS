@@ -301,6 +301,29 @@ async def submit_case(
     session.add(case)
     await session.flush()
 
+    # HxConsent (§8.1): submitting is the consent act for processing this
+    # case, so the basis is recorded at the moment it arises rather than
+    # reconstructed later. Best-effort — a ledger write must never lose a
+    # customer's submission, and the case itself remains lawful under the
+    # same act whether or not the row lands.
+    try:
+        from case_service.compliance import consent as _consent
+
+        await _consent.record(
+            session,
+            subject_ref=body.submitter_email,
+            purpose=_consent.CASE_PROCESSING,
+            action=_consent.GRANTED,
+            basis=_consent.CONSENT,
+            source="portal_submit",
+            evidence={"tenant_slug": slug, "subject": body.subject[:200]},
+            case_id=case.id,
+            tenant_id=str(ct.tenant_id) if ct.tenant_id else None,
+            actor_id=f"portal:{body.submitter_email}",
+        )
+    except Exception as _exc:
+        log.warning("consent not recorded for portal submit: %s", _exc)
+
     # Portal v2 (P1): link the case to an existing customer account at submit
     # time — registration only back-links historical cases, so without this a
     # logged-in customer's NEW submissions never appear under My Cases.

@@ -5,6 +5,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@shared/components";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 const API = "/api/v1/hxmigrate";
 function _authHdr(): Record<string, string> {
@@ -99,6 +101,9 @@ function UploadForm({ onStarted }: { onStarted: (runId: string) => void }) {
   const [mode, setMode]           = useState("full");
   const [loading, setLoading]     = useState(false);
   const [err, setErr]             = useState<string | null>(null);
+  // The body is already parsed for `detail`; this keeps the stable error code
+  // that sits beside it instead of discarding it at the same line.
+  const [errObj, setErrObj]       = useState<unknown>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -106,8 +111,8 @@ function UploadForm({ onStarted }: { onStarted: (runId: string) => void }) {
   }, []);
 
   const handleSubmit = async () => {
-    if (!file) { setErr("Select a file."); return; }
-    setLoading(true); setErr(null);
+    if (!file) { setErr("Select a file."); setErrObj(null); return; }
+    setLoading(true); setErr(null); setErrObj(null);
     const fd = new FormData();
     fd.append("file", file);
     fd.append("source_platform", platform);
@@ -120,6 +125,7 @@ function UploadForm({ onStarted }: { onStarted: (runId: string) => void }) {
     } else {
       const e = await r.json().catch(() => ({}));
       setErr(e.detail || "Upload failed.");
+      setErrObj(codedFrom(e) ?? null);
     }
     setLoading(false);
   };
@@ -167,7 +173,11 @@ function UploadForm({ onStarted }: { onStarted: (runId: string) => void }) {
           onChange={e => setFile(e.target.files?.[0] ?? null)} />
       </div>
 
-      {err && <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 12 }}>{err}</div>}
+      {err && (
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 12 }}>
+          {err}<ErrorCodeLink error={errObj} componentKey="hxmigrate" />
+        </div>
+      )}
       <Button disabled={loading || !file} onClick={handleSubmit}>
         {loading ? "Starting pipeline…" : "🚀 Start HxMigrate Pipeline"}
       </Button>

@@ -21,7 +21,7 @@ system variable (MySQL ``max_execution_time`` ms/SELECT-only vs MariaDB
 ``max_statement_time`` seconds/all-statements) — lives at the introspection layer
 (`MariadbIntrospector`), dispatched on the live bind's ``_is_mariadb`` flag, not here.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

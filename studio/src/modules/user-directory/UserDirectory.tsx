@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 type Entry = {
   id?: string;
@@ -36,8 +38,15 @@ async function apiJSON<T>(url: string, opts: RequestInit = {}): Promise<T> {
   const r = await fetch(url, { ...opts, headers: { ..._authHdr(), ...opts.headers } });
   if (!r.ok) {
     let detail = `${url} → ${r.status}`;
-    try { const j = await r.json(); if (j?.detail) detail = j.detail; } catch {}
-    throw new Error(detail);
+    let coded: Record<string, string> = {};
+    try {
+      const j = await r.json();
+      if (j?.detail) detail = j.detail;
+      coded = codedFrom(j) ?? {};
+    } catch { /* non-JSON body is still an error, just an uncoded one */ }
+    // The auth subsystem raises coded errors (VEL-AUTH-*), and this helper
+    // discarded them — throwing a bare Error is why they never reached the UI.
+    throw Object.assign(new Error(detail), coded);
   }
   return r.json();
 }
@@ -61,6 +70,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [editing, setEditing] = useState<Entry | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [errObj, setErrObj] = useState<unknown>(null);
   const [validationErr, setValidationErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newPassword, setNewPassword] = useState("");
@@ -80,7 +90,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
       params.set("active_only", "false");
       const data = await apiJSON<Entry[]>(`/api/v1/user-directory?${params}`);
       setEntries(data);
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
   }
 
   async function loadAutocompleteData() {
@@ -102,7 +112,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
       const data = await apiJSON<any>("/api/v1/user-directory/sync-from-db", { method: "POST" });
       setSyncResult(data);
       await load();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
     finally { setSyncing(false); }
   }
 
@@ -173,7 +183,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
       setNewPassword("");
       setRequirePwChange(true);
       await load();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
     finally { setBusy(false); }
   }
 
@@ -184,7 +194,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
       const r = await fetch(`/api/v1/user-directory/${user_id}`, { method: "DELETE", headers: _authHdr() });
       if (!r.ok && r.status !== 204) throw new Error(`Deactivate failed: ${r.status}`);
       await load();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
     finally { setBusy(false); }
   }
 
@@ -198,7 +208,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
         body: JSON.stringify({ ...user, is_active: true }),
       });
       await load();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
     finally { setBusy(false); }
   }
 
@@ -213,7 +223,7 @@ export default function UserDirectory({ embedded }: { embedded?: boolean } = {})
 
       {err && (
         <div style={{ color: "var(--status-failed)", background: "color-mix(in srgb, var(--status-failed) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--status-failed) 25%, transparent)", borderRadius: "var(--radius-sm)", padding: "8px 12px", marginBottom: "var(--space-md)", fontSize: 12 }}>
-          ⚠ {err}
+          ⚠ {err}<ErrorCodeLink error={errObj} componentKey="user-directory" />
         </div>
       )}
 

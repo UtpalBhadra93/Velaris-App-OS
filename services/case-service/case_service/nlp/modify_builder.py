@@ -18,7 +18,7 @@ create-path ``_normalize`` keeps only the structural keys and would silently str
 forms/variables/notifications from a live definition. Modify validates the
 replacement structurally and lets the DIFF CARD + human review carry the rest.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -9,7 +9,7 @@ WITHOUT shipping executable code — Layer-3 stays forbidden.
 The feature context is the lasting contract packs write against; keep it flat
 (the grammar allows no attribute/subscript access) and documented.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

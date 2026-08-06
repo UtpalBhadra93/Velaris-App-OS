@@ -34,7 +34,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
-from helix_ir.models.process import (
+from velaris_ir.models.process import (
     BusinessRuleTask,
     GenericTask,
     ManualTask,

@@ -15,7 +15,7 @@ hash lives on its capability grant. Every call:
 Read-only by design in this release. Writes are a future, separately-scoped
 capability. 404 anti-oracle on every failure mode of the token.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

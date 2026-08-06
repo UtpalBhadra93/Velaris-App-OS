@@ -1,6 +1,6 @@
 """HELIX Case Service — FastAPI application.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -51,6 +51,7 @@ from case_service.api.routers.hxnexus import router as hxnexus_router
 from case_service.api.routers.portal import public_router as portal_router, admin_router as portal_admin_router
 from case_service.api.routers.access_groups import router as access_groups_router
 from case_service.api.routers.hxstream import router as hxstream_router
+from case_service.api.routers.status import router as status_router
 from case_service.api.routers.knowledge import router as knowledge_router
 from case_service.api.routers.graph import router as graph_router
 from case_service.api.routers.apps import router as apps_router
@@ -128,7 +129,7 @@ for _uvicorn_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
         _uv_log.addHandler(_sh)
 
 
-_DEFAULT_JWT_SECRET = "helix-dev-secret-change-in-production"
+_DEFAULT_JWT_SECRET = "velaris-dev-secret-change-in-production"
 
 
 @asynccontextmanager
@@ -136,11 +137,35 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     settings = get_settings()
 
+    # ── VEL-SYS-STORAGE-PRECHECK-000 — fail the storage path at BOOT ───────
+    # The catalog's reference incident: `*_STORAGE_LOCAL_PATH` pointed at a
+    # root-owned directory, so every upload 500'd at runtime with nothing to
+    # look up. Checking writability here turns a mystery per-upload failure
+    # into one loud, searchable startup line. Warn rather than abort: a
+    # deployment that never uploads a document should still boot.
+    if (settings.storage_backend or "local").lower() == "local":
+        import os as _os
+        from pathlib import Path as _Path
+
+        _p = _Path(settings.storage_local_path)
+        try:
+            _p.mkdir(parents=True, exist_ok=True)
+            if not _os.access(_p, _os.W_OK):
+                raise PermissionError(f"{_p} is not writable by this user")
+        except Exception as _exc:
+            logger.warning(
+                "VEL-SYS-STORAGE-PRECHECK-000: document storage path %s is not "
+                "usable (%s). Every upload will fail until this is fixed — set "
+                "VELARIS_CASE_STORAGE_LOCAL_PATH to a writable install-local "
+                "path, or create the directory with correct ownership.",
+                settings.storage_local_path, _exc,
+            )
+
     # ── Security check: warn loudly if default JWT secret is still in use ───
     if settings.auth_secret == _DEFAULT_JWT_SECRET:
         logger.warning(
             "SECURITY WARNING: auth_secret is set to the default dev value. "
-            "Set HELIX_CASE_AUTH_SECRET to a long random secret before deploying to production. "
+            "Set VELARIS_CASE_AUTH_SECRET to a long random secret before deploying to production. "
             "Example: openssl rand -hex 32"
         )
 
@@ -149,8 +174,8 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "SECURITY WARNING: RSA keys are not configured — tokens are signed with "
             "HS256 (shared secret). Any service holding auth_secret can mint admin tokens. "
-            "Generate a key pair and set HELIX_CASE_AUTH_RSA_PRIVATE_KEY + "
-            "HELIX_CASE_AUTH_RSA_PUBLIC_KEY to enable RS256 before deploying to production. "
+            "Generate a key pair and set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY + "
+            "VELARIS_CASE_AUTH_RSA_PUBLIC_KEY to enable RS256 before deploying to production. "
             "Run: python -c \"from case_service.auth.jwt_handler import generate_rsa_keypair; generate_rsa_keypair()\""
         )
     else:
@@ -443,6 +468,83 @@ async def lifespan(app: FastAPI):
         logger.warning("OutboxRelay unavailable: %s", _e)
     # <<< C1 outbox relay
 
+    # >>> §8.8 health sampler — the producer HxStatus needs
+    # `health_check_results` was an empty schema: its only writer lived inside
+    # GET /health/deep, which nothing calls on a schedule. Uptime over a window
+    # is not measurable without a history, so this writes one.
+    _health_sampler = None
+    try:
+        from case_service.db.session import get_session_factory as _gsf3
+        from case_service.integrations.health_sampler import HealthSampler
+        _hs = get_settings()
+        if _hs.health_sampler_enabled:
+            _health_sampler = HealthSampler(
+                _gsf3(),
+                interval_seconds=_hs.health_sampler_interval_seconds,
+                retention_days=_hs.health_sampler_retention_days,
+            )
+            _health_sampler.start()
+    except Exception as _e:
+        logger.warning("HealthSampler unavailable: %s", _e)
+    # <<< §8.8 health sampler
+
+    # >>> §8.10 scheduled PII scan
+    # The HxPrivacy inventory was only as current as the last time a human
+    # remembered to run it — and a stale inventory still looks authoritative,
+    # so a field added last month is simply missing from it. The scan is
+    # idempotent and never overwrites a reviewer's verdict, which is what makes
+    # running it unattended safe.
+    _pii_scanner = None
+    try:
+        from case_service.db.session import get_session_factory as _gsf4
+        from case_service.integrations.pii_scanner import PIIScanner
+        _ps = get_settings()
+        if _ps.pii_scanner_enabled:
+            _pii_scanner = PIIScanner(
+                _gsf4(), interval_seconds=_ps.pii_scanner_interval_seconds,
+            )
+            _pii_scanner.start()
+    except Exception as _e:
+        logger.warning("PIIScanner unavailable: %s", _e)
+    # <<< §8.10 scheduled PII scan
+
+    # >>> retention scheduler (opt-in twice — it deletes)
+    _retention_runner = None
+    try:
+        from case_service.db.session import get_session_factory as _gsf5
+        from case_service.integrations.retention_runner import RetentionRunner
+        _rs = get_settings()
+        if _rs.retention_scheduler_enabled:
+            _retention_runner = RetentionRunner(
+                _gsf5(),
+                interval_seconds=_rs.retention_scheduler_interval_seconds,
+                apply=_rs.retention_scheduler_apply,
+            )
+            _retention_runner.start()
+    except Exception as _e:
+        logger.warning("RetentionRunner unavailable: %s", _e)
+    # <<< retention scheduler
+
+    # >>> §2.1 durable event log (opt-in)
+    # A SECOND, independent sink on the same outbox rows. The webhook relay
+    # above is untouched: the bus has its own publish cursor, so turning this
+    # on or off cannot affect delivery. Off by default — the outbox is already
+    # durable on disk, so this adds distribution, not safety.
+    _event_bus_relay = None
+    try:
+        _s = get_settings()
+        if _s.event_bus_enabled:
+            from case_service.db.session import get_session_factory as _gsf2
+            from case_service.integrations.event_bus import EventBusRelay
+            _event_bus_relay = EventBusRelay(
+                _gsf2(), brokers=_s.event_bus_brokers,
+                topic_prefix=_s.event_bus_topic_prefix,
+            )
+            _event_bus_relay.start()
+    except Exception as _e:
+        logger.warning("EventBusRelay unavailable: %s", _e)
+    # <<< §2.1 durable event log
+
     # >>> PUO Phase 2: platform update watcher (admin notifications)
     _puo_watcher = None
     try:
@@ -479,6 +581,14 @@ async def lifespan(app: FastAPI):
     # >>> C1 outbox relay stop
     if _outbox_relay is not None:
         _outbox_relay.stop()
+    if _event_bus_relay is not None:
+        await _event_bus_relay.stop()
+    if _health_sampler is not None:
+        _health_sampler.stop()
+    if _pii_scanner is not None:
+        _pii_scanner.stop()
+    if _retention_runner is not None:
+        _retention_runner.stop()
     # <<< C1 outbox relay stop
 
     # >>> PUO Phase 2 stop
@@ -520,6 +630,162 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Error catalog wiring: attach the stable code to the response body and
+    # the log line, so the identifier in `docs/Future/error-catalog.md` is the
+    # same string a support engineer sees in both places. Uncoded
+    # HTTPExceptions are re-raised untouched — this only enriches, never
+    # reshapes an existing contract.
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+
+    from case_service.core.error_codes import (
+        DB_UNAVAILABLE_503,
+        SYS_UNHANDLED_500,
+        VAULT_DEK_503,
+        VAULT_SHREDDED_410,
+        CodedHTTPException,
+        error_payload,
+    )
+    from sqlalchemy.exc import InterfaceError, OperationalError
+
+    from case_service.hxvault import DekNotLoadedError
+    from case_service.hxvault.keyring import KeyShreddedError
+
+    # VEL-DOC-UUID-422: FastAPI rejects a malformed path UUID before any
+    # handler runs, so the code cannot be raised from a route — it has to be
+    # attached to the framework's own validation failure. Scoped to UUID path
+    # params on document routes so every other 422 keeps its default body.
+    from fastapi.exceptions import RequestValidationError
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(request, exc: RequestValidationError):  # noqa: ANN001
+        from case_service.core.error_codes import DOC_UUID_422, error_payload
+
+        errors = exc.errors()
+        uuid_path_error = any(
+            e.get("type", "").startswith("uuid")
+            and "path" in (e.get("loc") or ())
+            for e in errors
+        )
+        if uuid_path_error and "/documents" in request.url.path:
+            logging.getLogger("case_service.errors").warning(
+                "%s %s -> 422 %s", request.method, request.url.path, DOC_UUID_422,
+            )
+            return JSONResponse(
+                status_code=422,
+                content=error_payload(DOC_UUID_422, jsonable_encoder(errors)),
+            )
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+    @app.exception_handler(CodedHTTPException)
+    async def _coded_error_handler(request, exc: CodedHTTPException):  # noqa: ANN001
+        logging.getLogger("case_service.errors").warning(
+            "%s %s -> %s %s", request.method, request.url.path,
+            exc.status_code, exc.code,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_payload(exc.code, exc.detail),
+            headers=getattr(exc, "headers", None),
+        )
+
+    # HxVault and database faults reached the client as bare 500s: both are
+    # raised deep in library code (crypto, the driver) and no router catches
+    # them. A 500 tells an operator nothing about which of these happened, and
+    # the three differ completely in what to do next — so they are mapped here,
+    # at the one place every request passes through.
+    @app.exception_handler(KeyShreddedError)
+    async def _vault_shredded_handler(request, exc):  # noqa: ANN001
+        # 410 Gone, not 500 or 404: the object existed, the key was destroyed
+        # on purpose, and it is NOT coming back. Anything retryable-looking
+        # invites a retry loop and then a pointless restore attempt.
+        logging.getLogger("case_service.errors").error(
+            "%s %s -> shredded DEK: %s", request.method, request.url.path, exc,
+        )
+        return JSONResponse(
+            status_code=410,
+            content=error_payload(
+                VAULT_SHREDDED_410,
+                "This data was encrypted with a key that has been destroyed "
+                "(crypto-shredding). It cannot be recovered — not from a backup.",
+            ),
+        )
+
+    @app.exception_handler(DekNotLoadedError)
+    async def _vault_dek_handler(request, exc):  # noqa: ANN001
+        # 503, deliberately different from the above: this one IS transient —
+        # a sealed or unreachable OpenBao, or a missing KEK. Retrying is
+        # reasonable once an operator has fixed the vault.
+        logging.getLogger("case_service.errors").error(
+            "%s %s -> DEK unavailable: %s", request.method, request.url.path, exc,
+        )
+        return JSONResponse(
+            status_code=503,
+            content=error_payload(
+                VAULT_DEK_503,
+                "Encryption keys are unavailable. The vault may be sealed or "
+                "unreachable; the data itself is intact.",
+            ),
+        )
+
+    async def _db_unavailable_handler(request, exc):  # noqa: ANN001
+        # The driver's message carries host, port, user and sometimes the
+        # database name. It goes to the log, never to the client.
+        logging.getLogger("case_service.errors").error(
+            "%s %s -> database unavailable: %s", request.method, request.url.path, exc,
+        )
+        return JSONResponse(
+            status_code=503,
+            content=error_payload(
+                DB_UNAVAILABLE_503,
+                "The database is unavailable. This is not a problem with your request.",
+            ),
+        )
+
+    # Registered for a TUPLE, because `OperationalError` alone missed the most
+    # common way a database goes away.
+    #
+    # SQLAlchemy only wraps a fault into `OperationalError` once a connection
+    # exists. When the server is simply not there, asyncpg's connect fails
+    # first and a bare `ConnectionRefusedError` propagates untouched — so on
+    # 2026-08-05 a stopped Postgres produced Starlette's default `text/plain`
+    # 500 instead of this handler's clean 503, while the handler that describes
+    # exactly that situation sat one exception type away.
+    #
+    # `ConnectionError` (the builtin) is safe to claim for the database here:
+    # httpx raises its own `httpx.ConnectError`, which does NOT inherit from it,
+    # so outbound connector and LLM failures cannot be mislabelled as a database
+    # fault. `InterfaceError` covers a connection dropped mid-statement.
+    _DB_FAULTS = (OperationalError, InterfaceError, ConnectionError)
+    for _fault in _DB_FAULTS:
+        app.add_exception_handler(_fault, _db_unavailable_handler)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_handler(request, exc):  # noqa: ANN001
+        # The floor under every handler above. Starlette's built-in fallback
+        # returns `text/plain` "Internal Server Error", which every client in
+        # this platform then fails to parse — the browser reports a JSON syntax
+        # error and the real fault stays invisible. This keeps the contract
+        # "every response from this API is JSON" true even for bugs.
+        #
+        # `exc_info=True` because this is, by definition, the case nobody
+        # classified: without the traceback in the log there is nothing left to
+        # debug from. The client gets none of it — no message, no type, no
+        # stack, since an unclassified error is exactly the kind most likely to
+        # carry a connection string or a token in its text.
+        logging.getLogger("case_service.errors").error(
+            "%s %s -> unhandled %s", request.method, request.url.path,
+            type(exc).__name__, exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error_payload(
+                SYS_UNHANDLED_500,
+                "The server hit an unexpected error. It has been logged with a "
+                "request id; your request was not applied.",
+            ),
+        )
 
     # >>> P23 observability wiring
     configure_logging()
@@ -572,6 +838,7 @@ def create_app() -> FastAPI:
     app.include_router(hxdbmanager_router, prefix=prefix)
     app.include_router(access_groups_router, prefix=prefix)
     app.include_router(hxstream_router, prefix=prefix)
+    app.include_router(status_router, prefix=prefix)
     app.include_router(knowledge_router, prefix=prefix)
     app.include_router(graph_router, prefix=prefix)
     app.include_router(apps_router, prefix=prefix)

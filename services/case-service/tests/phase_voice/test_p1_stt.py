@@ -14,7 +14,7 @@ silent-degrade feature:
 The ASR engine is stubbed throughout: these tests pin the endpoint contract,
 not Whisper's accuracy, and CI boxes have no model installed.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

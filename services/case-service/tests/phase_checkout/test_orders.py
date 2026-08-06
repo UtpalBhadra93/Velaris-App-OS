@@ -6,7 +6,7 @@ HxCheckout is dark until its marketplace package is installed, so these tests
 seed a MarketplaceInstallModel for the test tenant ("default" — the default admin
 token carries no tenant).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -13,7 +13,7 @@
 #                          install, omitting it would silently dispatch the
 #                          Postgres paths (e.g. the case-number sequence uses
 #                          nextval, which no-ops against MySQL).
-#   HELIX_SERVICE_REGISTRY the engine's HTTP task resolver reads it; absent
+#   VELARIS_SERVICE_REGISTRY the engine's HTTP task resolver reads it; absent
 #                          means the built-in demo endpoints.
 #
 # Deriving them here rather than baking them in at install time means editing
@@ -42,6 +42,6 @@ case "$DATABASE_BACKEND" in
 esac
 export DATABASE_BACKEND
 
-export HELIX_SERVICE_REGISTRY="${HELIX_SERVICE_REGISTRY:-{\"order-service\":\"http://localhost:3001\",\"notification-service\":\"http://localhost:3002\"}}"
+export VELARIS_SERVICE_REGISTRY="${VELARIS_SERVICE_REGISTRY:-{\"order-service\":\"http://localhost:3001\",\"notification-service\":\"http://localhost:3002\"}}"
 
 exec "$@"

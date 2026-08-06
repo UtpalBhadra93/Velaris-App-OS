@@ -7,6 +7,6 @@ storefront_* tables ship on the normal migration track (096); install flips the
 per-tenant gate (/api/v1/storefront + the public /api/v1/storefront/public routes)
 and the Studio module.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """

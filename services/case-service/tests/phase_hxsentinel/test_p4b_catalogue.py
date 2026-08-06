@@ -4,7 +4,7 @@ Pins: the bundled packs validate CONFORMING at import, the catalogue lists them
 with an installed flag, one-click install activates a bundled pack (and its
 rules actually fire), and an unknown official id 404s.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

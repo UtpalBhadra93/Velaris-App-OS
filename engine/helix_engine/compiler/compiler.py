@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from helix_ir.models.process import BPMNProcess
+from velaris_ir.models.process import BPMNProcess
 
 from helix_engine.compiler.parser import BPMNParser
 from helix_engine.compiler.validator import Validator, ValidationResult

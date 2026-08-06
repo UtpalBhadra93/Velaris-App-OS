@@ -12,7 +12,7 @@ independent of the request transaction that performs the actual write:
   4. release()  — on tool failure, delete the claim so a genuine retry can
                   re-run (a raised handler rolled its write back).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

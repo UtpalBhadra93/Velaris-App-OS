@@ -13,7 +13,7 @@ Security spine (mirrors the DB-SDK backends + connector trust model):
   * **No credential persistence in the URL** — creds are URL-encoded at connect time from
     the decrypted secret; callers store them HxVault-encrypted.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

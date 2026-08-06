@@ -67,7 +67,7 @@ _OTP_TTL_SECONDS = 600  # 10 minutes
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
 def _customer_jwt_secret() -> str:
-    return os.getenv("HELIX_CASE_SECRET_KEY", "dev-secret-change-me")
+    return os.getenv("VELARIS_CASE_SECRET_KEY", "dev-secret-change-me")
 
 
 def _mint_customer_token(customer_id: str, tenant_id: str, slug: str) -> str:

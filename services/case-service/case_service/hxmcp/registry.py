@@ -9,7 +9,7 @@ from TOOLS does not exist — there is no dynamic dispatch.
 P1 contains no mutating tool. No tool may ever touch security / authz /
 credentials (design invariant, not just a P1 restriction).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

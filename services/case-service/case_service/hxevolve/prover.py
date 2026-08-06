@@ -11,7 +11,7 @@ counterfactuals rule sets, not assignment, SLA clocks or step order — §8.3), 
 their evidence is **descriptive** mining statistics, labelled as such and judged
 only for plausibility, never presented as counterfactual proof.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

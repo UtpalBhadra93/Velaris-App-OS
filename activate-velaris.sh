@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
@@ -28,13 +28,13 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 
 # Read the registration server from .env when present so a self-hosted
 # website is used instead of the vendor default.
 REGISTER_URL="${VELARIS_REGISTER_URL:-}"
-if [ -z "$REGISTER_URL" ] && [ -f "$HELIX_DIR/.env" ]; then
-  REGISTER_URL=$(grep -E "^VELARIS_REGISTER_URL=" "$HELIX_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | xargs || true)
+if [ -z "$REGISTER_URL" ] && [ -f "$VELARIS_DIR/.env" ]; then
+  REGISTER_URL=$(grep -E "^VELARIS_REGISTER_URL=" "$VELARIS_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | xargs || true)
 fi
 
 # The activation call itself needs no DB, but setup_superadmin.py imports the
@@ -43,10 +43,10 @@ fi
 uv pip install psycopg2-binary bcrypt httpx cryptography --quiet 2>/dev/null || true
 
 VELARIS_REGISTER_URL="${REGISTER_URL:-https://velaris-app-os.duckdns.org}" \
-  uv run python "$HELIX_DIR/scripts/setup_superadmin.py" --key-only
+  uv run python "$VELARIS_DIR/scripts/setup_superadmin.py" --key-only
 
 echo ""
-if uv run python "$HELIX_DIR/scripts/verify_key.py"; then
+if uv run python "$VELARIS_DIR/scripts/verify_key.py"; then
   green "  ✓ Activation verified."
 else
   yellow "  ⚠ Key written but verification did not pass — see the message above."

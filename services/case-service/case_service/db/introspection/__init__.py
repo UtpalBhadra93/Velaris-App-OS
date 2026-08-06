@@ -17,7 +17,7 @@ MariaDB server is routed to `MariadbIntrospector` even when config says ``mysql`
 Adding a dialect = add a file + one ``_INTROSPECTORS`` entry. An unsupported dialect
 fails loud (ValueError) rather than silently returning wrong/empty results.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

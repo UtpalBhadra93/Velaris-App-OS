@@ -9,11 +9,11 @@
 #   ./scripts/secrets-render.sh --check   # render to stdout key names only (no write)
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENT_DIR="$HELIX_DIR/deploy/openbao/agent"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AGENT_DIR="$VELARIS_DIR/deploy/openbao/agent"
 OUT_DIR="$AGENT_DIR/out"
 RENDERED="$OUT_DIR/.env"
-TARGET="$HELIX_DIR/.env"
+TARGET="$VELARIS_DIR/.env"
 
 mkdir -p "$OUT_DIR"
 rm -f "$RENDERED"
@@ -37,8 +37,8 @@ docker run --rm \
 
 # 3. Sanity gates before touching .env
 [ -s "$RENDERED" ] || { echo "✗ render produced no output — .env left untouched"; exit 1; }
-grep -q '^HELIX_CASE_DATABASE_URL=' "$RENDERED" \
-  || { echo "✗ rendered file missing anchor key HELIX_CASE_DATABASE_URL — .env left untouched"; exit 1; }
+grep -q '^VELARIS_CASE_DATABASE_URL=' "$RENDERED" \
+  || { echo "✗ rendered file missing anchor key VELARIS_CASE_DATABASE_URL — .env left untouched"; exit 1; }
 
 if [ "${1:-}" = "--check" ]; then
   echo "✓ render OK — keys:"
@@ -48,9 +48,9 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # 4. First render keeps a one-time backup of the hand-maintained file
-if [ -f "$TARGET" ] && [ ! -f "$HELIX_DIR/.env.pre-openbao" ]; then
-  cp -p "$TARGET" "$HELIX_DIR/.env.pre-openbao"
-  chmod 600 "$HELIX_DIR/.env.pre-openbao"
+if [ -f "$TARGET" ] && [ ! -f "$VELARIS_DIR/.env.pre-openbao" ]; then
+  cp -p "$TARGET" "$VELARIS_DIR/.env.pre-openbao"
+  chmod 600 "$VELARIS_DIR/.env.pre-openbao"
   echo "  (backup of the pre-OpenBao .env kept at .env.pre-openbao)"
 fi
 
@@ -64,7 +64,7 @@ echo "✓ .env rendered from OpenBao ($(grep -cE '^[A-Z_0-9]+=' "$TARGET") keys)
 #    secrets without --env-file. Least-privilege: only the VELARIS_* keys the
 #    compose file actually references are copied (never JWT keys etc.).
 #    Best-effort — a subset failure must not fail the render.
-COMPOSE_DIR="$HELIX_DIR/deploy/docker-compose"
+COMPOSE_DIR="$VELARIS_DIR/deploy/docker-compose"
 COMPOSE_YML="$COMPOSE_DIR/docker-compose.yml"
 if [ -f "$COMPOSE_YML" ]; then
   SUBSET="$COMPOSE_DIR/.env"

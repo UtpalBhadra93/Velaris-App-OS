@@ -9,7 +9,7 @@ Everything here is read-only aggregation plus append-only dispute records — no
 score is ever mutated. Reliability is computed, not stored, so it is always
 current and there is nothing to keep in sync.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def get_storage_backend() -> StorageBackend:
     """Return a singleton storage backend based on case-service settings.
 
-    If HELIX_CASE_STORAGE_MASTER_KEY is set, the backend is wrapped with
+    If VELARIS_CASE_STORAGE_MASTER_KEY is set, the backend is wrapped with
     transparent AES-256-GCM encryption — every file is encrypted before being
     written and decrypted after being read, regardless of backend type.
     """
@@ -34,7 +34,7 @@ def get_storage_backend() -> StorageBackend:
         logger.info("Storage backend: MinIO (%s / %s)", s.minio_endpoint, s.minio_bucket)
     else:
         from .local_fs import LocalFSBackend
-        base = getattr(s, "storage_local_path", "/tmp/helix-docs")
+        base = getattr(s, "storage_local_path", "/tmp/velaris-docs")
         raw = LocalFSBackend(base_path=base)
         logger.info("Storage backend: local filesystem (%s)", base)
 
@@ -49,7 +49,7 @@ def get_storage_backend() -> StorageBackend:
         return EncryptedBackend(raw, master_key)
 
     logger.warning(
-        "Storage encryption is DISABLED. Set HELIX_CASE_STORAGE_MASTER_KEY "
+        "Storage encryption is DISABLED. Set VELARIS_CASE_STORAGE_MASTER_KEY "
         "(openssl rand -hex 32) to enable AES-256-GCM at-rest encryption."
     )
     return raw

@@ -8,7 +8,7 @@ that type; no cases scope = 403 on list, 404 on detail), the case_type
 filter, read-only surface, per-grant rate limit 429, and the broker://
 rows in the marketplace network log.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

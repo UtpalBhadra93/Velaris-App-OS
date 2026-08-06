@@ -8,7 +8,7 @@ proxy decision logic (auth, host allowlist semantics, IP-literal + private
 resolution refusal, deny-all on missing config), and access-log ingest into
 marketplace_network_log (grant-anchored, blocked = undeclared, rotate-safe).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

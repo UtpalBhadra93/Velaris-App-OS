@@ -5,7 +5,7 @@ package) is the WASM execution host for ``runtime: wasm`` marketplace
 packages, whose first consumer is HxSync custom field-mapping transforms —
 pure compute, value-in → value-out, no ambient I/O.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

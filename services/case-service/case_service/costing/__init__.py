@@ -7,6 +7,6 @@ HxGuard-gated (``costing.rates``), per-tenant, never exposed to portal
 identities. Design: docs/Future/Done/hxreplay-counterfactual-replay.md §11
 (manual timers / timesheets / billing export are later slices).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """

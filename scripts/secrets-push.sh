@@ -10,9 +10,9 @@
 # never echoed.
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INIT_FILE="$HELIX_DIR/deploy/openbao/.bao-init.json"
-ENV_FILE="$HELIX_DIR/.env"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INIT_FILE="$VELARIS_DIR/deploy/openbao/.bao-init.json"
+ENV_FILE="$VELARIS_DIR/.env"
 
 command -v jq >/dev/null || { echo "✗ jq is required"; exit 1; }
 [ -f "$INIT_FILE" ] || { echo "✗ $INIT_FILE missing — run ./scripts/secrets-init.sh first"; exit 1; }

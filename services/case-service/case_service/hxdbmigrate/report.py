@@ -5,7 +5,7 @@ session (structural metadata only — no per-row scans), so it works on any-size
 a bounded number of catalog queries. An AI narrative over this report is a later, optional,
 egress-gated add-on (see docs/Future/HxDBMigrate.md).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

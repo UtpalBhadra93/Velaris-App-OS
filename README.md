@@ -72,7 +72,30 @@
 
 ---
 
-## What's new in 2.1.0
+## What's new in 2.3.0
+
+**Compliance (§8) — five modules that answer what an auditor actually asks.**
+
+- **HxConsent** — an append-only record of *why* each use of a subject's data was lawful, at the moment it became lawful. A withdrawal is a new row, because an overwritten one cannot answer "was this lawful **then**". All six GDPR Art. 6 bases; a withdrawal against a non-consent basis is refused. It is also a **control**, not just evidence: marketing email, warehouse egress and AI processing are each refused without a lawful basis.
+- **HxPrivacy** — scans customer-built forms for probable personal data. A rescan never overwrites a human verdict; vanished fields go stale rather than deleted.
+- **Retention** — enforced, dry-run by default, open cases never deleted, and a platform default defers to any tenant that set its own period.
+- **HxLedger** — balanced books. A transaction balances or it does not exist; corrections are reversals, never edits; money is integer cents.
+- **HxDR** — recovery posture per region. An untested backup reports `untested`, never green; a restore slower than the objective reports `rto_breached`. `backup-velaris.sh` takes the dump *and* records it.
+- **HxStatus** — uptime that never claims what it did not measure.
+
+**Platform determinism** — event sourcing for the Case aggregate (append-only stream beside the row, with a verify endpoint), a CDC event bus fanning the outbox onto Redpanda, CRDT convergence for offline variable edits, and a Temporal interpreter that runs the existing `definition_json` unchanged.
+
+**AI governance** — LLMOps observability at the one chokepoint every call passes through; an `ai_action` step where the model *proposes* and a human accepts, edits or rejects; GDPR Art. 22 provenance recording the model that actually answered.
+
+**Also** — stable error codes in API responses, logs and the docs; statistical SLA prediction; skill-based and manager-of assignment; package format v2 (permissions as ReBAC tuples); and the first frontend tests.
+
+### 2.2.0
+
+- **HxSentinel** — risk that recommends and never decides: ground truth captured before scoring, a verify gate, similarity and oversight, shareable signal packs, a local model trained on the instance's own data, and subject disputes.
+- **Voice Input** — sovereign speech everywhere words are typed, transcribe-and-discard by default, voice form-fill, and customer-portal answers on an installed PWA.
+- **Corrections** — HxGuard case enforcement defaults to `enforce`; one canonical tenant identity; microsecond timestamps on MySQL/MariaDB; systemd units for engine, case-service and Studio.
+
+### 2.1.0
 
 - **HxMeet** — real-time case sessions: embedded video/screen-share (self-hosted LiveKit) or Teams/Zoom/Meet via connectors; single-use guest invites; consent-gated **sealed recordings and live transcripts** (tenant-key encrypted, audit-chain anchored, verifiable); GPU live captions (Whisper, auto-detected CUDA/Vulkan); post-session AI summaries; document-first KYC verification.
 - **HxNexus case Q&A** — ask anything about a case (variables, timeline, messages, documents, transcripts) with cited answers. Sovereignty-first: local models by default, external providers only by explicit tenant consent (pseudonymized + audited).
@@ -215,9 +238,21 @@ This script:
 ./update-velaris.sh
 ```
 
-Pulls the channel-pinned release, applies any new migrations, and restarts the stack.
+Pulls the channel-pinned release, applies any new migrations, and restarts the stack. It takes a
+database backup first and aborts if the dump fails.
 
-### 5. Stop services
+### 5. Back up
+
+```bash
+./backup-velaris.sh                    # dump + record it in the HxDR posture
+./backup-velaris.sh --keep 30 --quiet  # cron-friendly, prunes dumps older than 30 days
+```
+
+Takes the dump **and records it**, in one command. A bare `pg_dump` leaves no record, so the
+recovery posture reports *no backup* while backups are in fact being taken — wrong in the direction
+that teaches people to ignore the screen. Exits non-zero only if the backup itself failed.
+
+### 6. Stop services
 
 ```bash
 ./stop-velaris.sh          # stops Python services + Studio
@@ -226,7 +261,7 @@ Pulls the channel-pinned release, applies any new migrations, and restarts the s
 
 > Stop scripts require your system password. This prevents accidental or unauthorised shutdowns.
 
-### 6. Uninstall
+### 7. Uninstall
 
 ```bash
 ./uninstall-velaris.sh              # interactive — removes containers, volumes, venv, secrets
@@ -259,12 +294,14 @@ Either way, a package must pass the **Test Suite conformance gate** — determin
 services/
 ├── case-service/          # Active monolith — cases, auth, AI, and all modules
 │   ├── case_service/
-│   │   ├── api/routers/   # 40+ FastAPI routers
+│   │   ├── api/routers/   # 80+ FastAPI routers
 │   │   ├── auth/          # JWT (RS256), RBAC, ABAC, MFA, passkeys
+│   │   ├── compliance/    # HxConsent, HxPrivacy, HxLedger, HxDR, retention, audit anchoring
 │   │   ├── db/            # SQLAlchemy models + repository
 │   │   ├── hxnexus/       # AI assistant (multi-provider)
 │   │   ├── hxgraph/       # Knowledge graph
 │   │   ├── hxvault/       # Per-tenant encryption (envelope / crypto-shred)
+│   │   ├── integrations/  # Background samplers — health, retention, event bus relay
 │   │   ├── marketplace/   # App store + trust model + conformance gate
 │   │   ├── testsuite/     # Core deterministic test engine
 │   │   ├── hxtest/        # AI test generation (marketplace add-on)
@@ -279,7 +316,7 @@ services/
 
 engine/                    # BPMN process engine (Temporal-backed)
 studio/                    # React frontend (Vite)
-migrations/                # ordered SQL migrations (000–124, postgresql/ + mysql/)
+migrations/                # ordered SQL migrations (postgresql/ 001–155, mysql/ frozen baseline + 155→)
 libs/                      # helix-ir (schema) + helix-sdk
 plugins/                   # auth, cache, db, events, git, integrations, search
 load-tests/                # Locust load test suite (4 user classes)
@@ -295,15 +332,28 @@ deploy/
 
 ## Database migrations
 
-Migrations run automatically on `setup-velaris.sh` / `start-velaris.sh`. To inspect manually:
+Migrations run automatically on `setup-velaris.sh` / `start-velaris.sh`: each file is applied in
+filename order and recorded in a `schema_migrations` ledger, so an already-applied file is skipped.
+A failing migration stops startup — the platform never boots on a half-applied schema.
 
 ```bash
-# List migrations
-find migrations/ -name "*.sql" | sort
+# List migrations (the runner only sees maxdepth 1)
+find migrations/ -maxdepth 2 -name "*.sql" | sort
 
 # Apply a specific migration
-PGPASSWORD=<pw> psql -h localhost -U helix -d helix -f migrations/postgresql/124_marketplace_containers.sql
+PGPASSWORD=<pw> psql -h localhost -U velaris -d velaris \
+  -f migrations/postgresql/155_dr_measured_rto.sql
 ```
+
+**PostgreSQL** carries the full incremental history (`001` → `155`). **MySQL/MariaDB** starts from a
+**frozen** baseline — `000_baseline_pg154.sql`, a snapshot of PostgreSQL `001`–`154` — followed by
+the seed files and then one file per PostgreSQL migration from `155` on, sharing its sibling's
+number. The gap between `003` and `155` is intentional: the baseline already contains it.
+
+> **Never regenerate the MySQL baseline to ship a schema change.** On an existing install the
+> baseline is already in `schema_migrations`, so a regenerated one is silently skipped and the
+> change reaches nobody. Add a numbered file instead. `migrations/mysql/historical/README.md`
+> has the full story.
 
 ---
 

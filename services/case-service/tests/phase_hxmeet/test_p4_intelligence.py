@@ -11,7 +11,7 @@ check digits, expiry), the rule that a worker cannot record 'passed' over a
 failing check (409), worker verdict + checklist recorded, docs.verify HxGuard
 gate, and the audit event.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -4,7 +4,7 @@ Both emit tests in the core Test Suite's closed DSL so the same runner executes
 them. Structural = Layer 1 (no LLM, always correct). Scenario = Layer 2 (HxNexus,
 ADVISORY — never blocks the marketplace gate, decision D3).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

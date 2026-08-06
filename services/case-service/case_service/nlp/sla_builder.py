@@ -16,7 +16,7 @@ AI-down posture (signed off 2026-07-05): a **deterministic duration parser**
 fallback, clearly labelled ``source: "fallback"`` — it only uses durations written
 explicitly in the prompt and still fails honestly when none are parseable.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -20,7 +20,7 @@ Enforcement is two-layered so it cannot be bypassed:
 Pure ASGI middleware (not BaseHTTPMiddleware) so the receive channel can be
 wrapped without buffering the body.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -116,9 +116,15 @@ class BodyLimitMiddleware:
 
     @staticmethod
     async def _reject(send, limit: int) -> None:
-        body = json.dumps({
-            "detail": f"Request body too large. Limit is {limit // (1024 * 1024)} MB.",
-        }).encode()
+        # Carries the catalog code so a 413 is lookup-able like any other
+        # documented failure. Built by hand rather than raised: this is pure
+        # ASGI middleware, below the exception-handler layer.
+        from case_service.core.error_codes import SYS_BODY_413, error_payload
+
+        body = json.dumps(error_payload(
+            SYS_BODY_413,
+            f"Request body too large. Limit is {limit // (1024 * 1024)} MB.",
+        )).encode()
         await send({
             "type": "http.response.start",
             "status": 413,

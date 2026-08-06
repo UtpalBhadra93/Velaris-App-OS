@@ -12,7 +12,7 @@ only applies transitions that are actually due NOW per DB truth. A timer
 sleeping toward a stale deadline therefore no-ops harmlessly if the SLA
 was paused, resumed (deadlines shifted), or cancelled while it slept.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

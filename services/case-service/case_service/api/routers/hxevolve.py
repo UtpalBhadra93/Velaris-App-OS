@@ -8,7 +8,7 @@ HxEvolve itself NEVER writes production config.
 
 Design: docs/Future/hxevolve-self-optimizing.md (signed off 2026-07-05).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

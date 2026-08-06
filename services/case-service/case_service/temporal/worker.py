@@ -6,7 +6,7 @@ timers (SLATimerWorkflow), and their direct-repository activities.
 
 Can run embedded (in the FastAPI process) or standalone.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -29,16 +29,32 @@ from case_service.temporal.activities.sla_timer_activities import (
     get_sla_timer_state,
     list_case_sla_timers,
 )
+from case_service.temporal.workflows.case_interpreter_workflow import (
+    CaseInterpreterWorkflow,
+)
+from case_service.temporal.activities.interpreter_activities import (
+    case_status,
+    enter_stage,
+    load_case_plan,
+    try_advance,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TASK_QUEUE = "helix-case-service"
 
-CASE_WORKFLOWS = [CaseLifecycleWorkflow, SLATimerWorkflow]
+# The interpreter (#21) is registered unconditionally so the worker can serve
+# it, but it exits immediately for any case type that has not declared
+# `orchestration: temporal` — registration is not activation.
+CASE_WORKFLOWS = [CaseLifecycleWorkflow, SLATimerWorkflow, CaseInterpreterWorkflow]
 CASE_ACTIVITIES = [
     list_case_sla_timers,
     get_sla_timer_state,
     fire_sla_event,
+    load_case_plan,
+    enter_stage,
+    try_advance,
+    case_status,
 ]
 
 
@@ -61,7 +77,7 @@ async def start_worker(
 ) -> Worker:
     """Create and start an embedded Temporal worker (background task)."""
     queue = task_queue or os.environ.get(
-        "HELIX_CASE_TASK_QUEUE", DEFAULT_TASK_QUEUE
+        "VELARIS_CASE_TASK_QUEUE", DEFAULT_TASK_QUEUE
     )
     worker = Worker(
         client,
@@ -91,7 +107,7 @@ async def stop_worker(worker: Worker) -> None:
 async def _main() -> None:
     """Run the worker as a standalone process."""
     host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
-    queue = os.environ.get("HELIX_CASE_TASK_QUEUE", DEFAULT_TASK_QUEUE)
+    queue = os.environ.get("VELARIS_CASE_TASK_QUEUE", DEFAULT_TASK_QUEUE)
 
     logging.basicConfig(level=logging.INFO)
     logger.info("Starting standalone case worker: %s → %s", host, queue)

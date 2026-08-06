@@ -11,7 +11,7 @@ feeding them to a classifier trained against those same labels launders the
 deterministic rules back as a fake AUC. They stay with the rules that cite the
 actual case. The model learns only from intrinsic / co-occurrence quantities.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -24,7 +24,12 @@ class ManifestError(Exception):
 
 
 REQUIRED_FIELDS = {"id", "name", "type", "publisher", "publisher_tier", "outbound_domains"}
-VALID_TYPES = {"connector", "case_template", "module", "nlp_pack", "portal_theme", "bundle"}
+VALID_TYPES = {"connector", "case_template", "module", "nlp_pack", "portal_theme", "bundle",
+               # Accelerator Pack (P1): a whole vertical as CONTENT — case types,
+               # forms, rules, SLAs. Carries no code and no runtime of its own;
+               # it is provisioned through the same apply_bundle importer used
+               # for HxDeploy promotion, so it can never do more than a bundle can.
+               "accelerator_pack"}
 VALID_TIERS = {"official", "community"}
 # Roadmap #15: runtime co-existence split. "python" is the default and the
 # compatibility fallback; "wasm" is declarable NOW (the schema is locked
@@ -214,13 +219,20 @@ def parse_and_validate_manifest(hxapp_bytes: bytes) -> dict[str, Any]:
     if not SEMVER_RE.match(str(version)):
         raise ManifestError(f"version '{version}' is not valid semver (must be X.Y.Z)")
 
-    # Manifest schema version (roadmap #14): v1 = locked RBAC format.
-    # Missing field = v1 (grandfathered); unsupported versions fail loudly.
+    # Manifest schema version (roadmap #14 / #29): v1 = locked RBAC format,
+    # v2 = declarative ReBAC relationship tuples. Missing field = v1
+    # (grandfathered); unsupported versions fail loudly.
     from case_service.marketplace.manifest_version import (
-        ManifestVersionError, check_manifest_version,
+        ManifestVersionError, check_manifest_version, effective_permissions,
     )
     try:
         check_manifest_version(manifest)
+        # #29: resolve permissions through the version-appropriate reader and
+        # attach them derived (underscore = never trusted from the manifest
+        # itself). A v2 block with an unevaluatable relation is refused HERE,
+        # at install — a permission the PDP will never satisfy would otherwise
+        # look granted and fail silently much later.
+        manifest["_permissions"] = effective_permissions(manifest)
     except ManifestVersionError as e:
         raise ManifestError(str(e))
 

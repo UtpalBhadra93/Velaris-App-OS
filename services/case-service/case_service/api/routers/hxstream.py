@@ -110,6 +110,33 @@ async def post_ui_event(
 
 # ── GET /hxstream/events ─────────────────────────────────────────────────────
 
+@router.get("/bus/backlog")
+async def event_bus_backlog(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """How far behind the durable event log is (§2.1).
+
+    The outbox is atomic with the state change, so a backlog here is a
+    *distribution* delay, never data loss — but a growing one means consumers
+    are seeing stale state, which is exactly what an operator needs to know.
+    Reports whether the bus is switched on at all, so "zero backlog" is never
+    mistaken for "working" when it is simply off.
+    """
+    from case_service.config import get_settings
+    from case_service.integrations import event_bus
+
+    _require_hxstream_access(user)
+    s = get_settings()
+    out = await event_bus.backlog(session)
+    out |= {
+        "enabled": s.event_bus_enabled,
+        "brokers": s.event_bus_brokers if s.event_bus_enabled else None,
+        "topic_prefix": s.event_bus_topic_prefix,
+    }
+    return out
+
+
 @router.get("/events")
 async def list_events(
     case_id: str | None = Query(None),

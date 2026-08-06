@@ -6,7 +6,7 @@ artifacts — never AI, never live execution — so the gate can never be flaky.
 
 A `package` is a dict: {manifest, case_types[], forms[], rules[]}.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

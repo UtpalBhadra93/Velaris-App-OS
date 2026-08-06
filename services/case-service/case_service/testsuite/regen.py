@@ -10,7 +10,7 @@ Wired into case-type / rule / connector / email-account change paths. Per the
 Every entrypoint is wrapped so a regen failure can NEVER break the host request
 (case-type save, rule edit, etc.). Call AFTER the host has committed its change.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

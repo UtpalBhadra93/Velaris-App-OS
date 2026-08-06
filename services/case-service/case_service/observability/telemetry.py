@@ -17,13 +17,13 @@ def configure_telemetry(service_name: str, app=None, sql_engine=None) -> None:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
     except Exception as e:
-        print(f"[helix.observability] OTel SDK unavailable: {e}")
+        print(f"[velaris.observability] OTel SDK unavailable: {e}")
         return
 
     resource = Resource.create({
         "service.name": service_name,
-        "service.namespace": "helix",
-        "deployment.environment": os.getenv("HELIX_ENV", "development"),
+        "service.namespace": "velaris",
+        "deployment.environment": os.getenv("VELARIS_ENV", "development"),
     })
     provider = TracerProvider(resource=resource)
 
@@ -35,9 +35,9 @@ def configure_telemetry(service_name: str, app=None, sql_engine=None) -> None:
                 BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
             )
         except Exception as e:
-            print(f"[helix.observability] OTLP exporter disabled: {e}")
+            print(f"[velaris.observability] OTLP exporter disabled: {e}")
 
-    if os.getenv("HELIX_OTEL_CONSOLE") == "1":
+    if os.getenv("VELARIS_OTEL_CONSOLE") == "1":
         provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 
     trace.set_tracer_provider(provider)
@@ -49,13 +49,13 @@ def configure_telemetry(service_name: str, app=None, sql_engine=None) -> None:
             from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
             SQLAlchemyInstrumentor().instrument(engine=sql_engine)
         except Exception as e:
-            print(f"[helix.observability] SQLAlchemy instrumentation skipped: {e}")
+            print(f"[velaris.observability] SQLAlchemy instrumentation skipped: {e}")
 
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         HTTPXClientInstrumentor().instrument()
     except Exception as e:
-        print(f"[helix.observability] httpx instrumentation skipped: {e}")
+        print(f"[velaris.observability] httpx instrumentation skipped: {e}")
 
     _initialized = True
 
@@ -65,7 +65,7 @@ def _instrument_app(app) -> None:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         FastAPIInstrumentor.instrument_app(app)
     except Exception as e:
-        print(f"[helix.observability] FastAPI instrumentation skipped: {e}")
+        print(f"[velaris.observability] FastAPI instrumentation skipped: {e}")
 
 
 def get_tracer(name: str):

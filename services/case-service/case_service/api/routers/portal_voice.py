@@ -39,6 +39,8 @@ from case_service.db.models import (
     PortalCustomerModel,
     TenantModel,
 )
+from case_service.compliance.consent import ProcessingRefused
+from case_service.core.error_codes import CONSENT_REFUSED_403, coded
 from case_service.db.session import get_session
 from case_service.hxnexus.guard import _RateLimiter
 from case_service.meet import asr as meet_asr
@@ -307,6 +309,15 @@ async def portal_voice_fill(
         result = await voicefill.extract(
             session, case=case, user=_CustomerActor(customer),
             transcript=transcript, speakers=[], catalogue=catalogue)
+    except ProcessingRefused as e:        # no lawful basis for ai_processing
+        # The portal is the path where a subject is always present, so this is
+        # the surface where the gate actually bites. The wording stays neutral:
+        # a customer is told the platform will not process, not that their own
+        # consent record is the reason a colleague's screen is empty.
+        raise coded(
+            403, CONSENT_REFUSED_403,
+            f"Refused: no lawful basis for {e.purpose!r} on this case.",
+        )
     except PermissionError as e:          # tenant has not opted into case AI
         raise HTTPException(400, str(e))
     except RuntimeError as e:             # no backend — honest, never a silent []

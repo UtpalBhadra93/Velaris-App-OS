@@ -212,3 +212,492 @@ async def get_lineage(
 ):
     timeline = await get_case_lineage(session, case_id, limit=limit)
     return {"case_id": str(case_id), "events": timeline, "count": len(timeline)}
+
+
+# ─── HxConsent — consent & purpose-limitation ledger (§8.1) ────────
+
+
+@router.post("/consent")
+async def record_consent(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Append one consent decision to the ledger (#39 / §8.1).
+
+    Admin/security only: consent records *are* personal data, and the ledger
+    is the evidence a regulator would be shown. The portal records a subject's
+    own consent through its own submit path, not through here.
+
+    Tenant is taken from the caller, never from the body — a client-supplied
+    tenant would let one tenant write into another's ledger.
+    """
+    from case_service.compliance import consent as consent_svc
+
+    try:
+        row = await consent_svc.record(
+            session,
+            subject_ref=str(body.get("subject_ref") or ""),
+            purpose=str(body.get("purpose") or ""),
+            action=str(body.get("action") or consent_svc.GRANTED),
+            basis=str(body.get("basis") or consent_svc.CONSENT),
+            subject_type=str(body.get("subject_type") or "email"),
+            source=str(body.get("source") or "admin"),
+            evidence=body.get("evidence") or {},
+            tenant_id=str(user.tenant_id) if user.tenant_id else None,
+            actor_id=user.user_id,
+        )
+    except consent_svc.ConsentError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"id": str(row.id), "purpose": row.purpose, "action": row.action,
+            "basis": row.basis, "recorded_at": row.recorded_at.isoformat()}
+
+
+@router.get("/consent/{subject_ref}")
+async def get_consent_state(
+    subject_ref: str,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Current lawful basis per purpose, plus the full ledger (Article 15).
+
+    Tenant-scoped to the caller: a subject may exist in more than one tenant,
+    and one tenant must not read another's basis for processing them.
+    """
+    from case_service.compliance import consent as consent_svc
+
+    tenant = str(user.tenant_id) if user.tenant_id else None
+    state = await consent_svc.current_state(session, subject_ref, tenant_id=tenant)
+    ledger = await consent_svc.history(session, subject_ref, tenant_id=tenant)
+
+    return {
+        "subject_ref": subject_ref.strip().lower(),
+        "purposes": state,
+        "ledger": [{
+            "id": str(r.id),
+            "purpose": r.purpose,
+            "action": r.action,
+            "basis": r.basis,
+            "source": r.source,
+            "evidence": r.evidence,
+            "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+        } for r in ledger],
+    }
+
+
+@router.get("/consent/{subject_ref}/check")
+async def check_consent(
+    subject_ref: str,
+    purpose: str,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Is processing for `purpose` currently lawful for this subject?
+
+    Fails closed — an unknown purpose or no record at all is False. The absence
+    of a recorded basis is not permission.
+    """
+    from case_service.compliance import consent as consent_svc
+
+    allowed = await consent_svc.has_consent(
+        session, subject_ref, purpose,
+        tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+    return {"subject_ref": subject_ref.strip().lower(), "purpose": purpose,
+            "lawful": allowed}
+
+
+# ─── HxPrivacy — PII discovery & classification (§8.10) ────────────
+
+
+@router.post("/privacy/scan")
+async def run_pii_scan(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Scan every form and data model for probable personal data (#39 / §8.10).
+
+    Idempotent: re-running refreshes findings and **never overwrites a human
+    verdict**, or each scan would silently re-open every dismissal and the list
+    would stop being trusted.
+    """
+    from case_service.compliance import pii_scan
+
+    out = await pii_scan.scan_all(
+        session, tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+    await session.commit()
+    return out
+
+
+@router.get("/privacy/findings")
+async def list_pii_findings(
+    status: str | None = None,
+    limit: int = 200,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Findings awaiting or past review.
+
+    Findings describe schema structure, so this is privileged and
+    tenant-scoped — an unscoped list would expose one tenant's field inventory
+    to another.
+    """
+    from sqlalchemy import select as _select
+
+    from case_service.compliance import pii_scan
+    from case_service.db.models import PIIFindingModel
+
+    q = _select(PIIFindingModel).order_by(
+        PIIFindingModel.special_category.desc(),
+        PIIFindingModel.confidence.desc(),
+    ).limit(max(1, min(int(limit), 1000)))
+    if status:
+        q = q.where(PIIFindingModel.status == status)
+    if user.tenant_id and not user.is_admin:
+        q = q.where(PIIFindingModel.tenant_id == str(user.tenant_id))
+
+    rows = (await session.execute(q)).scalars().all()
+    return {
+        "summary": await pii_scan.summary(session),
+        "findings": [{
+            "id": str(r.id),
+            "resource_type": r.resource_type,
+            "resource_name": r.resource_name,
+            "field_path": r.field_path,
+            "field_label": r.field_label,
+            "category": r.category,
+            "confidence": r.confidence,
+            "reason": r.reason,
+            "special_category": r.special_category,
+            "status": r.status,
+            "reviewed_by": r.reviewed_by,
+            "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        } for r in rows],
+    }
+
+
+@router.post("/privacy/findings/{finding_id}/review")
+async def review_pii_finding(
+    finding_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+):
+    """Confirm or dismiss a finding.
+
+    Detection is heuristic and drives retention/residency policy, so a human
+    decides before it changes anything — a false positive over-restricts a
+    harmless field, a false negative leaves personal data untagged.
+    """
+    from case_service.compliance import pii_scan
+
+    try:
+        row = await pii_scan.review(
+            session, finding_id,
+            decision=str(body.get("decision") or ""), actor_id=user.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"id": str(row.id), "status": row.status, "reviewed_by": row.reviewed_by}
+
+
+# ─── HxLedger — double-entry ledger & reconciliation (§8.4) ────────
+
+
+@router.post("/ledger/accounts")
+async def create_ledger_account(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Create or fetch a chart-of-accounts entry (#39 / §8.4). Idempotent."""
+    from case_service.compliance import ledger
+
+    try:
+        acc = await ledger.ensure_account(
+            session,
+            code=str(body.get("code") or ""),
+            name=str(body.get("name") or ""),
+            account_type=str(body.get("account_type") or ""),
+            currency=str(body.get("currency") or "usd"),
+            tenant_id=str(user.tenant_id) if user.tenant_id else None,
+        )
+    except ledger.LedgerError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"id": str(acc.id), "code": acc.code, "account_type": acc.account_type}
+
+
+@router.post("/ledger/transactions")
+async def post_ledger_transaction(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Post one balanced transaction.
+
+    Rejected outright if debits do not equal credits — an unbalanced ledger is
+    worse than none, so it is never stored and corrected later.
+    """
+    import uuid as _uuid
+
+    from case_service.compliance import ledger
+
+    raw_lines = body.get("lines")
+    if not isinstance(raw_lines, list):
+        raise HTTPException(400, "lines must be a list")
+
+    lines = []
+    for ln in raw_lines:
+        if not isinstance(ln, dict):
+            raise HTTPException(400, "each line must be an object")
+        try:
+            lines.append({**ln, "account_id": _uuid.UUID(str(ln.get("account_id")))})
+        except (ValueError, TypeError):
+            raise HTTPException(400, "each line needs a valid account_id")
+
+    try:
+        txn = await ledger.post(
+            session, lines=lines,
+            description=body.get("description"),
+            currency=str(body.get("currency") or "usd"),
+            tenant_id=str(user.tenant_id) if user.tenant_id else None,
+            posted_by=user.user_id,
+        )
+    except ledger.LedgerError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"transaction_id": str(txn.id), "posted_at": txn.posted_at.isoformat()}
+
+
+@router.post("/ledger/transactions/{transaction_id}/reverse")
+async def reverse_ledger_transaction(
+    transaction_id: uuid.UUID,
+    body: dict | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Reverse a transaction by posting its mirror image.
+
+    The original is never edited or deleted, so the books can still be
+    reproduced as at any past date.
+    """
+    from case_service.compliance import ledger
+
+    try:
+        txn = await ledger.reverse(
+            session, transaction_id, posted_by=user.user_id,
+            reason=(body or {}).get("reason"),
+        )
+    except ledger.LedgerError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"reversal_transaction_id": str(txn.id), "reverses": str(transaction_id)}
+
+
+@router.get("/ledger/trial-balance")
+async def get_trial_balance(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Per-account totals plus the whole-ledger balance check.
+
+    `balanced: false` means entries were written outside `post()` — the only
+    path that guarantees balance — which is worth surfacing loudly.
+    """
+    from case_service.compliance import ledger
+
+    return await ledger.trial_balance(
+        session, tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+
+
+@router.get("/ledger/reconcile")
+async def reconcile_ledger(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Captured payments vs what the ledger recorded.
+
+    A difference means money moved without a matching book entry — the exact
+    failure a ledger exists to catch. Reports; never auto-corrects.
+    """
+    from case_service.compliance import ledger
+
+    return await ledger.reconcile_payments(
+        session, tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+
+
+# ─── HxDR — disaster recovery posture (§8.9) ───────────────────────
+
+
+@router.post("/dr/backups")
+async def record_backup(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Record a backup that ops has taken (#39 / §8.9).
+
+    A registry, not an executor — taking the dump belongs to the tooling that
+    holds the credentials and can block for minutes (`update-velaris.sh` already
+    does, before every update). Without the record, "when did we last have a
+    good backup" is unanswerable.
+
+    Refuses a residency violation: a backup of a governed region stored
+    elsewhere is rejected here, where it is still cheap to fix.
+    """
+    import uuid as _uuid
+
+    from case_service.compliance import dr
+
+    def _opt_uuid(v):
+        try:
+            return _uuid.UUID(str(v)) if v else None
+        except (ValueError, TypeError):
+            raise HTTPException(400, f"invalid uuid: {v!r}")
+
+    try:
+        row = await dr.record_backup(
+            session,
+            location=str(body.get("location") or ""),
+            region_id=_opt_uuid(body.get("region_id")),
+            stored_region_id=_opt_uuid(body.get("stored_region_id")),
+            scope=str(body.get("scope") or "database"),
+            status=str(body.get("status") or dr.SUCCEEDED),
+            size_bytes=body.get("size_bytes"),
+            checksum=body.get("checksum"),
+            encrypted=bool(body.get("encrypted", False)),
+            error=body.get("error"),
+            tenant_id=str(user.tenant_id) if user.tenant_id else None,
+            recorded_by=user.user_id,
+        )
+    except dr.DRError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"id": str(row.id), "taken_at": row.taken_at.isoformat(),
+            "status": row.status}
+
+
+@router.get("/dr/backups")
+async def list_backups(
+    region_id: uuid.UUID | None = None,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Recorded backups, newest first.
+
+    `posture` answers "are we covered"; this answers "which backup are we
+    talking about", which is what a restore drill has to be recorded against.
+
+    `location` is a filesystem path on the server and is admin-only for the
+    same reason HxStatus withholds `detail` from its public route — it
+    describes internal layout.
+    """
+    from sqlalchemy import select as _select
+
+    from case_service.db.models import BackupRecordModel
+
+    q = (
+        _select(BackupRecordModel)
+        .order_by(BackupRecordModel.taken_at.desc())
+        .limit(max(1, min(int(limit), 500)))
+    )
+    if region_id:
+        q = q.where(BackupRecordModel.region_id == region_id)
+    if user.tenant_id and not user.is_admin:
+        q = q.where(BackupRecordModel.tenant_id == str(user.tenant_id))
+
+    rows = (await session.execute(q)).scalars().all()
+    return {
+        "backups": [{
+            "id": str(r.id),
+            "region_id": str(r.region_id) if r.region_id else None,
+            "stored_region_id": str(r.stored_region_id) if r.stored_region_id else None,
+            "scope": r.scope,
+            "status": r.status,
+            "location": r.location,
+            "size_bytes": r.size_bytes,
+            "checksum": r.checksum,
+            "encrypted": r.encrypted,
+            "error": r.error,
+            "taken_at": r.taken_at.isoformat() if r.taken_at else None,
+            "restore_tested_at": (
+                r.restore_tested_at.isoformat() if r.restore_tested_at else None
+            ),
+            "restore_test_result": r.restore_test_result,
+            "restore_test_duration_seconds": r.restore_test_duration_seconds,
+            "recorded_by": r.recorded_by,
+        } for r in rows],
+        "count": len(rows),
+    }
+
+
+@router.post("/dr/backups/{backup_id}/restore-test")
+async def record_restore_test(
+    backup_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Record the outcome of actually restoring a backup.
+
+    This is the column that matters: an untested backup is a hope, not a
+    recovery plan. A failed drill is recorded rather than discarded — knowing a
+    backup does not restore is worth more than any number of untested ones.
+    """
+    from case_service.compliance import dr
+
+    raw_duration = body.get("duration_seconds")
+    try:
+        duration = int(raw_duration) if raw_duration is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "duration_seconds must be a whole number of seconds")
+
+    try:
+        row = await dr.record_restore_test(
+            session, backup_id,
+            result=str(body.get("result") or ""),
+            notes=body.get("notes"), actor_id=user.user_id,
+            duration_seconds=duration,
+        )
+    except dr.DRError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return {"id": str(row.id), "result": row.restore_test_result,
+            "tested_at": row.restore_tested_at.isoformat(),
+            "duration_seconds": row.restore_test_duration_seconds}
+
+
+@router.get("/dr/posture")
+async def get_dr_posture(
+    rpo_hours: int = 24,
+    rto_hours: int = 4,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Per-region recovery posture against declared objectives.
+
+    Reports `untested` as its own state rather than folding it into `ok` —
+    collapsing them is how organisations discover at the worst possible moment
+    that their backups never worked.
+    """
+    from case_service.compliance import dr
+
+    return await dr.posture(
+        session,
+        rpo_hours=max(1, min(int(rpo_hours), 24 * 30)),
+        rto_hours=max(1, min(int(rto_hours), 24 * 30)),
+    )

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 
 import structlog
 
-from helix_ir.models.process import BPMNProcess
+from velaris_ir.models.process import BPMNProcess
 from helix_engine.api.schemas.process import (
     InstanceStatus,
     ProcessStatus,

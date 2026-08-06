@@ -10,7 +10,7 @@ import structlog
 import yaml
 from fastapi import FastAPI
 
-from helix_sdk.config.brand import BRAND_NAME
+from velaris_sdk.config.brand import BRAND_NAME
 from helix_engine.compiler import BPMNCompiler
 from helix_engine.api.routers.process import router as process_router, init_router
 

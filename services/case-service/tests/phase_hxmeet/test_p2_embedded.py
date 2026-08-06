@@ -8,7 +8,7 @@ portal-customer or email principal, uniform 404 anti-oracle on the public
 exchange), the meet.join HxGuard registration under enforce mode, and the
 signature-verified LiveKit webhook (presence stamps + idempotent auto-end).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

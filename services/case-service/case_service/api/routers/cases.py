@@ -3,7 +3,7 @@
 Handles creation, retrieval, status changes, stage transitions,
 and lifecycle operations for case instances.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -50,6 +50,17 @@ from case_service.auth.models import AuthenticatedUser
 from case_service.hxstream.emitter import emit_trace
 from case_service.case_vars import service as case_vars
 from sqlalchemy import select as sa_select
+from case_service.core.error_codes import (
+    CASE_AI_ACTION_400,
+    CASE_GUARD_403,
+    CASE_NOTFOUND_404,
+    CASE_PROCDEF_400,
+    CASE_RULE_DISABLED_409,
+    CASE_RULE_SCOPE_403,
+    CASE_SUBPROCESS_500,
+    CASE_VAR_FILTER_400,
+    coded,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,21 +168,31 @@ async def _signal_lifecycle(
     signal: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    """Best-effort nudge to the case's SLA companion workflow.
+    """Best-effort nudge to the case's Temporal workflows.
 
-    The companion rescans periodically regardless, so a failed or skipped
-    signal only delays a timer — routes never fail because of Temporal.
+    Fans out to BOTH the SLA companion (`helix-case-…`) and the
+    `definition_json` interpreter (`helix-interpreter-…`, #21). Fanning out
+    here rather than adding a second call at every site is deliberate: there
+    are six signal sites and growing, and a new one that forgot the
+    interpreter would leave a case advancing only on the poll interval — a
+    slow, intermittent bug that looks like nothing at all.
+
+    Both workflows rescan/poll regardless, so a failed or skipped signal only
+    delays; routes never fail because of Temporal.
     """
     client = getattr(request.app.state, "temporal_client", None)
     if client is None:
         return
-    try:
-        handle = client.get_workflow_handle(f"helix-case-{case_id}")
-        await handle.signal(signal, payload or {})
-    except Exception as e:
-        logger.debug(
-            "Lifecycle signal %s skipped for case %s: %s", signal, case_id, e
-        )
+    for workflow_id in (f"helix-case-{case_id}", f"helix-interpreter-{case_id}"):
+        try:
+            handle = client.get_workflow_handle(workflow_id)
+            await handle.signal(signal, payload or {})
+        except Exception as e:
+            # Not every case has an interpreter running — a missing workflow
+            # is the normal case, not an error.
+            logger.debug(
+                "Signal %s skipped for %s: %s", signal, workflow_id, e
+            )
 
 
 # ─── CRUD ─────────────────────────────────────────────────────────────
@@ -277,6 +298,30 @@ async def create_case(
                 "Started lifecycle workflow %s for case %s",
                 workflow_id, case.id,
             )
+
+            # #21 interpreter — opt-in twice: platform flag AND the case type
+            # declaring `orchestration: temporal`. Started alongside the
+            # companion so a case is driven from birth; adopting a case
+            # mid-flight also works, but starting late means the stages it
+            # already passed were driven by the synchronous path instead.
+            from case_service.config import get_settings as _gs
+
+            if (
+                _gs().temporal_interpreter_enabled
+                and str((case_type.definition_json or {}).get("orchestration") or "").lower()
+                == "temporal"
+            ):
+                from case_service.temporal.workflows.case_interpreter_workflow import (
+                    CaseInterpreterWorkflow,
+                )
+
+                await temporal_client.start_workflow(
+                    CaseInterpreterWorkflow.run,
+                    {"case_id": str(case.id)},
+                    id=f"helix-interpreter-{case.id}",
+                    task_queue="helix-case-service",
+                )
+                logger.info("Started interpreter workflow for case %s", case.id)
         except Exception as e:
             logger.warning(
                 "Failed to start lifecycle workflow for case %s: %s",
@@ -364,7 +409,7 @@ async def list_cases(
             full_key, sep, value = raw_filter.partition(":")
             ns_name, dot, var_name = full_key.partition(".")
             if not sep or not dot or not NAME_RE.match(ns_name) or not NAME_RE.match(var_name):
-                raise HTTPException(400, f"var filter must be 'namespace.name:value', got {raw_filter!r}")
+                raise coded(400, CASE_VAR_FILTER_400, f"var filter must be 'namespace.name:value', got {raw_filter!r}")
             idx_q = sa_select(CaseTypeVariableModel).where(
                 CaseTypeVariableModel.full_key == full_key,
                 CaseTypeVariableModel.indexed == True,  # noqa: E712
@@ -1335,7 +1380,7 @@ async def activate_step(
         select(CaseTypeModel).where(CaseTypeModel.id == case.case_type_id)
     )).scalar_one_or_none()
     if not ct:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, CASE_NOTFOUND_404, "Case type not found")
 
     # Find step definition in case type JSON
     ct_def = ct.definition_json or {}
@@ -1351,7 +1396,7 @@ async def activate_step(
             break
 
     if not step_def:
-        raise HTTPException(404, f"Step {step_id} not found in case type definition")
+        raise coded(404, CASE_NOTFOUND_404, f"Step {step_id} not found in case type definition")
 
     step_type = step_def.get("step_type", "user_task")
     now = datetime.now(timezone.utc)
@@ -1438,7 +1483,7 @@ async def activate_step(
             from case_service.db.models import ProcessDefinitionModel
             defn = await session.get(ProcessDefinitionModel, uuid.UUID(process_def_id))
             if not defn or defn.status != "active":
-                raise HTTPException(400, f"Process definition {process_def_id} not found or inactive")
+                raise coded(400, CASE_PROCDEF_400, f"Process definition {process_def_id} not found or inactive")
 
             # Map case fields to process context using context_mapping
             context_mapping: dict = subprocess_config.get("context_mapping", {})
@@ -1470,7 +1515,21 @@ async def activate_step(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(500, f"Failed to start subprocess: {e}")
+            raise coded(500, CASE_SUBPROCESS_500, f"Failed to start subprocess: {e}")
+
+    elif step_type == "ai_action":
+        # Roadmap #33 / §5.1 — AI as a workflow participant. The model
+        # proposes; a human accepts, edits or rejects. Nothing reaches case
+        # data until then unless the step explicitly opted out.
+        from case_service.core import ai_action
+
+        try:
+            result = await ai_action.execute(
+                session, case_id=case_id, step=step_def,
+                stage_id=found_stage_id, actor_id=user.user_id,
+            )
+        except ai_action.AIActionError as exc:
+            raise coded(400, CASE_AI_ACTION_400, f"ai_action step misconfigured: {exc}")
 
     elif step_type in ("user_task", "manual_task", "approval"):
         result = {"step_id": step_id, "step_type": step_type, "action": "awaiting_human"}
@@ -1480,6 +1539,302 @@ async def activate_step(
 
     await session.commit()
     return result
+
+
+@router.get("/{case_id}/detail")
+async def get_case_detail(
+    case_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Everything the case detail view needs, in one request.
+
+    Replaces five client calls — case, history, SLA, case type, my-task — of
+    which one was a genuine waterfall: the case type could not be requested
+    until the case had returned its `case_type_id`.
+
+    **This is not a GraphQL substitute and does not pretend to be.** It exists
+    because the measured problem was one waterfall on one page, not the
+    "chronic over-fetching" a federation layer solves. Federated GraphQL earns
+    its cost when there are many services to federate; there is one. Revisit
+    when service extraction (#13) happens — this endpoint does not block it,
+    since a gateway would sit above whatever routes exist.
+
+    ## Authorization — the part that matters when aggregating
+
+    The five underlying endpoints do **not** share one rule, so this composes
+    them rather than flattening them:
+
+    * `case` and `history` require `case.read` — enforced once, here.
+    * `sla` today has **no** case-level check of its own. Reading it through
+      this endpoint is therefore *stricter* than the standalone route, never
+      looser. (The standalone gap is pre-existing and left alone deliberately:
+      silently tightening a live route from inside an aggregate is how callers
+      break without explanation.)
+    * `my_task` is **self-scoped** — it returns only the caller's own
+      assignment, never the case's other assignees. That property is preserved
+      exactly; aggregating must not widen it into "everyone's tasks".
+    * `case_type` carries a tenant-visibility rule (a tenant-owned type is
+      invisible outside its tenant). Reproduced here, degrading to `null`
+      rather than 404-ing the whole response — the case is still readable even
+      when its type is not.
+    """
+    from sqlalchemy import select as _select
+
+    from case_service import hxguard
+    from case_service.db.models import CaseAssignmentModel
+
+    case = await _get_case_or_404(session, case_id)
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+    history = await repo.get_audit_log(session, case_id)
+    slas = await repo.get_sla_instances(session, case_id)
+
+    # Case type — same visibility rule as GET /case-types/{id}. Null, not 404:
+    # losing sight of the type must not make the case unreadable.
+    ct = await repo.get_case_type(session, case.case_type_id)
+    if ct is not None and ct.tenant_id is not None and user.tenant_id \
+            and str(ct.tenant_id) != str(user.tenant_id):
+        ct = None
+
+    # My task — self-scoped, exactly as the standalone route.
+    my_task = (await session.execute(
+        _select(CaseAssignmentModel).where(
+            CaseAssignmentModel.case_id == case_id,
+            CaseAssignmentModel.assignee_id == user.user_id,
+            CaseAssignmentModel.status == "active",
+        ).limit(1)
+    )).scalar_one_or_none()
+
+    return {
+        "case": case,
+        "history": history,
+        "slas": slas,
+        "case_type": ct,
+        "my_task": my_task,
+    }
+
+
+@router.get("/{case_id}/interpreter")
+async def get_interpreter_state(
+    case_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Whether a Temporal interpreter is driving this case, and where it is (#21).
+
+    Reports `running: false` rather than erroring when no interpreter exists —
+    which is the normal state for every case type that has not opted in, and
+    must not read as a fault.
+    """
+    from case_service import hxguard
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+    client = getattr(request.app.state, "temporal_client", None)
+    if client is None:
+        return {"running": False, "reason": "Temporal is not connected"}
+    try:
+        handle = client.get_workflow_handle(f"helix-interpreter-{case_id}")
+        state = await handle.query("get_interpreter_state")
+        return {"running": True, **(state or {})}
+    except Exception as exc:
+        return {"running": False, "reason": f"no interpreter for this case ({type(exc).__name__})"}
+
+
+@router.get("/{case_id}/events")
+async def get_case_event_stream(
+    case_id: uuid.UUID,
+    after_seq: int = 0,
+    limit: int = 500,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """The case's append-only event stream (#30a, §2.2).
+
+    Empty for any case created before the event-sourcing cutover — those are
+    deliberately not backfilled (§7.5), and `event_sourced` says which kind of
+    case this is so an empty list is never mistaken for a case that did nothing.
+    """
+    from case_service.core import event_store
+
+    from case_service import hxguard
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+    case = await repo.get_case_instance(session, case_id)
+    if case is None:
+        raise coded(404, CASE_NOTFOUND_404, "Case not found")
+
+    events = await event_store.stream(
+        session, case_id, after_seq=after_seq, limit=max(1, min(limit, 1000)),
+    )
+    return {
+        "case_id": str(case_id),
+        "event_sourced": case.event_sourced,
+        "events": [{
+            "seq": e.seq,
+            "event_type": e.event_type,
+            "data": e.data,
+            "actor_id": e.actor_id,
+            "actor_type": e.actor_type,
+            "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+        } for e in events],
+    }
+
+
+@router.get("/{case_id}/events/verify")
+async def verify_case_event_stream(
+    case_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Replay the stream and compare it against the relational row (#30a).
+
+    Divergence means something wrote case state without going through the
+    lifecycle chokepoints — a bug class that is otherwise invisible until
+    someone notices a case in an impossible state. Sequence gaps are reported
+    too: `seq` is contiguous by construction, so a hole means an event was
+    deleted, which nothing is supposed to be able to do.
+    """
+    from case_service.core import event_store
+
+    from case_service import hxguard
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+    try:
+        return await event_store.verify(session, case_id)
+    except event_store.EventStoreError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@router.post("/{case_id}/variables/sync")
+async def sync_offline_variable_edits(
+    case_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Converge a batch of offline variable edits (#38, §2.7).
+
+    Body: ``{"edits": [{"key", "value", "lamport", "origin"}, ...]}``.
+
+    Each edit merges as an LWW-Register on `(lamport, origin)` — never on wall
+    time, which offline clients cannot agree on. The response reports every
+    edit as `applied`, `ignored` (a newer edit already won), `duplicate` or
+    `rejected`, so a client knows exactly what to drop from its queue instead
+    of resending forever.
+    """
+    from case_service.core import crdt
+
+    case = await repo.get_case_instance(session, case_id)
+    if case is None:
+        raise coded(404, CASE_NOTFOUND_404, "Case not found")
+
+    # Offline sync WRITES case variables, so it needs the same relationship
+    # check every other case-mutating route makes. Without it any
+    # authenticated user could converge edits onto any case.
+    from case_service import hxguard
+    await hxguard.require_case(session, user, "case.update", case_id)
+
+    edits = body.get("edits")
+    if not isinstance(edits, list):
+        raise HTTPException(400, "edits must be a list")
+    if len(edits) > 500:
+        raise HTTPException(400, "at most 500 edits per sync batch")
+
+    out = await crdt.sync_case_variables(
+        session, case_id, edits, actor_id=user.user_id,
+    )
+    await session.commit()
+    return out
+
+
+@router.get("/{case_id}/ai-actions")
+async def list_ai_action_proposals(
+    case_id: uuid.UUID,
+    status: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Proposals an `ai_action` step has produced for this case (#33)."""
+    from case_service.core import ai_action
+    from case_service import hxguard
+
+    # Proposals carry model output derived from this case's data — a read of
+    # the case by another name.
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+    rows = await ai_action.list_for_case(session, case_id, status=status)
+    return {"case_id": str(case_id), "proposals": [{
+        "id": str(p.id),
+        "step_id": p.step_id,
+        "stage_id": p.stage_id,
+        "status": p.status,
+        "proposed": p.proposed,
+        "final_output": p.final_output,
+        "model": p.model,
+        "provider": p.provider,
+        "prompt_sha256": p.prompt_sha256,
+        "error": p.error,
+        "decided_by": p.decided_by,
+        "decided_at": p.decided_at.isoformat() if p.decided_at else None,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    } for p in rows]}
+
+
+@router.post("/{case_id}/ai-actions/{proposal_id}/decide")
+async def decide_ai_action_proposal(
+    case_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Accept, reject or override an AI proposal — the human half of §5.1.
+
+    `override` keeps both what the model proposed and what the human decided,
+    which is what makes the model's real accuracy measurable later.
+    """
+    from case_service.core import ai_action
+    from case_service import hxguard
+    from case_service.db.models import AIActionProposalModel
+
+    # Accepting or overriding writes a value into case variables — a case
+    # update, and the human half of the §5.1 control. It must not be reachable
+    # by anyone who merely holds a token.
+    await hxguard.require_case(session, user, "case.update", case_id)
+
+    decision = str(body.get("decision") or "").strip()
+    proposal = await session.get(AIActionProposalModel, proposal_id)
+    if proposal is None or proposal.case_id != case_id:
+        raise coded(404, CASE_NOTFOUND_404, "Proposal not found for this case")
+
+    step_def = None
+    if decision != "reject":
+        case = await repo.get_case_instance(session, case_id)
+        ct = await repo.get_case_type(session, case.case_type_id) if case else None
+        for stage in ((ct.definition_json or {}).get("stages", []) if ct else []):
+            for st in stage.get("steps", []):
+                if st.get("id") == proposal.step_id:
+                    step_def = st
+                    break
+            if step_def:
+                break
+        if step_def is None:
+            raise HTTPException(
+                400, f"Step {proposal.step_id} no longer exists in the case type")
+
+    try:
+        out = await ai_action.decide(
+            session, proposal_id=proposal_id, decision=decision,
+            actor_id=user.user_id, step=step_def,
+            override_value=body.get("value"),
+        )
+    except ai_action.AIActionError as exc:
+        raise HTTPException(400, str(exc))
+
+    await session.commit()
+    return out
 
 
 # ─── Rule application (Case Variables Phase 3) ───────────────────────
@@ -1568,13 +1923,13 @@ async def apply_rule_to_case(
     case = await _get_case_or_404(session, case_id)
     rule = await repo.get_rule(session, rule_id)
     if rule is None:
-        raise HTTPException(404, "Rule not found")
+        raise coded(404, CASE_NOTFOUND_404, "Rule not found")
     if not rule.enabled:
-        raise HTTPException(409, "Rule is disabled")
+        raise coded(409, CASE_RULE_DISABLED_409, "Rule is disabled")
     # scope enforcement: a case_type-scoped rule only applies to its own type
     if rule.scope == "case_type" and rule.scope_target_id \
             and rule.scope_target_id != str(case.case_type_id):
-        raise HTTPException(403, "Rule is scoped to a different case type")
+        raise coded(403, CASE_RULE_SCOPE_403, "Rule is scoped to a different case type")
 
     rules_ctx = case_vars.CallerContext(kind="rules", actor_id=f"rule:{rule_id}")
     vars_dict = await case_vars.get_all(session, rules_ctx, case_id)
@@ -1661,8 +2016,8 @@ async def _require_share_access(session, user, case_id: uuid.UUID, action: str) 
         session, subject, "case.read", {"case_id": case_id},
     )).allow
     if not can_read:
-        raise HTTPException(404, "Case not found")
-    raise HTTPException(403, f"Not authorized: {decision.reason}")
+        raise coded(404, CASE_NOTFOUND_404, "Case not found")
+    raise coded(403, CASE_GUARD_403, f"Not authorized: {decision.reason}")
 
 
 @router.post("/{case_id}/shares", status_code=201)
@@ -1755,7 +2110,7 @@ async def unshare_case(
             relation=relation, subject_type="user", subject_id=user_id,
         )
     if not removed:
-        raise HTTPException(404, "Share not found")
+        raise coded(404, CASE_NOTFOUND_404, "Share not found")
     await _audit(session, case_id, "case_unshared", actor_id=user.user_id,
                  details={"user_id": subject_id, "given": user_id, "relation": relation})
 

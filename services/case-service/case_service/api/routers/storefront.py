@@ -7,7 +7,7 @@ marketplace-install gate (like HxTest/HxCheckout); until installed, every endpoi
 This module holds store + catalogue management. Public storefront read endpoints are
 in storefront_public.py.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

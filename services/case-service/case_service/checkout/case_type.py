@@ -10,7 +10,7 @@ on first use — "installed automatically on first use").
 The template mirrors the default stages/steps in docs/Future/HxCheckout.md. It is
 a normal case type and fully customisable in the Case Designer after seeding.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

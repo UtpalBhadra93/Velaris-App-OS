@@ -1,6 +1,7 @@
 // HELIX P24 — Document Manager (multi-select + version delete)
 import React, { useEffect, useState } from "react";
-import { verifyDocument, listDocumentVerifications, type DocCheck } from "@shared/api/client";
+import { errorFromResponse, verifyDocument, listDocumentVerifications, type DocCheck } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 type Doc = {
   id: string;
@@ -39,7 +40,9 @@ function _authHdr(): Record<string, string> {
 
 async function apiJSON<T>(url: string, opts: RequestInit = {}): Promise<T> {
   const r = await fetch(url, { ...opts, headers: { ..._authHdr(), ...opts.headers } });
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  // Reads the body so the stable error code survives to the UI. Throwing a
+  // bare Error here is what kept VEL-DOC-* codes invisible.
+  if (!r.ok) throw await errorFromResponse(r, `${url} → ${r.status}`);
   return r.json();
 }
 
@@ -51,13 +54,17 @@ export default function DocumentManager() {
   const [versions, setVersions] = useState<Version[]>([]);
   const [selectedVersions, setSelectedVersions] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // The thrown object is kept alongside its message: `e.message` is what the
+  // banner shows, but the stable error code lives on the object, and
+  // flattening to a string is what dropped it before.
+  const [errorObj, setErrorObj] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
 
   const focusedDoc = docs.find((d) => d.id === focusedDocId) || null;
 
   async function loadDocs() {
     if (!caseId) return;
-    setError(null);
+    setError(null); setErrorObj(null);
     try {
       const d = await apiJSON<Doc[]>(`/api/v1/documents/by-case/${caseId}`);
       setDocs(d);
@@ -66,7 +73,7 @@ export default function DocumentManager() {
         setFocusedDocId(null);
         setVersions([]);
       }
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) { setError(e.message); setErrorObj(e); }
   }
 
   async function loadVersions(docId: string) {
@@ -74,34 +81,34 @@ export default function DocumentManager() {
       const v = await apiJSON<Version[]>(`/api/v1/documents/${docId}/versions`);
       setVersions(v);
       setSelectedVersions(new Set());
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) { setError(e.message); setErrorObj(e); }
   }
 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f || !caseId) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setErrorObj(null);
     try {
       const fd = new FormData();
       fd.append("case_id", caseId);
       fd.append("file", f);
       const r = await fetch("/api/v1/documents/upload", { method: "POST", body: fd, headers: _authHdr() });
-      if (!r.ok) throw new Error(`upload failed: ${r.status}`);
+      if (!r.ok) throw await errorFromResponse(r, `upload failed: ${r.status}`);
       await loadDocs();
-    } catch (err: any) { setError(err.message); }
+    } catch (err: any) { setError(err.message); setErrorObj(err); }
     finally { setBusy(false); e.target.value = ""; }
   }
 
   async function onUploadVersion(docId: string, file: File) {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setErrorObj(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       const r = await fetch(`/api/v1/documents/${docId}/versions`, { method: "POST", body: fd, headers: _authHdr() });
-      if (!r.ok) throw new Error(`version upload failed: ${r.status}`);
+      if (!r.ok) throw await errorFromResponse(r, `version upload failed: ${r.status}`);
       await loadDocs();
       await loadVersions(docId);
-    } catch (err: any) { setError(err.message); }
+    } catch (err: any) { setError(err.message); setErrorObj(err); }
     finally { setBusy(false); }
   }
 
@@ -111,7 +118,7 @@ export default function DocumentManager() {
     const names = docs.filter((d) => selectedDocIds.has(d.id)).map((d) => d.filename).join(", ");
     if (!confirm(`Delete ${ids.length} document(s)?\n\n${names}`)) return;
 
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setErrorObj(null);
     const errors: string[] = [];
     for (const id of ids) {
       const r = await fetch(`/api/v1/documents/${id}`, { method: "DELETE", headers: _authHdr() });
@@ -119,7 +126,7 @@ export default function DocumentManager() {
       else if (!r.ok) errors.push(`${id}: ${r.status}`);
     }
     setBusy(false);
-    if (errors.length) setError(`Some deletes failed:\n${errors.join("\n")}`);
+    if (errors.length) { setError(`Some deletes failed:\n${errors.join("\n")}`); setErrorObj(null); }
     setFocusedDocId(null);
     setVersions([]);
     await loadDocs();
@@ -130,12 +137,12 @@ export default function DocumentManager() {
     const vers = Array.from(selectedVersions).sort((a, b) => a - b);
     if (vers.length === 0) return;
     if (vers.length >= versions.length) {
-      setError("Cannot delete all versions. Delete the document instead, or leave at least one version.");
+      setError("Cannot delete all versions. Delete the document instead, or leave at least one version."); setErrorObj(null);
       return;
     }
     if (!confirm(`Delete ${vers.length} version(s) of "${focusedDoc.filename}"?`)) return;
 
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setErrorObj(null);
     const errors: string[] = [];
     for (const v of vers) {
       const r = await fetch(`/api/v1/documents/${focusedDoc.id}/versions/${v}`, { method: "DELETE", headers: _authHdr() });
@@ -144,7 +151,7 @@ export default function DocumentManager() {
       else if (!r.ok) errors.push(`v${v}: ${r.status}`);
     }
     setBusy(false);
-    if (errors.length) setError(`Some version deletes failed:\n${errors.join("\n")}`);
+    if (errors.length) { setError(`Some version deletes failed:\n${errors.join("\n")}`); setErrorObj(null); }
     await loadDocs();
     await loadVersions(focusedDoc.id);
   }
@@ -155,7 +162,7 @@ export default function DocumentManager() {
       headers: { "Content-Type": "application/json", ..._authHdr() },
       body: JSON.stringify({ portal_visible: !current }),
     });
-    if (!r.ok) { setError("Failed to update portal visibility"); return; }
+    if (!r.ok) { setError("Failed to update portal visibility"); setErrorObj(null); return; }
     setDocs(prev => prev.map(d => d.id === docId ? { ...d, portal_visible: !current, portal_source: !current ? "staff" : d.portal_source } : d));
   }
 
@@ -189,7 +196,12 @@ export default function DocumentManager() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      {error && <div style={{ color: "#c33", marginBottom: 12, whiteSpace: "pre-wrap" }}>⚠ {error}</div>}
+      {error && (
+        <div style={{ color: "#c33", marginBottom: 12, whiteSpace: "pre-wrap" }}>
+          ⚠ {error}
+          <ErrorCodeLink error={errorObj} componentKey="documents" />
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 20 }}>
         <label style={{ fontSize: 13, color: "#555" }}>Case ID:</label>

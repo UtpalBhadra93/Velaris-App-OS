@@ -3,7 +3,7 @@
 System-wide audit log search, queue management, webhook overview,
 and rule management endpoints for the admin console.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

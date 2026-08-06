@@ -26,6 +26,14 @@ def get_pipeline_factory():
     Overridable in tests via app.dependency_overrides."""
     return _get_session_factory()
 from case_service.hxmigrate import service
+from case_service.core.error_codes import (
+    MIGRATE_CREATOR_AUTH_400,
+    MIGRATE_NOTFOUND_404,
+    MIGRATE_PLATFORM_400,
+    MIGRATE_RUN_STATE_400,
+    MIGRATE_TOO_LARGE_413,
+    coded,
+)
 
 router = APIRouter(prefix="/hxmigrate", tags=["hxmigrate"])
 
@@ -42,11 +50,11 @@ def _tenant(user: AuthenticatedUser) -> str:
 
 def _get_auth_options(user: AuthenticatedUser) -> dict:
     """SEC-6: determine which auth options are available for the Creator module."""
-    has_service_token = bool(os.getenv("HELIX_SERVICE_TOKEN", "").strip())
+    has_service_token = bool(os.getenv("VELARIS_SERVICE_TOKEN", "").strip())
     has_user_jwt      = True  # user is already authenticated
     options = []
     if has_service_token:
-        options.append({"value": "service", "label": "Service Account (HELIX_SERVICE_TOKEN)"})
+        options.append({"value": "service", "label": "Service Account (VELARIS_SERVICE_TOKEN)"})
     if has_user_jwt:
         options.append({"value": "user", "label": f"Current User ({getattr(user, 'email', 'me')})"})
     return {
@@ -151,18 +159,18 @@ async def start_run(
 ):
     # SEC-10: platform allowlist
     if source_platform.lower().strip() not in _PLATFORM_ALLOWLIST:
-        raise HTTPException(400, f"Unsupported platform.")
+        raise coded(400, MIGRATE_PLATFORM_400, f"Unsupported platform.")
 
     # SEC-10: mode validation
     if creator_mode not in _CREATOR_MODES:
-        raise HTTPException(400, "Invalid creator_mode.")
+        raise coded(400, MIGRATE_CREATOR_AUTH_400, "Invalid creator_mode.")
     if creator_auth_type not in _AUTH_TYPES:
-        raise HTTPException(400, "Invalid creator_auth_type.")
+        raise coded(400, MIGRATE_CREATOR_AUTH_400, "Invalid creator_auth_type.")
 
     # SEC-7: upload size limit
     file_bytes = await file.read()
     if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "File too large. Maximum upload size is 100 MB.")
+        raise coded(413, MIGRATE_TOO_LARGE_413, "File too large. Maximum upload size is 100 MB.")
 
     # SEC-10: name sanitisation
     run_name = (name.strip() or file.filename or "Unnamed Run")[:200]
@@ -214,7 +222,7 @@ async def get_run(
 ):
     run = await service.get_run(session, run_id)
     if not run:
-        raise HTTPException(404, "Run not found")
+        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
     return RunOut.from_model(run)
 
 
@@ -234,18 +242,18 @@ async def apply_run(
     SEC-6: token resolved server-side, never passed through request body.
     """
     if creator_auth_type not in _AUTH_TYPES:
-        raise HTTPException(400, "Invalid creator_auth_type.")
+        raise coded(400, MIGRATE_CREATOR_AUTH_400, "Invalid creator_auth_type.")
 
     run = await service.get_run(session, run_id)
     if not run:
-        raise HTTPException(404, "Run not found")
+        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
     if run.status != "completed":
-        raise HTTPException(400, f"Run must be completed before applying (status: {run.status})")
+        raise coded(400, MIGRATE_RUN_STATE_400, f"Run must be completed before applying (status: {run.status})")
 
     # SEC-6: resolve auth token server-side
     auth_token = _resolve_creator_token(creator_auth_type, user)
     if not auth_token:
-        raise HTTPException(400, "No valid auth token available for Creator. Set HELIX_SERVICE_TOKEN or ensure user is logged in.")
+        raise HTTPException(400, "No valid auth token available for Creator. Set VELARIS_SERVICE_TOKEN or ensure user is logged in.")
 
     user_id   = getattr(user, "user_id", "") or getattr(user, "id", "") or ""
     # Use username (preferred_username claim) as the human-readable display name.
@@ -268,7 +276,7 @@ async def apply_run(
 
 def _resolve_creator_token(auth_type: str, user: AuthenticatedUser) -> str:
     """SEC-6: resolve the auth token for Creator. Never log the resolved value."""
-    service_token = os.getenv("HELIX_SERVICE_TOKEN", "").strip()
+    service_token = os.getenv("VELARIS_SERVICE_TOKEN", "").strip()
     user_jwt      = getattr(user, "token", "") or getattr(user, "_raw_token", "") or getattr(user, "access_token", "")
 
     if auth_type == "service":
@@ -341,9 +349,9 @@ async def get_result(
 ):
     run = await service.get_run(session, run_id)
     if not run:
-        raise HTTPException(404, "Run not found")
+        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
     if run.status not in ("completed", "partial"):
-        raise HTTPException(400, f"Run not complete (status: {run.status})")
+        raise coded(400, MIGRATE_RUN_STATE_400, f"Run not complete (status: {run.status})")
 
     result: dict = {"run_id": str(run.id), "name": run.name, "status": run.status}
     if run.scan_id:

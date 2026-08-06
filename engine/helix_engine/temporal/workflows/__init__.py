@@ -40,7 +40,7 @@ from temporalio.common import RetryPolicy
 # them by name string, not by Python reference.
 with workflow.unsafe.imports_passed_through():
     import structlog
-    from helix_ir.models.process import (
+    from velaris_ir.models.process import (
         BPMNProcess,
         BoundaryEvent,
         CallActivity,
@@ -146,7 +146,7 @@ def _serialize_process(process: BPMNProcess) -> dict[str, Any]:
 
 def _deserialize_process(data: dict[str, Any]) -> BPMNProcess:
     """Reconstruct a BPMNProcess from a serialised dict."""
-    from helix_ir.models import process as models
+    from velaris_ir.models import process as models
 
     process = BPMNProcess(
         id=data["id"],
@@ -155,7 +155,7 @@ def _deserialize_process(data: dict[str, Any]) -> BPMNProcess:
     )
 
     # Reconstruct flows
-    from helix_ir.models.process import SequenceFlow
+    from velaris_ir.models.process import SequenceFlow
     for fid, fdata in data.get("flows", {}).items():
         process.flows[fid] = SequenceFlow(**fdata)
 

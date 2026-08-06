@@ -3,7 +3,7 @@
 Maps to the case management schema tables.  Uses the same
 patterns as ``engine/helix_engine/db/models.py``.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -335,6 +335,11 @@ class CaseInstanceModel(Base):
         nullable=True,
     )
     data: Mapped[dict] = mapped_column(PortableJSON(), default=dict)
+    # Event sourcing cutover marker (#30a, mig 146). TRUE only for cases created
+    # after the event store was switched on — §7.5 is explicit that pre-cutover
+    # history cannot be honestly reconstructed, so it is never backfilled.
+    # HxReplay and stream verification apply to these cases only.
+    event_sourced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_by: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
@@ -943,7 +948,12 @@ class RetentionPolicyModel(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    resource_type: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    # NULL = platform default, applied to any tenant with no policy of its own.
+    # Uniqueness moved to (tenant_id, resource_type) in migration 153: a bare
+    # UNIQUE on resource_type made one tenant's retention period everyone's,
+    # and retention is a per-customer contractual commitment.
+    tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
     retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(String(20), default="archive")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -1164,6 +1174,7 @@ class UserDirectoryModel(Base):
     manager_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     access_group_ids: Mapped[list] = mapped_column(PortableJSON(), default=list)  # deprecated — use operator_access_groups
     roles: Mapped[list] = mapped_column(PortableJSON(), default=list)             # deprecated — use access_roles via group
+    skills: Mapped[list] = mapped_column(PortableJSON(), default=list)            # ["claims","fraud"] — skill_based routing (mig 139)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -2257,6 +2268,9 @@ class SyncDestinationModel(Base):
     dest_type:          Mapped[str]        = mapped_column(String(30),  nullable=False, default="duckdb")
     connection_config:  Mapped[dict]       = mapped_column(PortableJSON(), default=dict)
     enabled:            Mapped[bool]       = mapped_column(Boolean, default=True)
+    # HxConsent gate (mig 154 / mysql 0027). Off by default: turning it on
+    # changes what an existing destination receives, so it is a deliberate act.
+    consent_gated:      Mapped[bool]       = mapped_column(Boolean, nullable=False, default=False)
     tenant_id:          Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by:         Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_synced_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2304,6 +2318,8 @@ class SyncFieldMappingModel(Base):
     source_field:   Mapped[str]        = mapped_column(String(255), nullable=False)
     dest_column:    Mapped[str]        = mapped_column(String(255), nullable=False)
     transform:      Mapped[str]        = mapped_column(String(30),  nullable=False, default="passthrough")
+    # transform="wasm" → the installed package whose module runs (#17, mig 141).
+    transform_module_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pii:            Mapped[bool]       = mapped_column(Boolean, default=False)
     created_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
@@ -3368,11 +3384,11 @@ class BranchAuditEventModel(Base):
 class HelixUserModel(Base):
     """A real authenticated user with bcrypt password, lockout, and MFA support."""
 
-    __tablename__ = "helix_users"
+    __tablename__ = "velaris_users"
     __table_args__ = (
-        Index("ix_helix_users_email",    "email",    unique=True),
-        Index("ix_helix_users_username", "username", unique=True),
-        Index("ix_helix_users_sso",      "sso_provider", "sso_subject"),
+        Index("ix_velaris_users_email",    "email",    unique=True),
+        Index("ix_velaris_users_username", "username", unique=True),
+        Index("ix_velaris_users_sso",      "sso_provider", "sso_subject"),
     )
 
     id:                       Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
@@ -3406,7 +3422,7 @@ class AuthOtpModel(Base):
     )
 
     id:         Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
-    user_id:    Mapped[uuid.UUID]      = mapped_column(GUID(), ForeignKey("helix_users.id", ondelete="CASCADE"), nullable=False)
+    user_id:    Mapped[uuid.UUID]      = mapped_column(GUID(), ForeignKey("velaris_users.id", ondelete="CASCADE"), nullable=False)
     otp_hash:   Mapped[str]            = mapped_column(Text, nullable=False)
     purpose:    Mapped[str]            = mapped_column(String(30), nullable=False)
     expires_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False)
@@ -3855,6 +3871,513 @@ class MarketplaceSandboxDatasetModel(Base):
     created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
+class BackupRecordModel(Base):
+    """HxDR — one recorded backup (§8.9, mig 151).
+
+    The platform already *takes* backups: `update-velaris.sh` dumps the
+    database before every update and aborts if the dump fails. What was missing
+    is the record — without one, "when did we last have a good backup" and
+    "does that meet our RPO" are unanswerable, which is the entire point of a
+    DR posture.
+
+    Deliberately a **registry, not an executor**. Taking a dump belongs to ops
+    tooling that already holds the credentials and can block for minutes; a
+    request path must not. This records what was taken, where it landed, and
+    whether it has ever been proven restorable.
+
+    `restore_tested_at` is the load-bearing column. An untested backup is a
+    hope, not a recovery plan, and reporting one as green is precisely the
+    failure DR exists to prevent — so the report treats untested and missing
+    as different states.
+    """
+
+    __tablename__ = "backup_records"
+    __table_args__ = (
+        Index("ix_backup_records_region", "region_id", "taken_at"),
+        Index("ix_backup_records_status", "status"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    region_id:   Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("region_registry.id", ondelete="SET NULL"), nullable=True)
+    scope:       Mapped[str]       = mapped_column(String(32), nullable=False, default="database")
+    status:      Mapped[str]       = mapped_column(String(16), nullable=False, default="succeeded")
+    location:    Mapped[str]       = mapped_column(String(512), nullable=False)
+    #: Where the bytes physically live. Sovereignty is about residency, so a
+    #: backup of an EU region parked in another jurisdiction is a violation
+    #: even though the primary data never moved.
+    stored_region_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    size_bytes:  Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    checksum:    Mapped[str | None] = mapped_column(String(128), nullable=True)
+    encrypted:   Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
+    error:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    tenant_id:   Mapped[str | None] = mapped_column(String(64), nullable=True)
+    taken_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    #: NULL means never proven restorable — reported as its own state, never
+    #: as healthy.
+    restore_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    restore_test_result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    restore_test_notes:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: How long the drill actually took (mig 155). Until this existed the RTO
+    #: was *declared* and never checked against anything, so a backup that
+    #: restored in twelve hours against a four-hour objective reported the same
+    #: healthy green as one that restored in ten minutes — the posture answered
+    #: "can we recover?" but never "in time?".
+    restore_test_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recorded_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class LedgerAccountModel(Base):
+    """HxLedger — a chart-of-accounts entry (§8.4, mig 150)."""
+
+    __tablename__ = "ledger_accounts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_ledger_account_tenant_code"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    code:       Mapped[str]       = mapped_column(String(32), nullable=False)
+    name:       Mapped[str]       = mapped_column(String(255), nullable=False)
+    # asset | liability | income | expense | equity — determines whether a
+    # debit increases or decreases the balance.
+    account_type: Mapped[str]     = mapped_column(String(16), nullable=False)
+    currency:   Mapped[str]       = mapped_column(String(10), nullable=False, default="usd")
+    tenant_id:  Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class LedgerTransactionModel(Base):
+    """HxLedger — one balanced transaction (§8.4, mig 150).
+
+    Exists as its own row for two reasons.
+
+    **Idempotency belongs here, not on a line.** A balanced transaction has at
+    least two lines sharing the same source, so a UNIQUE on the entries would
+    reject the second half of every posting. `UNIQUE (source_type, source_id,
+    purpose)` on the transaction is what makes a payment webhook that fires
+    twice post once.
+
+    **A transaction is a real thing.** It carries the date the books record,
+    the description, and the assertion that it balanced when written.
+    """
+
+    __tablename__ = "ledger_transactions"
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", "purpose",
+                         name="uq_ledger_txn_source_purpose"),
+        Index("ix_ledger_txn_tenant", "tenant_id", "posted_at"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    currency:    Mapped[str]       = mapped_column(String(10), nullable=False, default="usd")
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    purpose:     Mapped[str | None] = mapped_column(String(32), nullable=True)
+    case_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    tenant_id:   Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A reversal points at what it reverses — corrections are new rows, never
+    # edits, so the books can still say what they said on any past date.
+    reverses_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    posted_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    posted_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class LedgerEntryModel(Base):
+    """HxLedger — one line of a double-entry transaction (§8.4, mig 150).
+
+    The platform had `PaymentRequestModel`, `PaymentDisbursementModel` and
+    `InvoiceRecordModel` but no reconciling ledger: money movement was recorded
+    but never balanced, which is an audit gap rather than a reporting one.
+
+    **Lines never stand alone.** Every entry belongs to a `transaction_id`, and
+    a transaction is only ever written whole and balanced — total debits equal
+    total credits, or nothing is stored. That invariant is the entire value of
+    double-entry, so it is enforced at write time rather than checked later.
+
+    **Append-only.** A mistake is corrected by posting a reversing transaction,
+    never by editing or deleting a line. An edited ledger cannot answer "what
+    did the books say on the 3rd", which is the question an auditor asks.
+
+    **Integer cents.** Money is never a float here, matching the existing
+    payment models.
+    """
+
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        Index("ix_ledger_entries_txn", "transaction_id"),
+        Index("ix_ledger_entries_account", "account_id", "posted_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    transaction_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    account_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    direction:      Mapped[str]       = mapped_column(String(6), nullable=False)   # debit | credit
+    amount_cents:   Mapped[int]       = mapped_column(BigInteger, nullable=False)
+    currency:       Mapped[str]       = mapped_column(String(10), nullable=False, default="usd")
+    description:    Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What in the world this line records — used for reconciliation and to make
+    # posting idempotent.
+    source_type:    Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    purpose:        Mapped[str | None] = mapped_column(String(32), nullable=True)
+    case_id:        Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    tenant_id:      Mapped[str | None] = mapped_column(String(64), nullable=True)
+    posted_by:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    posted_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class PIIFindingModel(Base):
+    """HxPrivacy — a field that probably holds personal data (§8.10, mig 149).
+
+    A finding is a **proposal**, not a verdict. Detection is heuristic (field
+    names, labels, declared input types — never values), so every row carries a
+    confidence and the reason it was raised, and a human confirms or dismisses
+    it before it drives retention or residency policy.
+
+    That review step matters in both directions: a false positive silently
+    over-restricts a harmless field until a feature mysteriously breaks, and a
+    false negative leaves personal data untagged while the report looks clean.
+
+    `UNIQUE (resource_type, resource_id, field_path)` keeps a rescan
+    idempotent — re-running the scanner updates a finding rather than stacking
+    duplicates and burying the reviewer's decision.
+    """
+
+    __tablename__ = "pii_findings"
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", "field_path",
+                         name="uq_pii_finding_resource_field"),
+        Index("ix_pii_findings_status", "status"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    resource_type: Mapped[str]       = mapped_column(String(32), nullable=False)   # form | data_model
+    resource_id:   Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    resource_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    field_path:    Mapped[str]       = mapped_column(String(512), nullable=False)
+    field_label:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    category:      Mapped[str]       = mapped_column(String(32), nullable=False)
+    confidence:    Mapped[float]     = mapped_column(Float, nullable=False, default=0.0)
+    reason:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    special_category: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
+    status:        Mapped[str]       = mapped_column(String(16), nullable=False, default="detected")
+    reviewed_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tenant_id:     Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_seen_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    last_seen_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ConsentRecordModel(Base):
+    """HxConsent — append-only consent & purpose-limitation ledger (§8.1, mig 148).
+
+    GDPR Article 15/17 is reactive: it answers "what do you hold on me" after
+    the fact. A ledger is proactive — it records *why* each use of a subject's
+    data was lawful, at the moment it became lawful.
+
+    **Append-only.** A withdrawal is a new row, never an update to the grant.
+    The question a regulator asks is "was this use lawful **at the time**",
+    which an overwritten row cannot answer. Current state is derived by reading
+    the latest row per (subject, purpose).
+
+    `basis` is the lawful basis, not a synonym for consent: contract, legal
+    obligation and legitimate interest are bases that do **not** require
+    consent and cannot be withdrawn by the subject. Collapsing them into a
+    boolean would misrepresent the legal position.
+    """
+
+    __tablename__ = "consent_records"
+    __table_args__ = (
+        Index("ix_consent_subject_purpose", "subject_ref", "purpose", "recorded_at"),
+        Index("ix_consent_tenant", "tenant_id"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    subject_ref:  Mapped[str]       = mapped_column(String(255), nullable=False)
+    subject_type: Mapped[str]       = mapped_column(String(32), nullable=False, default="email")
+    purpose:      Mapped[str]       = mapped_column(String(64), nullable=False)
+    action:       Mapped[str]       = mapped_column(String(16), nullable=False)   # granted | withdrawn
+    basis:        Mapped[str]       = mapped_column(String(32), nullable=False, default="consent")
+    source:       Mapped[str]       = mapped_column(String(64), nullable=False, default="api")
+    evidence:     Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
+    case_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    tenant_id:    Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_id:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recorded_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseEventModel(Base):
+    """Append-only event stream for the Case aggregate (#30a / §2.2, mig 146).
+
+    The relational `case_instances` row stays exactly as it is — it becomes a
+    **materialised projection** of this stream rather than being replaced. That
+    keeps every existing read path working while making the history verifiable.
+
+    `UNIQUE (case_id, seq)` is the load-bearing constraint. It gives a per-case
+    monotonic sequence, which is simultaneously the ordering guarantee, the
+    optimistic-concurrency check (two writers racing on the same `seq` — one
+    loses), and the gap detector. Nothing in the codebase updates or deletes a
+    row here; append-only is enforced in `core/event_store.py` and there is no
+    other writer.
+
+    **Clean cutover, no backfill (§7.5).** A case's history before the event
+    store existed cannot be honestly reconstructed — `case_step_completions`
+    and `case_event_log` record what happened but were never an append-only
+    stream. Only cases flagged `case_instances.event_sourced` have a complete
+    stream; the rest keep working exactly as before and simply cannot be
+    replayed.
+    """
+
+    __tablename__ = "case_events"
+    __table_args__ = (
+        UniqueConstraint("case_id", "seq", name="uq_case_events_case_seq"),
+        Index("ix_case_events_case_seq", "case_id", "seq"),
+        Index("ix_case_events_type", "event_type"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    case_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
+    seq:         Mapped[int]       = mapped_column(BigInteger, nullable=False)
+    event_type:  Mapped[str]       = mapped_column(String(64), nullable=False)
+    data:        Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
+    actor_id:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor_type:  Mapped[str]       = mapped_column(String(20), nullable=False, default="system")
+    occurred_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class AIActionProposalModel(Base):
+    """An `ai_action` step's output, awaiting a human (#33, §5.1, mig 143).
+
+    The step type makes AI a workflow participant, and the participant is a
+    *proposer*: unless the step explicitly opts out, nothing it produces
+    reaches case data until a person accepts or overrides it. That is the
+    HITL requirement in §5.1, and keeping the proposal as a row is what makes
+    "who approved this, and what did the model actually say" answerable later.
+
+    `model` / `prompt_sha256` mirror the §5.5 Article-22 provenance recorded
+    for DecisionPoints — same reason: a decision nobody can reproduce is not
+    auditable.
+    """
+
+    __tablename__ = "ai_action_proposals"
+    __table_args__ = (
+        Index("ix_ai_proposals_case", "case_id", "status"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    case_id:       Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
+    stage_id:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    step_id:       Mapped[str]       = mapped_column(String(255), nullable=False)
+    status:        Mapped[str]       = mapped_column(String(20), nullable=False, default="pending")
+    proposed:      Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
+    final_output:  Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
+    provider:      Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model:         Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class LLMCallModel(Base):
+    """One completion, recorded once (#32 LLMOps, mig 142).
+
+    Written by the watcher draining `hxnexus.llmops`, not by the caller: the
+    recording point is `GuardedBackend.complete`, which has no session. Token
+    counts are **estimates** (`tokens_estimated`) because no backend here
+    returns provider usage — the column exists so a future backend that does
+    can write true counts without a schema change.
+    """
+
+    __tablename__ = "llm_calls"
+    __table_args__ = (
+        Index("ix_llm_calls_created", "created_at"),
+        Index("ix_llm_calls_model", "model"),
+    )
+
+    id:                Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:         Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider:          Mapped[str]       = mapped_column(String(64), nullable=False)
+    model:             Mapped[str]       = mapped_column(String(128), nullable=False)
+    route:             Mapped[str]       = mapped_column(String(16), nullable=False, default="direct")
+    purpose:           Mapped[str]       = mapped_column(String(64), nullable=False, default="completion")
+    prompt_tokens:     Mapped[int]       = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int]       = mapped_column(Integer, default=0)
+    tokens_estimated:  Mapped[bool]      = mapped_column(Boolean, default=True)
+    cost_usd:          Mapped[float]     = mapped_column(Float, default=0.0)
+    latency_ms:        Mapped[float]     = mapped_column(Float, default=0.0)
+    status:            Mapped[str]       = mapped_column(String(16), nullable=False, default="ok")
+    error_type:        Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at:        Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class HxSandboxModuleModel(Base):
+    """HxSandbox (#17, mig 140) — a customer-authored WASM module, per tenant.
+
+    The bytes are extracted from the `.hxapp`, validated and stored **at install
+    time**, not fetched when a transform runs. Two reasons: a sync pipeline
+    calling a transform per row must not depend on the publisher being
+    reachable, and `validate_module()` is designed to reject a malformed guest
+    before first run rather than mid-pipeline.
+
+    `sha256` is the digest of `wasm_bytes` as stored, so a module can be
+    re-verified without re-downloading. Rows are tenant-scoped: revoking one
+    tenant's install must not disarm another's.
+    """
+
+    __tablename__ = "hxsandbox_modules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "package_id", name="uq_hxsandbox_module_tenant_pkg"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[str]       = mapped_column(String(255), nullable=False)
+    package_id: Mapped[str]       = mapped_column(String(255), nullable=False)
+    version:    Mapped[str]       = mapped_column(String(64), nullable=False)
+    wasm_bytes: Mapped[bytes]     = mapped_column(LargeBinary, nullable=False)
+    sha256:     Mapped[str]       = mapped_column(String(64), nullable=False)
+    installed_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class MarketplacePackInstallModel(Base):
+    """Accelerator Packs P1 (mig 134) — a vertical content pack provisioned into a tenant.
+
+    Installing a pack and PROVISIONING it are separate events: install records
+    entitlement, provisioning is when case types actually appear in Studio.
+
+    P1 provisions once. `apply_bundle` upserts, so re-provisioning would
+    overwrite whatever the tenant has since edited — the failure P2's merge
+    exists to prevent. "One row with status='provisioned'" is a partial unique
+    constraint, unsupported on MySQL, so it is enforced in
+    `packs.already_provisioned` rather than by an index that would silently do
+    nothing on one of the three supported engines.
+    """
+    __tablename__ = "marketplace_pack_installs"
+    __table_args__ = (
+        # One row per (tenant, package) — mig 136. The rule wanted is "one
+        # SUCCESSFUL provision", but that is a partial unique index and MySQL
+        # cannot express it, so the row is reused instead: a retry after a
+        # failed provision UPDATEs this row rather than inserting a second.
+        # Without a DB-level constraint the check-then-insert in provision() is
+        # racy, and two concurrent calls would both provision.
+        UniqueConstraint("tenant_id", "package_id", name="ux_pack_installs_tenant_pkg"),
+        Index("ix_pack_installs_lookup", "tenant_id", "package_id", "status"),
+        Index("ix_pack_installs_tenant", "tenant_id", "provisioned_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:      Mapped[str]       = mapped_column(String(255), nullable=False)
+    package_id:     Mapped[str]       = mapped_column(String(255), nullable=False)
+    pack_version:   Mapped[str]       = mapped_column(String(64), nullable=False)
+    vertical:       Mapped[str | None]= mapped_column(String(64), nullable=True)
+    status:         Mapped[str]       = mapped_column(String(16), nullable=False, default="provisioned")
+    # Straight from apply_bundle's return value — what landed, not what was predicted.
+    imported_count: Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    skipped_count:  Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    needs_config:   Mapped[list]      = mapped_column(PortableJSON(), default=list)
+    errors_json:    Mapped[list]      = mapped_column(PortableJSON(), default=list)
+    # Opt-in: silently creating demo cases in a live tenant is not a default.
+    sample_data:    Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
+    sample_count:   Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    provisioned_by: Mapped[str]       = mapped_column(String(255), nullable=False)
+    provisioned_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    # P2 (mig 135) — what the pack shipped when it was provisioned. This is the
+    # BASE of the three-way merge; without it an upgrade cannot tell a tenant
+    # customisation from a change the pack itself made, and would have to either
+    # overwrite the customer's work or refuse every upgrade.
+    snapshot_json:  Mapped[dict]      = mapped_column(PortableJSON(), default=dict)
+
+
+class MarketplacePackUpgradeModel(Base):
+    """Accelerator Packs P2 (mig 135) — one pack upgrade attempt and its outcome.
+
+    Separate from the install row because an upgrade is an event with a result:
+    what applied, and what was skipped because the pack and the tenant had both
+    changed the same artifact. Conflicts are never auto-resolved — silently
+    picking a side loses somebody's work.
+    """
+    __tablename__ = "marketplace_pack_upgrades"
+    __table_args__ = (
+        Index("ix_pack_upgrades_lookup", "tenant_id", "package_id", "upgraded_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:      Mapped[str]       = mapped_column(String(255), nullable=False)
+    package_id:     Mapped[str]       = mapped_column(String(255), nullable=False)
+    from_version:   Mapped[str]       = mapped_column(String(64), nullable=False)
+    to_version:     Mapped[str]       = mapped_column(String(64), nullable=False)
+    status:         Mapped[str]       = mapped_column(String(16), nullable=False, default="applied")
+    applied_count:  Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    skipped_count:  Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    conflicts_json: Mapped[list]      = mapped_column(PortableJSON(), default=list)
+    errors_json:    Mapped[list]      = mapped_column(PortableJSON(), default=list)
+    upgraded_by:    Mapped[str]       = mapped_column(String(255), nullable=False)
+    upgraded_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class MarketplaceConformanceModel(Base):
+    """Roadmap #27 (mig 133) — one structural-conformance result per package version.
+
+    The checks themselves are `testsuite.conformance.run_structural` — deterministic
+    static analysis, never AI, never live execution, so the gate cannot be flaky.
+    This table is only the record the gate reads.
+
+    Three states matter, and the third is the one the grandfather window exists for:
+    a `passed` row, a `failed` row, and **no row at all** (never submitted).
+    """
+    __tablename__ = "marketplace_conformance"
+    __table_args__ = (
+        # The gate's only question: passed result for this package at this version?
+        Index("ix_mkt_conf_lookup", "tenant_id", "package_id", "package_version", "status"),
+        Index("ix_mkt_conf_pkg_recent", "tenant_id", "package_id", "created_at"),
+    )
+
+    id:              Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[str]        = mapped_column(String(255), nullable=False)
+    package_id:      Mapped[str]        = mapped_column(String(255), nullable=False)
+    package_version: Mapped[str]        = mapped_column(String(64), nullable=False)
+    status:          Mapped[str]        = mapped_column(String(16), nullable=False)   # passed|failed
+    total:           Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
+    passed_count:    Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
+    failed_count:    Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
+    # Verbatim per-check detail: a refusal must always be explainable to the
+    # publisher without re-running anything.
+    checks_json:     Mapped[list]       = mapped_column(PortableJSON(), default=list)
+    run_id:          Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    # MicroDateTime, not second-precision: the current result per package is
+    # resolved with ORDER BY created_at DESC, and same-second ties would fall
+    # through to a random UUID — "latest result wins" must be deterministic.
+    created_at:      Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class MarketplaceConformanceWindowModel(Base):
+    """Roadmap #27 (mig 133) — the platform's grandfather window (report §6.5).
+
+    Singleton. Stored rather than derived from "when the flag was switched on":
+    a computed cutover would move on every toggle or restart, silently granting a
+    publisher a fresh 60 days or expiring them early — both wrong, both invisible
+    until someone is locked out with no explanation.
+    """
+    __tablename__ = "marketplace_conformance_window"
+    __table_args__ = (
+        # `singleton` is always 1 and means nothing by itself; it exists so one
+        # plain UNIQUE works identically on Postgres and MySQL/MariaDB.
+        UniqueConstraint("singleton", name="ux_mkt_conf_window_singleton"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    singleton:    Mapped[int]       = mapped_column(Integer, nullable=False, default=1)
+    cutover_at:   Mapped[datetime]  = mapped_column(MicroDateTime(), nullable=False)
+    window_days:  Mapped[int]       = mapped_column(Integer, nullable=False, default=60)
+    activated_by: Mapped[str]       = mapped_column(String(255), nullable=False)
+    activated_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
 class DbManagerQueryLogModel(Base):
     """HxDBManager — audit log of every SQL query run through the DB Manager."""
     __tablename__ = "db_manager_query_log"
@@ -4043,6 +4566,10 @@ class CaseInstanceVariableModel(Base):
     value_json: Mapped[dict|list|None] = mapped_column(PortableJSON(), nullable=True)
     written_by: Mapped[str]         = mapped_column(String(255), nullable=False)
     written_at: Mapped[datetime]    = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # CRDT version stamp (#38, mig 144). Offline clients cannot agree on wall
+    # time, so convergence is decided on (lamport, origin), never written_at.
+    lamport:    Mapped[int]         = mapped_column(BigInteger, nullable=False, default=0)
+    origin:     Mapped[str]         = mapped_column(String(64), nullable=False, default="")
 # <<< Case Variables Phase 1
 
 
@@ -4256,6 +4783,11 @@ class OutboxEventModel(Base):
     delivered_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts:        Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Durable-log fan-out (§2.1, mig 145). A SEPARATE cursor from delivered_at
+    # so publishing to the event bus cannot disturb HTTP webhook delivery, and
+    # either sink can be enabled, disabled or replayed without the other.
+    published_at:       Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publish_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # >>> PUO Phase 3 — platform update rollout plans (migration 084)
@@ -4333,7 +4865,7 @@ class SequenceCounterModel(Base):
 # hand-written backticks. `value` columns mirror the live migration types (068/070).
 class HelixSettingModel(Base):
     """Key/value platform settings (migration 068). e.g. token_expiry_days."""
-    __tablename__ = "helix_settings"
+    __tablename__ = "velaris_settings"
 
     key:        Mapped[str]            = mapped_column(String(255), primary_key=True)
     value:      Mapped[str]            = mapped_column(Text, nullable=False)

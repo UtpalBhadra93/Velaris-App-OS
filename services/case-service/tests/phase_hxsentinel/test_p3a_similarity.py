@@ -6,7 +6,7 @@ tenant-scoped, and cites which signals overlap.
 
 Setup commits before the engine reads (shared StaticPool connection).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

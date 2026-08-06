@@ -6,7 +6,7 @@ into coherent lifecycle actions.
 
 These functions are called by the API routers and Temporal activities.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -121,6 +121,27 @@ async def on_case_created(
     Called after the case instance row is inserted, before the
     Temporal workflow begins.
     """
+    # Event sourcing cutover (#30a / §7.5): a case is marked event-sourced at
+    # BIRTH or never. Flipping an existing case on later would leave a stream
+    # that starts mid-history and looks complete — worse than no stream.
+    from case_service.config import get_settings
+    from case_service.core import event_store
+
+    if get_settings().event_sourcing_enabled:
+        case = await repo.get_case_instance(session, case_id)
+        if case is not None and not case.event_sourced:
+            case.event_sourced = True
+            await session.flush()
+            await event_store.record(
+                session, case_id=case_id, event_type=event_store.CASE_CREATED,
+                data={
+                    "case_type_id": str(case_type_id) if case_type_id else None,
+                    "status": case.status,
+                    "tenant_id": tenant_id,
+                },
+                actor_id=case.created_by, actor_type="user" if case.created_by else "system",
+            )
+
     # Start case-level SLAs
     for sla_policy in case_type_def.get("sla_policies", []):
         # Only case-level SLAs (not stage-scoped)
@@ -154,9 +175,38 @@ async def on_stage_entered(
     """
     stage_id = stage["id"]
 
+    # Record the transition in the process event log BEFORE the stage pointer
+    # moves, so the case's previous stage can be closed with a `stage_exit`.
+    # Roadmap #40: these two events are the only source of stage-duration
+    # history, and nothing wrote them before — `log_stage_transition` existed
+    # but had no caller, so statistical SLA prediction had nothing to measure.
+    case = await repo.get_case_instance(session, case_id)
+    if case is not None:
+        from case_service.process_mining import event_logger
+        try:
+            if case.current_stage_id and case.current_stage_id != stage_id:
+                await event_logger.log_stage_transition(
+                    session, case_id=case_id, case_type_id=case.case_type_id,
+                    stage_id=case.current_stage_id, activity_type="stage_exit",
+                )
+            await event_logger.log_stage_transition(
+                session, case_id=case_id, case_type_id=case.case_type_id,
+                stage_id=stage_id, activity_type="stage_enter",
+            )
+        except Exception as exc:      # observability must never block a case
+            logger.warning("stage transition not logged for case %s: %s", case_id, exc)
+
     # Update case stage
     await repo.update_case_instance(
         session, case_id, values={"current_stage_id": stage_id}
+    )
+
+    # #30a: the projection above and the event below must agree — this is the
+    # chokepoint `verify()` checks against.
+    from case_service.core import event_store as _es
+    await _es.record(
+        session, case_id=case_id, event_type=_es.STAGE_ENTERED,
+        data={"stage_id": stage_id, "stage_name": stage.get("name", "")},
     )
 
     # Start stage SLA if configured
@@ -233,6 +283,14 @@ async def on_step_completed(
 
     await urgency_calculator.refresh_urgency_for_case(session, case_id)
 
+    from case_service.core import event_store as _es
+    await _es.record(
+        session, case_id=case_id, event_type=_es.STEP_COMPLETED,
+        data={"step_id": step_id},
+        actor_id=completed_by,
+        actor_type="user" if completed_by else "system",
+    )
+
     return {
         "case_id": str(case_id),
         "step_id": step_id,
@@ -254,6 +312,12 @@ async def on_status_changed(
     - Pauses/resumes SLAs based on status
     - Refreshes urgency
     """
+    from case_service.core import event_store as _es
+    await _es.record(
+        session, case_id=case_id, event_type=_es.STATUS_CHANGED,
+        data={"from": old_status, "to": new_status},
+    )
+
     # Terminal statuses: cancel all SLAs
     if new_status in ("resolved", "closed", "cancelled"):
         await sla_tracker.cancel_slas_for_case(session, case_id)

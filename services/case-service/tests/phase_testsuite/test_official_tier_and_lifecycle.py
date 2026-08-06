@@ -3,7 +3,7 @@
 Tier = (source URL org in official_orgs) AND (id in baked official registry).
 Uninstall = revoke (keep data) | revoke + delete data (run app teardown).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

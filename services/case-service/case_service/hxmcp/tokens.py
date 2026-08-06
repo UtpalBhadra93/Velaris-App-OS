@@ -14,7 +14,7 @@ Enforcement points:
 - The grant row is checked on every call — revocation is immediate, not
   eventual, even while the JWT is still time-valid.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

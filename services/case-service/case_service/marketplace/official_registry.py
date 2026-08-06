@@ -8,7 +8,7 @@ community contributor cannot append a line (it is a platform-release change), so
 the Official badge cannot be spoofed even when official and community packages live
 in the same GitHub repo/org.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

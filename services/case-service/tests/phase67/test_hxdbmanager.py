@@ -164,7 +164,7 @@ class TestDdlSafety:
 
     DDL_STATEMENTS = [
         "DROP TABLE case_types",
-        "TRUNCATE helix_users",
+        "TRUNCATE velaris_users",
         "ALTER TABLE case_types ADD COLUMN evil TEXT",
         "CREATE TABLE pwned (id INT)",
         "CREATE INDEX ix_evil ON case_types(name)",
@@ -309,7 +309,7 @@ class TestDdlEndpoint:
         """/ddl must not run SELECT statements — wrong endpoint."""
         _override(_superadmin)
         r = await client.post("/api/v1/hxdbmanager/ddl", json={
-            "sql": "SELECT * FROM helix_users",
+            "sql": "SELECT * FROM velaris_users",
             "confirm": True, "reason": "trying to read via ddl"
         })
         assert r.status_code == 400
@@ -337,8 +337,8 @@ class TestInjectionPrevention:
     """Table name injection must be blocked via existence check."""
 
     INJECTION_TABLE_NAMES = [
-        "case_types; DROP TABLE helix_users--",
-        "case_types UNION SELECT * FROM helix_users--",
+        "case_types; DROP TABLE velaris_users--",
+        "case_types UNION SELECT * FROM velaris_users--",
         "'; SELECT pg_sleep(5)--",
         "../../../etc/passwd",
         "case_types\x00evil",
@@ -361,7 +361,7 @@ class TestInjectionPrevention:
     @REQUIRES_EXTERNAL_DB
     async def test_injection_via_table_rows_endpoint_blocked(self, client: AsyncClient):
         _override(_admin)
-        r = await client.get("/api/v1/hxdbmanager/tables/helix_users%3B+DROP+TABLE+case_types--/rows")
+        r = await client.get("/api/v1/hxdbmanager/tables/velaris_users%3B+DROP+TABLE+case_types--/rows")
         assert r.status_code == 404
         _clear()
 

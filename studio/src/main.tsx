@@ -87,6 +87,7 @@ import PortalAdmin from "@modules/portal/PortalAdmin";
 import MeetJoin from "@modules/portal/MeetJoin";
 import AccessGroupAdmin from "@modules/access-groups/AccessGroupAdmin";
 import HxStream from "@modules/hxstream/HxStream";
+import HxStatus from "@modules/hxstatus/HxStatus";
 import HelpCenter from "@modules/help/HelpCenter";
 import HxGraph from "@modules/hxgraph/HxGraph";
 import FormBuilderPage from "@modules/form-builder/FormBuilderPage";
@@ -180,6 +181,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           {/* ── Security ── */}
           <Route path="/hxshield"      element={<PermRoute path="/hxshield"      pageName="HxShield">     <HxShield />              </PermRoute>} />
           <Route path="/hxstream"      element={<PermRoute path="/hxstream"      pageName="HxStream">     <HxStream />              </PermRoute>} />
+          <Route path="/hxstatus"      element={<PermRoute path="/hxstatus"      pageName="HxStatus">     <HxStatus />              </PermRoute>} />
           <Route path="/hxlogs"        element={<PermRoute path="/hxlogs"        pageName="HxLogs">       <HxLogs />                </PermRoute>} />
           <Route path="/hxdbmanager"   element={<PermRoute path="/hxdbmanager"   pageName="HxDBManager">  <HxDBManager />           </PermRoute>} />
           <Route path="/compliance"    element={<PermRoute path="/compliance"    pageName="Compliance">   <ComplianceDashboard />   </PermRoute>} />

@@ -28,7 +28,7 @@ def extract_subject_tag(subject: str) -> Optional[str]:
 
 def build_message_id(case_id: Optional[uuid.UUID], domain: str | None = None) -> str:
     import os
-    _domain = domain or os.getenv("HELIX_AUTH_EMAIL_DOMAIN", "local")
+    _domain = domain or os.getenv("VELARIS_AUTH_EMAIL_DOMAIN", "local")
     nonce = uuid.uuid4().hex[:12]
     short = str(case_id)[:8] if case_id else "free"
     return f"<case-{short}-{nonce}@{_domain}>"

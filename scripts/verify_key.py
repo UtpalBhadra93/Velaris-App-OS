@@ -27,8 +27,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 REGISTER_URL = os.environ.get("VELARIS_REGISTER_URL", "https://velaris-app-os.duckdns.org")
-HELIX_DIR    = Path(__file__).parent.parent
-KEY_CACHE    = HELIX_DIR / ".velaris-key"
+VELARIS_DIR    = Path(__file__).parent.parent
+KEY_CACHE    = VELARIS_DIR / ".velaris-key"
 GRACE_DAYS   = int(os.environ.get("KEY_GRACE_DAYS", "7"))
 
 
@@ -82,7 +82,7 @@ def call_verify(key_id: str, mac: str) -> dict | None:
 
 def main() -> int:
     # ── 1. Check setup marker exists ──────────────────────────────────
-    if not (HELIX_DIR / ".velaris-setup-complete").exists():
+    if not (VELARIS_DIR / ".velaris-setup-complete").exists():
         print(red("  ✗  Velaris has not been set up."))
         print(red("     Run ./setup-velaris.sh first."))
         return 1

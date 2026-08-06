@@ -13,7 +13,7 @@ Default formula::
 All weights and the formula itself can be overridden per work queue
 via ``WorkQueueDefinition.urgency_formula``.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

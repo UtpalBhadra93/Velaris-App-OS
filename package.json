@@ -1,0 +1,5 @@
+{
+  "name": "velaris",
+  "private": true,
+  "workspaces": ["studio", "codegen-components"]
+}

@@ -4,7 +4,7 @@ Rates are commercially sensitive: gated behind the dedicated HxGuard capability
 ``costing.rates`` (admin), per-tenant, never reachable by portal identities.
 The time rollup for a case inherits that case's view authorization.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.costing import service as costing
 from case_service.db import repository as repo
+from case_service.config import get_settings
 from case_service.db.session import get_session
 
 router = APIRouter(prefix="/costing", tags=["costing"])
@@ -229,6 +230,16 @@ async def export_billing(
     since = datetime.now(timezone.utc) - timedelta(days=days)
     lines = await costing.billing_export(
         session, _tenant(user), case_type_id=ct_id, since=since)
+
+    # HxPrivacy (§8.10): this export leaves the tenant for invoicing, so
+    # confirmed personal data is masked before it does. Only CONFIRMED
+    # findings redact — a heuristic guess must not blank a billing column.
+    # Off by default; enabling it is a deliberate act.
+    if get_settings().pii_redact_exports:
+        from case_service.core import pii_redaction as _pii
+
+        _paths = await _pii.confirmed_field_paths(session, tenant_id=_tenant(user))
+        lines = _pii.redact_rows(lines, _paths)
 
     if fmt == "csv":
         from fastapi.responses import PlainTextResponse

@@ -4,7 +4,7 @@ Pins: the dashboard aggregates per reviewer; reliability = outcome-agreement wit
 disputed scores excluded; a dispute is append-only + tenant-scoped; and the
 `risk.scores.review` action gates both.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

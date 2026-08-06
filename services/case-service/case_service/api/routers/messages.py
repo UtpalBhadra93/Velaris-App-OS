@@ -7,7 +7,7 @@ lives in portal.py under the customer JWT. A worker post that is
 portal-visible triggers a best-effort email notification to the linked
 customer (honouring their notify_email preference).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -8,7 +8,7 @@ writes do not leak to the dev database).
 Covers the verify-before-fire contract: goal -> at_risk, deadline -> breached,
 due escalation levels, idempotency, and the paused / cancelled no-ops.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

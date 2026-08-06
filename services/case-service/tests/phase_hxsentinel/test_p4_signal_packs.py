@@ -5,7 +5,7 @@ boundary), install stores the pack + its taxonomy, the in-core engine evaluates
 enabled pack rules against the feature context and fires namespaced findings,
 pack rules are tenant-scoped, and uninstall removes them.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

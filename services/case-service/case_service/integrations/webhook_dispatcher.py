@@ -4,7 +4,7 @@ All HTTP firing is done by OutboxRelay (outbox_relay.py), not here.
 dispatch_event() is called inline with the business transaction so the
 outbox row and the triggering case mutation commit atomically.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

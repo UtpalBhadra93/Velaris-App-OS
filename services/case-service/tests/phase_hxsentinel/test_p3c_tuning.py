@@ -4,7 +4,7 @@ Pins: reliability-weighted aggregation (disputed excluded), the min-reviews floo
 low->deactivate / high->raise-severity proposals, idempotent generation, and that
 approval (only) applies the change to case_risk_rules — never silent.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

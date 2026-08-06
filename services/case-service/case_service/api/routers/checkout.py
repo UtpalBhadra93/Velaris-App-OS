@@ -19,7 +19,7 @@ Endpoints (prefix /api/v1/checkout):
     GET/POST/PUT/DELETE /integrations  webhook integrations
     GET    /analytics/summary       order KPIs
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
+from case_service.compliance.consent import ProcessingRefused
+from case_service.core.error_codes import CONSENT_REFUSED_403, coded
 from case_service.db.models import CaseInstanceModel
 from case_service.db.session import get_session
 from case_service.tenancy.identity import same_tenant
@@ -125,6 +127,12 @@ async def extract_fields(
         result = await voicefill.extract(
             session, case=case, user=user, transcript=transcript,
             speakers=speakers, catalogue=catalogue)
+    except ProcessingRefused as e:        # no lawful basis for ai_processing
+        raise coded(
+            403, CONSENT_REFUSED_403,
+            f"Refused: the subject of this case has no lawful basis for "
+            f"{e.purpose!r} ({e.reason}).",
+        )
     except PermissionError as e:          # tenant has not opted into case AI
         raise HTTPException(400, str(e))
     except RuntimeError as e:             # no backend — honest, never a silent []

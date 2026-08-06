@@ -9,7 +9,7 @@ Pins the invariants P2/P3 will depend on:
   * extraction is idempotent;
   * bulk labelling reports per-case outcomes instead of failing the batch.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

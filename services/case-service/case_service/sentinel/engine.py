@@ -15,7 +15,7 @@ Correctness invariants (see the rules' evidence for why each matters):
   * **Exclude self and the unlabelled.** A case never matches itself, and a
     case with no confirmed outcome is not evidence of anything.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

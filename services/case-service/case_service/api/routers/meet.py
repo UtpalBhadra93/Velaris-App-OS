@@ -10,7 +10,7 @@ Two unauthenticated endpoints, both narrow: the guest token exchange
 (single-use invite, IP rate-limited) and the LiveKit webhook (signature-
 verified against the API secret).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

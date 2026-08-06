@@ -5,7 +5,7 @@ Loads the baseline rule set for the case's type, builds the candidate set
 the outcome to ``replay_runs`` / ``replay_results`` — the ONLY tables replay
 ever writes.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

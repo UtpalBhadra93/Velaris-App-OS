@@ -5,7 +5,7 @@ merged HxEvolve changes; a cumulative regression FREEZES scans and surfaces
 one drift insight; frozen case types don't propose; only the admin
 rebaseline endpoint unfreezes; too-little-data on either side = no freeze.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

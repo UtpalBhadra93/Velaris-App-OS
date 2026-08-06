@@ -8,7 +8,7 @@ sha256 in the audit chain, tenant-DEK ciphertext as the case document),
 meet.recording.view download/unseal + tamper detection, hash verification,
 and the non-consuming public guest preview (notice before consent).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

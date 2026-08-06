@@ -464,7 +464,7 @@ async def my_approvals(
     Matches against both username and user_id UUID since the user-directory
     uses the username string as its user_id field.
     """
-    # user.user_id is the UUID from helix_users.id (JWT sub claim)
+    # user.user_id is the UUID from velaris_users.id (JWT sub claim)
     # user.username is the login name — user-directory stores this as user_id
     identifiers = {
         str(getattr(user, "user_id", "") or ""),

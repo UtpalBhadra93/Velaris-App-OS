@@ -2,7 +2,7 @@
 
 Read SLA status and pause/resume/start SLA clocks.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -57,6 +57,65 @@ async def get_case_sla_status(
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     return await repo.get_sla_instances(session, case_id)
+
+
+@router.get("/cases/{case_id}/sla/prediction")
+async def get_case_sla_prediction(
+    case_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Statistical breach risk for one case (roadmap #40, §4.5).
+
+    Percentile arithmetic over this case type's own history — no model, no
+    training. Reports the case grain and the current-stage grain separately,
+    plus a single `at_risk` flag for callers that do not want to reason about
+    grains. Either grain reporting `insufficient_data` is a real answer, not
+    an error: a percentile drawn from a handful of cases misleads.
+    """
+    from case_service.core import sla_prediction
+
+    try:
+        return await sla_prediction.predict_for_case(session, case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/case-types/{case_type_id}/sla/distribution")
+async def get_case_type_sla_distribution(
+    case_type_id: uuid.UUID,
+    stage_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """The historical distribution a prediction is drawn from.
+
+    Exposed so a designer can see *why* a case was flagged — and, when there
+    is not enough history, see that plainly instead of wondering why nothing
+    is ever flagged.
+    """
+    from case_service.core import sla_prediction
+
+    samples = (
+        await sla_prediction.stage_durations(session, case_type_id, stage_id)
+        if stage_id else
+        await sla_prediction.case_type_durations(session, case_type_id)
+    )
+    out = {
+        "case_type_id": str(case_type_id),
+        "stage_id": stage_id,
+        "grain": "stage" if stage_id else "case",
+        "samples": len(samples),
+        "min_samples": sla_prediction.MIN_SAMPLES,
+        "sufficient": len(samples) >= sla_prediction.MIN_SAMPLES,
+    }
+    if samples:
+        out |= {
+            "median_seconds": round(sla_prediction.value_at_percentile(samples, 50.0), 2),
+            "p85_seconds": round(sla_prediction.value_at_percentile(samples, 85.0), 2),
+            "p95_seconds": round(sla_prediction.value_at_percentile(samples, 95.0), 2),
+            "min_seconds": round(samples[0], 2),
+            "max_seconds": round(samples[-1], 2),
+        }
+    return out
 
 
 @router.post(

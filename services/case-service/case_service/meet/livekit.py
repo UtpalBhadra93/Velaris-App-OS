@@ -8,7 +8,7 @@ same no-SDK spine as HxMCP's JSON-RPC — so the server SDK never becomes a
 dependency. The API secret is server-side only; the browser only ever sees
 a minted, room-scoped, short-TTL token.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

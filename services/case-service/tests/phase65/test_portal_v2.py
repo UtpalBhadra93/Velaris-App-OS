@@ -2,7 +2,7 @@
 customer-JWT case endpoints (detail/timeline/documents/sessions), friendly
 stage labels, and the portal-display admin config.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

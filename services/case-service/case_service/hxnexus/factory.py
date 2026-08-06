@@ -2,12 +2,12 @@
 
 Single source of truth for the project-wide LLM backend.
 All AI features (HxNexus, NLP Builder, Scout AI) call get_llm_backend()
-and get the backend configured via HELIX_CASE_AI_* env vars.
+and get the backend configured via VELARIS_CASE_AI_* env vars.
 
 SIMPLE usage — set just these in .env, zero code changes needed:
-  HELIX_CASE_AI_PROVIDER = groq          (or mistral | gemini | together | openai | anthropic | ollama | custom)
-  HELIX_CASE_AI_API_KEY  = gsk_xxxx
-  HELIX_CASE_AI_MODEL    = llama-3.1-70b-versatile
+  VELARIS_CASE_AI_PROVIDER = groq          (or mistral | gemini | together | openai | anthropic | ollama | custom)
+  VELARIS_CASE_AI_API_KEY  = gsk_xxxx
+  VELARIS_CASE_AI_MODEL    = llama-3.1-70b-versatile
 
 The factory auto-resolves the base URL for known providers.
 """
@@ -36,7 +36,7 @@ PROVIDER_URLS: dict[str, str] = {
     "deepseek":     "https://api.deepseek.com/v1",
     "xai":          "https://api.x.ai/v1",
     "cohere":       "https://api.cohere.ai/compatibility/v1",
-    "azure":        "",   # requires full HELIX_CASE_AI_BASE_URL
+    "azure":        "",   # requires full VELARIS_CASE_AI_BASE_URL
 }
 
 
@@ -133,15 +133,56 @@ class GuardedBackend:
         setattr(object.__getattribute__(self, "_inner"), name, value)
 
     async def complete(self, prompt: str, **kwargs):
-        from . import guard
+        import time
+
+        from . import guard, llmops
         from .egress_audit import queue_prompt_flagged
         system = kwargs.get("system", "") or ""
         guard.validate_prompt_size(prompt, system)          # model-DoS — raises
         scan = guard.scan_input(prompt or "")               # injection signal
         if scan.flagged:
             queue_prompt_flagged(signals=scan.signals)
-        raw = await self._inner.complete(prompt, **kwargs)
-        return guard.scrub_output(raw) if isinstance(raw, str) else raw
+
+        # #32 LLMOps: this is the one chokepoint every AI call passes through,
+        # so it is the only place a per-call metric can be complete. Failures
+        # are recorded too — an error rate is half the point of the metric.
+        started = time.perf_counter()
+        # Popped, not read: `purpose` is a metrics label, and forwarding it to
+        # a backend that does not accept it would turn labelling into a crash.
+        purpose = kwargs.pop("purpose", None) or "completion"
+        try:
+            raw = await self._inner.complete(prompt, **kwargs)
+        except Exception as exc:
+            llmops.queue_call(
+                **self._call_identity(),
+                purpose=purpose,
+                prompt_chars=len(prompt or "") + len(system),
+                completion_chars=0,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                status="error",
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        out = guard.scrub_output(raw) if isinstance(raw, str) else raw
+        llmops.queue_call(
+            **self._call_identity(),
+            purpose=purpose,
+            prompt_chars=len(prompt or "") + len(system),
+            completion_chars=len(out) if isinstance(out, str) else 0,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return out
+
+    def _call_identity(self) -> dict:
+        """Which model actually answered — resolved after the call, since the
+        egress ladder may have escalated local → external mid-flight."""
+        ident = active_model(self)
+        return {
+            "provider": ident["provider"],
+            "model": ident["model"],
+            "route": ident["route"],
+        }
 
 
 def _local_backend(s) -> OllamaBackend:
@@ -155,7 +196,7 @@ def _local_backend(s) -> OllamaBackend:
 
 
 def _apply_egress_policy(backend, s):
-    """Enforce HELIX_CASE_AI_EGRESS_POLICY on the resolved backend.
+    """Enforce VELARIS_CASE_AI_EGRESS_POLICY on the resolved backend.
 
       local_only — external providers refused; local Ollama is used instead
       minimized  — external completions allowed, embeddings stay local (default)
@@ -195,7 +236,7 @@ def _resolve_llm_backend():
     """Resolve the raw backend.
 
     Resolution order:
-      1. Universal vars (HELIX_CASE_AI_PROVIDER / API_KEY / MODEL) — preferred
+      1. Universal vars (VELARIS_CASE_AI_PROVIDER / API_KEY / MODEL) — preferred
       2. Legacy provider-specific vars — backwards compat
       3. Ollama — default fallback
     """
@@ -220,7 +261,7 @@ def _resolve_llm_backend():
         # All other known providers use the OpenAI-compatible API
         base_url = s.ai_base_url or PROVIDER_URLS.get(provider, "")
         if not base_url and provider == "custom":
-            log.warning("HELIX_CASE_AI_PROVIDER=custom but HELIX_CASE_AI_BASE_URL is not set")
+            log.warning("VELARIS_CASE_AI_PROVIDER=custom but VELARIS_CASE_AI_BASE_URL is not set")
 
         b = OpenAIBackend()
         b._api_key     = api_key
@@ -253,6 +294,39 @@ def _resolve_llm_backend():
 
     # ── 3. Ollama fallback ────────────────────────────────────────────────────
     return _local_backend(s)
+
+
+def active_model(llm: Any = None) -> dict[str, str]:
+    """Identity of the model that served the most recent ``complete()``.
+
+    GDPR Article 22 requires an AI decision to name the model that produced it,
+    and "whatever is configured" is not the same answer: the egress ladder
+    answers locally first and escalates to the external provider only when the
+    local model cannot. `LocalFirstBackend.last_route` records which side
+    actually replied, so this reports that side rather than the configured
+    default.
+
+    Call it immediately after the completion whose provenance you want.
+    Returns empty-ish strings rather than raising — a decision must never fail
+    because its audit metadata could not be resolved.
+    """
+    try:
+        llm = llm if llm is not None else get_llm_backend()
+        inner = getattr(llm, "_inner", llm)          # unwrap GuardedBackend
+        route = getattr(inner, "last_route", None)   # set by LocalFirstBackend
+        if route == "local":
+            target = getattr(inner, "_local", inner)
+        elif route == "external":
+            target = getattr(inner, "_external", inner)
+        else:
+            target = inner
+        return {
+            "provider": str(getattr(target, "backend_name", type(target).__name__)),
+            "model": str(getattr(target, "_model", "") or "unknown"),
+            "route": str(route or "direct"),
+        }
+    except Exception:  # provenance is never worth failing a decision over
+        return {"provider": "unknown", "model": "unknown", "route": "unknown"}
 
 
 async def generate_json(

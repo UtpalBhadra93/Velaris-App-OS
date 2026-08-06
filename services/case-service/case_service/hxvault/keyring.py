@@ -6,7 +6,7 @@ derived — so deleting it (crypto-shred) makes the data unrecoverable.
 Unwrapped DEKs are held in a process-global cache so the sync encrypt/decrypt
 API stays sync. tenant_id NULL = the platform DEK (tenantless/HxFusion data).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 # cache_key -> unwrapped DEK bytes.  cache_key: str(tenant_id) | "" for platform.
 _DEK_CACHE: dict[str, bytes] = {}
+
+#: Cache keys whose DEK is *known shredded*, as opposed to merely absent.
+#:
+#: Without this the sync read path cannot tell the two apart — both are a miss in
+#: `_DEK_CACHE` — so a permanently unrecoverable read reported `DekNotLoadedError`
+#: (503, "the data itself is intact"), telling an operator to retry data that is
+#: gone. That is precisely the confusion the two error codes exist to prevent.
+#: Populated wherever the DB is read anyway: `shred`, `warm_cache`, `resync_cache`.
+_SHREDDED: set[str] = set()
 
 
 def _norm(tenant_id) -> uuid.UUID | None:
@@ -56,6 +65,15 @@ def cached_dek(tenant_id) -> bytes | None:
     return _DEK_CACHE.get(_ckey(_norm(tenant_id)))
 
 
+def is_shredded(tenant_id) -> bool:
+    """Sync: is this tenant's DEK known to have been shredded?
+
+    False is not a promise the key exists — only that this worker has no
+    evidence it was destroyed. A hard-deleted row is unknowable either way.
+    """
+    return _ckey(_norm(tenant_id)) in _SHREDDED
+
+
 async def ensure_dek(session: AsyncSession, tenant_id) -> bytes:
     """Return the unwrapped DEK for a tenant, creating+storing it if absent.
 
@@ -76,6 +94,9 @@ async def ensure_dek(session: AsyncSession, tenant_id) -> bytes:
     kek = crypto.get_kek()
     if row is not None:
         if row.status != "active":
+            # Record it so the *sync* read path can raise the same distinction;
+            # this async path is not the one an operator usually hits.
+            _SHREDDED.add(ck)
             raise KeyShreddedError(f"DEK for tenant {ck or '<platform>'} has been shredded")
         dek = crypto.open_(kek, _b64d(row.wrapped_dek), _wrap_aad(tid))
         _DEK_CACHE[ck] = dek
@@ -92,19 +113,28 @@ async def ensure_dek(session: AsyncSession, tenant_id) -> bytes:
 
 
 async def warm_cache(session: AsyncSession) -> int:
-    """Load + unwrap all active DEKs into the cache (call at startup). Returns count."""
-    rows = (await session.execute(
-        select(TenantDekModel).where(TenantDekModel.status == "active")
-    )).scalars().all()
+    """Load + unwrap all active DEKs into the cache (call at startup). Returns count.
+
+    Reads *every* row, not just the active ones: a shredded row carries no key to
+    warm, but it is the only record that the key was destroyed rather than never
+    created, and the sync read path needs that to report 410 instead of 503.
+    """
+    rows = (await session.execute(select(TenantDekModel))).scalars().all()
     kek = crypto.get_kek()
     n = 0
     for row in rows:
+        ck = _ckey(row.tenant_id)
+        if row.status != "active":
+            _SHREDDED.add(ck)
+            continue
         try:
-            _DEK_CACHE[_ckey(row.tenant_id)] = crypto.open_(kek, _b64d(row.wrapped_dek), _wrap_aad(row.tenant_id))
+            _DEK_CACHE[ck] = crypto.open_(kek, _b64d(row.wrapped_dek), _wrap_aad(row.tenant_id))
             n += 1
         except Exception:  # noqa: BLE001 — one bad row must not block startup
             logger.exception("HxVault: failed to unwrap DEK id=%s", row.id)
-    logger.info("HxVault: warmed %d DEK(s) into cache", n)
+    logger.info(
+        "HxVault: warmed %d DEK(s) into cache (%d shredded)", n, len(_SHREDDED),
+    )
     return n
 
 
@@ -115,15 +145,20 @@ async def resync_cache(session: AsyncSession) -> dict:
     worker started (or one shredded elsewhere) is invisible here: sync `decrypt`
     would miss-and-raise, and a shredded key would stay decryptable. Run periodically
     (lifespan loop) to make all workers eventually consistent within the interval:
-    pull in newly-active DEKs and evict any no longer active (shredded/deleted)."""
-    rows = (await session.execute(
-        select(TenantDekModel).where(TenantDekModel.status == "active")
-    )).scalars().all()
+    pull in newly-active DEKs and evict any no longer active (shredded/deleted).
+
+    Also reconciles the shredded set, so a key shredded on another worker starts
+    reading as 410 here within one interval instead of as a transient 503."""
+    rows = (await session.execute(select(TenantDekModel))).scalars().all()
     kek = crypto.get_kek()
     live: set[str] = set()
+    shredded: set[str] = set()
     added = 0
     for row in rows:
         ck = _ckey(row.tenant_id)
+        if row.status != "active":
+            shredded.add(ck)
+            continue
         live.add(ck)
         if ck not in _DEK_CACHE:
             try:
@@ -135,9 +170,19 @@ async def resync_cache(session: AsyncSession) -> dict:
     for ck in [k for k in _DEK_CACHE if k not in live]:
         _DEK_CACHE.pop(ck, None)
         evicted += 1
+    # Replaced, not unioned: the DB is the authority. A row that is gone entirely
+    # leaves no evidence of shredding, and inventing some would be a guess.
+    _SHREDDED.clear()
+    _SHREDDED.update(shredded)
     if added or evicted:
-        logger.info("HxVault resync: +%d DEK(s), -%d evicted (%d active)", added, evicted, len(live))
-    return {"added": added, "evicted": evicted, "active": len(live)}
+        logger.info(
+            "HxVault resync: +%d DEK(s), -%d evicted (%d active, %d shredded)",
+            added, evicted, len(live), len(shredded),
+        )
+    return {
+        "added": added, "evicted": evicted,
+        "active": len(live), "shredded": len(shredded),
+    }
 
 
 async def shred(session: AsyncSession, tenant_id) -> bool:
@@ -153,6 +198,7 @@ async def shred(session: AsyncSession, tenant_id) -> bool:
     _DEK_CACHE.pop(_ckey(tid), None)
     if row is None:
         return False
+    _SHREDDED.add(_ckey(tid))
     row.status = "shredded"
     row.wrapped_dek = ""
     await session.flush()
@@ -161,8 +207,9 @@ async def shred(session: AsyncSession, tenant_id) -> bool:
 
 
 def clear_cache() -> None:
-    """Test hook — drop all cached DEKs."""
+    """Test hook — drop all cached DEKs and the shredded set."""
     _DEK_CACHE.clear()
+    _SHREDDED.clear()
 
 
 # ── base64 helpers ────────────────────────────────────────────────────────────

@@ -103,6 +103,6 @@ _loop: EmailPollLoop | None = None
 def get_poll_loop() -> EmailPollLoop:
     global _loop
     if _loop is None:
-        interval = int(os.environ.get("HELIX_CASE_EMAIL_POLL_INTERVAL", "15"))
+        interval = int(os.environ.get("VELARIS_CASE_EMAIL_POLL_INTERVAL", "15"))
         _loop = EmailPollLoop(default_interval=interval)
     return _loop

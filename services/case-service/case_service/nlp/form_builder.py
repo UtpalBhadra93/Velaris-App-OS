@@ -7,7 +7,7 @@ to rules (no actions, no expressions), so — unlike rules — an AI outage degr
 to a small sensible template instead of an error, mirroring the NLP Builder's
 heuristic posture.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

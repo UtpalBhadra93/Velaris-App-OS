@@ -4,7 +4,7 @@ Given a migration scan, produces a complete project with tasks
 ordered by dependencies, and drives each through the full pipeline:
   analyze → generate → mark ported.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

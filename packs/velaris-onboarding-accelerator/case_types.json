@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ct-onboarding-0001",
+    "name": "Employee Onboarding",
+    "version": "1.0",
+    "description": "Offer accepted to probation complete. Right-to-work is a gate: no equipment or system access is issued until it clears.",
+    "icon": "user-plus",
+    "color": "#0d9488",
+    "tags": ["hr", "onboarding", "accelerator-pack"],
+    "default_priority": "medium",
+    "portal_enabled": false,
+    "definition_json": {
+      "stages": [
+        { "id": "offer_accepted", "name": "Offer Accepted", "transitions": ["pre_boarding", "withdrawn"] },
+        { "id": "pre_boarding",   "name": "Pre-boarding",   "transitions": ["first_day", "withdrawn"] },
+        { "id": "first_day",      "name": "First Day",      "transitions": ["probation"] },
+        { "id": "probation",      "name": "Probation",      "transitions": ["complete", "withdrawn"] },
+        { "id": "complete",       "name": "Complete",       "terminal": true, "transitions": [] },
+        { "id": "withdrawn",      "name": "Withdrawn",      "terminal": true, "transitions": [] }
+      ]
+    }
+  }
+]

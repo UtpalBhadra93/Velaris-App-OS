@@ -1,0 +1,13 @@
+{
+  "id": "velaris/onboarding-accelerator",
+  "name": "HR Onboarding Accelerator",
+  "vertical": "onboarding",
+  "version": "1.0.0",
+  "bundle_schema_version": "1",
+  "summary": "Offer accepted through to day-90 review: pre-boarding checks, contract and equipment, first-day induction and probation milestones, with the forms and SLA targets an HR team needs before a new starter arrives.",
+  "author": "Velaris",
+  "sample_data": {
+    "count": 15,
+    "note": "Opt-in at provision time. Creates synthetic starters marked synthetic:true in metadata so they can be found and removed."
+  }
+}

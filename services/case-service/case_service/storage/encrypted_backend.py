@@ -1,6 +1,6 @@
 """Transparent AES-256-GCM encryption wrapper for any storage backend.
 
-Wire-up (handled automatically by factory.py when HELIX_CASE_STORAGE_MASTER_KEY is set):
+Wire-up (handled automatically by factory.py when VELARIS_CASE_STORAGE_MASTER_KEY is set):
 
     backend = EncryptedBackend(inner_backend, master_key_hex)
 
@@ -20,7 +20,7 @@ Security properties:
     - The master key is the only secret; rotate it by re-encrypting all files (HxVault later).
     - Admins with direct filesystem/MinIO access see only ciphertext.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

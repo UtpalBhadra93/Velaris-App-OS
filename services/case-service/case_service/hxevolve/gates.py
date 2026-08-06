@@ -16,7 +16,7 @@ step reorder / parallelize (signed off §8.3) — gets this PERMUTATION-ONLY gat
 
 Anything else fails closed. AI output is data, never instructions.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

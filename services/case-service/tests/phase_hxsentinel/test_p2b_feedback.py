@@ -6,7 +6,7 @@ CURRENT confirmed outcome is flagged, undetermined until the case is labelled).
 
 Setup commits before client calls (shared StaticPool connection).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

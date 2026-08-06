@@ -1,6 +1,6 @@
 """Phase 13 tests — Auth/SSO.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -84,7 +84,7 @@ class TestJWTHandler:
 
 
 async def _mk_login_user(session, username: str, roles: list[str], password: str = "S3cure-pass!") -> str:
-    """Real-auth era: login validates against helix_users with a bcrypt hash."""
+    """Real-auth era: login validates against velaris_users with a bcrypt hash."""
     from case_service.api.routers.auth_real import _hash_password
     from case_service.db.models import HelixUserModel
     session.add(HelixUserModel(

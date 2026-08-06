@@ -5,7 +5,7 @@ Structural tests are derived purely from a case type's `definition_json`
 This is core (always available); the AI scenario layer lives in
 `case_service.hxtest.generator` and is gated by the HxTest marketplace install.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

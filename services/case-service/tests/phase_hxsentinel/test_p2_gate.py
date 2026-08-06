@@ -11,7 +11,7 @@ Pins the properties that keep the gate from ever wedging the core workflow:
 Setup is committed BEFORE any client call (the advance paths run through the
 app), so these don't add the flush->client-call StaticPool shape.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

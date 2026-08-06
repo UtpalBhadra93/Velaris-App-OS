@@ -8,7 +8,7 @@ so a store whose tenant has uninstalled HxStorefront goes dark (404).
 The one write here is a newsletter sign-up (storefront_subscribers) — collected
 emails live only in that table and are never merged into user accounts (invariant 4).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

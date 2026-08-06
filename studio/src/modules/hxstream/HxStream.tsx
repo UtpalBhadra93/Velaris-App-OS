@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { apiFetch } from "@shared/api/client";
 import { hxStream, type TraceEvent, type StreamEntry, type StreamGap } from "@shared/realtime/hxstream-singleton";
 import { useAuth } from "@/auth/AuthContext";
 
@@ -229,6 +230,12 @@ export default function HxStream() {
   const [filterActor, setFilterActor] = useState(() => isAdmin ? "" : (user?.user_id ?? ""));
   const [selected, setSelected]       = useState<TraceEvent | null>(null);
   const [tab, setTab]                 = useState<"live" | "history">("live");
+  // §2.1 durable log backlog. The outbox is atomic with the state change, so a
+  // backlog is a DISTRIBUTION delay, never data loss — but a growing one means
+  // consumers are reading stale state, which is worth surfacing.
+  const [busBacklog, setBusBacklog]   = useState<{
+    enabled: boolean; unpublished: number; oldest_unpublished_at: string | null;
+  } | null>(null);
   const [historyEvents, setHistoryEvents]   = useState<TraceEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const bufferRef  = useRef<StreamEntry[]>([]);
@@ -277,6 +284,19 @@ export default function HxStream() {
 
   useEffect(() => { if (tab === "history") loadHistory(); }, [tab]);
 
+  useEffect(() => {
+    let stop = false;
+    const poll = async () => {
+      try {
+        const r = await apiFetch("/api/v1/hxstream/bus/backlog");
+        if (r.ok && !stop) setBusBacklog(await r.json());
+      } catch { /* transient — the next tick retries */ }
+    };
+    void poll();
+    const t = setInterval(poll, 30_000);
+    return () => { stop = true; clearInterval(t); };
+  }, []);
+
   // Live-tab filter (case/actor filtering on already-received events)
   const displayEntries = (tab === "live" ? entries : historyEvents).filter((e) => {
     if (isGap(e)) return !filterType && !filterCase && !filterActor;
@@ -307,6 +327,25 @@ export default function HxStream() {
           <span style={{ fontSize: 10, color: isAdmin ? "var(--accent)" : "var(--text-muted)", padding: "2px 8px", borderRadius: 3, background: isAdmin ? "var(--accent-dim)" : "var(--bg-elevated)", fontFamily: "var(--font-mono)" }}>
             {scopeLabel}
           </span>
+
+          {busBacklog && (
+            <span title={busBacklog.enabled
+              ? "Events waiting to reach the durable log. The outbox is already safe on disk — this is a distribution delay, not loss."
+              : "The durable event log is switched off, so zero backlog does not mean events are being distributed."}
+              style={{
+                fontSize: 11, padding: "2px 8px", borderRadius: 4, marginRight: 8,
+                background: "var(--bg-card)",
+                color: !busBacklog.enabled
+                  ? "var(--text-muted)"
+                  : busBacklog.unpublished > 100
+                    ? "var(--status-failed)"
+                    : "var(--text-muted)",
+              }}>
+              {busBacklog.enabled
+                ? `bus backlog ${busBacklog.unpublished}`
+                : "bus off"}
+            </span>
+          )}
 
           {(["live", "history"] as const).map(t => (
             <button key={t} onClick={() => setTab(t)} style={{

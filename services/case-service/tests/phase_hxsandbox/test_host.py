@@ -11,7 +11,7 @@ hand-written ``.wat`` fixtures (no external wasm package needed):
 
 Timing is never asserted — only that the expected trap/rejection is raised.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

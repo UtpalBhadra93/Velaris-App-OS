@@ -8,7 +8,7 @@ feeding (withheld + disclosed without meet.recording.view), the case_qa_asked
 audit row naming sources, and the cases.ask HxGuard registration (the
 enforce-mode fail-closed gotcha). LLM always mocked.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

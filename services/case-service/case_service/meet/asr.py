@@ -12,7 +12,7 @@ whisper contexts are not thread-safe and a modern GPU transcribes a
 rolling caption window far faster than real time, so serialization is
 not the bottleneck.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

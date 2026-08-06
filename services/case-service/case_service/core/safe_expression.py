@@ -23,7 +23,7 @@ Three classifications (see :class:`Classification`):
 New rules are validated at create/update time and must be ``CONFORMING`` —
 so attacker-supplied input never reaches the ``eval`` fallback at all.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

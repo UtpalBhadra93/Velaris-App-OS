@@ -68,6 +68,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import re
 import json
 import uuid
 import logging
@@ -97,6 +98,14 @@ from case_service.db.models import (
     MarketplaceSandboxDatasetModel,
     MarketplaceBlacklistModel,
     MarketplaceAccessRuleModel,
+)
+from case_service.core.error_codes import (
+    MKT_ACCESS_403,
+    MKT_INSTALLED_409,
+    MKT_NOTFOUND_404,
+    MKT_OFFICIAL_400,
+    MKT_STATE_400,
+    coded,
 )
 
 logger = logging.getLogger(__name__)
@@ -334,7 +343,7 @@ async def _check_access_rule(
 
 async def _report_to_velaris(event: str, package_id: str, source_url: str, detail: str) -> None:
     """Optionally report a security event to the Velaris team webhook.
-    Opt-in via HELIX_CASE_MARKETPLACE_REPORT_WEBHOOK env var.
+    Opt-in via VELARIS_CASE_MARKETPLACE_REPORT_WEBHOOK env var.
     Only package metadata sent — no customer data, tenant ID is hashed.
     """
     settings = get_settings()
@@ -819,7 +828,7 @@ async def remove_source(
     _require_admin(user)
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
-        raise HTTPException(404, "Source not found")
+        raise coded(404, MKT_NOTFOUND_404, "Source not found")
     if source.tier == "official":
         raise HTTPException(400, "Cannot remove official Velaris source")
     # Remove packages from this source (they'll disappear from the catalogue)
@@ -842,7 +851,7 @@ async def sync_source(
     _require_admin(user)
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
-        raise HTTPException(404, "Source not found")
+        raise coded(404, MKT_NOTFOUND_404, "Source not found")
     count = await _poll_source(source, session)
     return {"source_id": source_id, "packages_synced": count, "polled_at": _utcnow().isoformat()}
 
@@ -888,7 +897,7 @@ async def get_package(
     await _get_packages(session)   # ensure cache is fresh
     pkg = await session.get(MarketplacePackageCacheModel, package_id)
     if not pkg:
-        raise HTTPException(404, f"Package '{package_id}' not found")
+        raise coded(404, MKT_NOTFOUND_404, f"Package '{package_id}' not found")
     return _pkg_to_dict(pkg, include_versions=True)
 
 
@@ -977,7 +986,7 @@ async def create_workspace(
                 429,
                 f"Workspace limit reached ({limit} active workspaces). "
                 f"Delete or wait for approval of an existing workspace before creating a new one. "
-                f"Admins can raise this limit via HELIX_CASE_MARKETPLACE_MAX_WORKSPACES_PER_USER.",
+                f"Admins can raise this limit via VELARIS_CASE_MARKETPLACE_MAX_WORKSPACES_PER_USER.",
             )
 
     ws = MarketplaceWorkspaceModel(
@@ -1018,7 +1027,7 @@ async def delete_workspace(
     _require_developer_or_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
-        raise HTTPException(404, "Workspace not found")
+        raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if not user.is_admin and ws.created_by != user.user_id:
         raise HTTPException(403, "Cannot delete another user's workspace")
     # Destroy sandbox container
@@ -1044,7 +1053,7 @@ async def install_package(
     _require_developer_or_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
-        raise HTTPException(404, "Workspace not found")
+        raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if ws.status != "active":
         raise HTTPException(400, f"Cannot install into workspace with status '{ws.status}'")
     if not user.is_admin and ws.created_by != user.user_id:
@@ -1061,7 +1070,7 @@ async def install_package(
         )
     )
     if existing_r.scalar_one_or_none():
-        raise HTTPException(409, "Package already installed in this workspace")
+        raise coded(409, MKT_INSTALLED_409, "Package already installed in this workspace")
 
     # Check tenant blacklist — block immediately if package/source/org is blacklisted
     src_result = await session.execute(
@@ -1099,10 +1108,78 @@ async def install_package(
             # of HxSandbox) but cannot EXECUTE until HxSandbox (#17) ships —
             # reject at install, not at first run.
             if manifest.get("runtime", "python") == "wasm":
-                raise HTTPException(400,
-                    "This package declares runtime 'wasm' — HxSandbox is not "
-                    "yet available on this platform; only runtime 'python' "
-                    "packages can be installed.")
+                if not get_settings().hxsandbox_enabled:
+                    raise HTTPException(400,
+                        "This package declares runtime 'wasm' — HxSandbox is not "
+                        "enabled on this platform; only runtime 'python' "
+                        "packages can be installed.")
+                # HxSandbox is on: the guest is extracted, compiled, ABI- and
+                # capability-checked HERE. #15's mandate is install-time
+                # failure, never first-run, so a module that cannot run must
+                # not be allowed to reach a sync pipeline.
+                from case_service.hxsandbox.registry import (
+                    ModuleValidationError, extract_module,
+                )
+                try:
+                    wasm_bytes = extract_module(hxapp_bytes, manifest)
+                except ModuleValidationError as exc:
+                    raise HTTPException(400, f"WASM module rejected: {exc}")
+                # Store the validated bytes per tenant. A transform running per
+                # sync row must not re-fetch from the publisher, and re-install
+                # of the same package replaces the module rather than
+                # accumulating versions.
+                import hashlib as _hashlib
+
+                from case_service.db.models import HxSandboxModuleModel
+                existing_mod = (await session.execute(
+                    select(HxSandboxModuleModel).where(
+                        HxSandboxModuleModel.tenant_id == ws.tenant_id,
+                        HxSandboxModuleModel.package_id == body.package_id,
+                    )
+                )).scalar_one_or_none()
+                digest = _hashlib.sha256(wasm_bytes).hexdigest()
+                if existing_mod is None:
+                    session.add(HxSandboxModuleModel(
+                        tenant_id=ws.tenant_id, package_id=body.package_id,
+                        version=pkg.version, wasm_bytes=wasm_bytes, sha256=digest,
+                    ))
+                else:
+                    existing_mod.version = pkg.version
+                    existing_mod.wasm_bytes = wasm_bytes
+                    existing_mod.sha256 = digest
+            # Roadmap #27 — conformance gate (report §6.5). Runs BEFORE the
+            # capability grant below, deliberately: the result is committed so a
+            # refusal stays visible to the publisher, and committing after the
+            # grant was staged would persist a pending grant for a package the
+            # gate is about to reject. Deterministic static analysis of the
+            # declarative artifacts — no LLM, no execution — so the gate can
+            # never be flaky, and it is refused BEFORE landing, never at first run.
+            from case_service.marketplace import conformance_gate as conf
+            conf_result = await conf.run_and_record(
+                session, tenant_id=ws.tenant_id, package_id=body.package_id,
+                package_version=pkg.version, manifest=manifest,
+                hxapp_bytes=hxapp_bytes,
+            )
+            await session.commit()          # keep the record even if we refuse below
+            decision = await conf.evaluate(
+                session, tenant_id=ws.tenant_id, package_id=body.package_id,
+                package_version=pkg.version,
+                publisher_tier=_effective_tier(source_url, body.package_id),
+                is_existing_install=False,
+            )
+            if decision.blocked:
+                failed = [c for c in conf_result.get("checks", []) if not c.get("ok")]
+                detail = "; ".join(f"{c['check']}: {c['detail']}" for c in failed[:5]) or decision.reason
+                raise HTTPException(
+                    422,
+                    f"Package failed marketplace conformance — {decision.reason}. {detail}",
+                )
+            if decision.badge == conf.BADGE_FAILED:
+                # warn mode: allowed through, but the operator is told plainly
+                # rather than discovering it from a badge later.
+                logger.warning("Package %s installed despite failing conformance (%s)",
+                               body.package_id, decision.reason)
+
             # Layer-1 (execution & trust model): provision the remote app as
             # an INERT connector + pending capability grant. Nothing can run
             # or reach anywhere until an admin activates the grant.
@@ -1116,7 +1193,7 @@ async def install_package(
                         publisher_tier=_effective_tier(source_url, body.package_id))
                 except ValueError as e:
                     raise HTTPException(400, f"Execution provisioning failed: {e}")
-            logger.info("Package %s checksum + manifest verified", body.package_id)
+            logger.info("Package %s checksum + manifest + conformance verified", body.package_id)
         except HTTPException:
             raise
         except Exception as exc:
@@ -1144,7 +1221,7 @@ async def submit_workspace(
     _require_developer_or_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
-        raise HTTPException(404, "Workspace not found")
+        raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if ws.status != "active":
         raise HTTPException(400, f"Workspace is already '{ws.status}'")
     if not user.is_admin and ws.created_by != user.user_id:
@@ -1175,9 +1252,9 @@ async def get_network_log(
     _require_developer_or_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
-        raise HTTPException(404, "Workspace not found")
+        raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if not user.is_admin and ws.created_by != user.user_id:
-        raise HTTPException(403, "Access denied")
+        raise coded(403, MKT_ACCESS_403, "Access denied")
     result = await session.execute(
         select(MarketplaceNetworkLogModel)
         .where(MarketplaceNetworkLogModel.workspace_id == uuid.UUID(workspace_id))
@@ -1216,9 +1293,9 @@ async def request_whitelist(
     _require_developer_or_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
-        raise HTTPException(404, "Workspace not found")
+        raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if not user.is_admin and ws.created_by != user.user_id:
-        raise HTTPException(403, "Access denied")
+        raise coded(403, MKT_ACCESS_403, "Access denied")
     entry = MarketplaceWhitelistModel(
         workspace_id=ws.id,
         package_id=body.package_id,
@@ -1285,10 +1362,10 @@ async def _visible_grant(session: AsyncSession, user: AuthenticatedUser, grant_i
     try:
         gid = uuid.UUID(grant_id)
     except ValueError:
-        raise HTTPException(404, "Grant not found")
+        raise coded(404, MKT_NOTFOUND_404, "Grant not found")
     grant = await session.get(MarketplaceCapabilityGrantModel, gid)
     if grant is None or grant.tenant_id != (user.tenant_id or "default"):
-        raise HTTPException(404, "Grant not found")
+        raise coded(404, MKT_NOTFOUND_404, "Grant not found")
     return grant
 
 
@@ -1496,7 +1573,7 @@ async def approve_workspace(
     _require_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws or ws.status != "submitted":
-        raise HTTPException(400, "Workspace not found or not in submitted state")
+        raise coded(400, MKT_STATE_400, "Workspace not found or not in submitted state")
 
     items_r = await session.execute(
         select(MarketplaceWorkspaceItemModel).where(
@@ -1554,7 +1631,7 @@ async def reject_workspace(
     _require_admin(user)
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws or ws.status != "submitted":
-        raise HTTPException(400, "Workspace not found or not in submitted state")
+        raise coded(400, MKT_STATE_400, "Workspace not found or not in submitted state")
     ws.status = "rejected"
     ws.reviewed_by = user.user_id
     ws.reviewed_at = _utcnow()
@@ -1666,7 +1743,7 @@ async def approve_update(
     _require_admin(user)
     upd = await session.get(MarketplaceUpdateModel, uuid.UUID(update_id))
     if not upd:
-        raise HTTPException(404, "Update not found")
+        raise coded(404, MKT_NOTFOUND_404, "Update not found")
     if not upd.fast_track:
         raise HTTPException(400, "This update has new outbound domains — must go through sandbox testing first")
     if upd.status != "pending":
@@ -1712,6 +1789,53 @@ async def approve_update(
                 session, grant=grant, manifest=new_manifest,
                 publisher_tier=_effective_tier(src.url if src else "", upd.package_id))
 
+    # Roadmap #27 — an update is NEW CODE, so it is re-checked exactly like a
+    # new install. Skipping this would make the gate bypassable by shipping
+    # v1.0.1: install once while the gate was off (or before it existed), then
+    # push anything through the update path forever after.
+    #
+    # The already-installed package is NOT touched by a refusal here — §6.5
+    # forbids removing it. The version simply does not advance.
+    from case_service.marketplace import conformance_gate as conf
+    if conf.gate_mode() != conf.MODE_OFF:
+        upd_pkg = await session.get(MarketplacePackageCacheModel, upd.package_id)
+        new_bytes: bytes | None = None
+        new_man: dict | None = None
+        if upd_pkg and upd_pkg.download_url and upd_pkg.checksum_sha256:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    rr = await http_client.get(upd_pkg.download_url)
+                    rr.raise_for_status()
+                new_bytes = rr.content
+                from case_service.marketplace.checksum import (
+                    parse_and_validate_manifest as _pm, verify_checksum as _vc,
+                )
+                _vc(new_bytes, upd_pkg.checksum_sha256)
+                new_man = _pm(new_bytes)
+            except Exception as exc:
+                # Fail closed: an update whose bundle cannot be fetched and
+                # verified is not conformance-checkable, so it does not land.
+                raise HTTPException(502, f"Conformance re-check failed — update not applied: {exc}")
+            await conf.run_and_record(
+                session, tenant_id=upd.tenant_id, package_id=upd.package_id,
+                package_version=upd.available_version, manifest=new_man,
+                hxapp_bytes=new_bytes,
+            )
+            await session.commit()
+        src_u = await session.get(MarketplaceSourceModel, upd_pkg.source_id) if (upd_pkg and upd_pkg.source_id) else None
+        upd_decision = await conf.evaluate(
+            session, tenant_id=upd.tenant_id, package_id=upd.package_id,
+            package_version=upd.available_version,
+            publisher_tier=_effective_tier(src_u.url if src_u else "", upd.package_id),
+            is_existing_install=False,          # the NEW version has no standing yet
+        )
+        if upd_decision.blocked:
+            raise HTTPException(
+                422,
+                f"Update failed marketplace conformance — {upd_decision.reason}. "
+                f"The installed version is unaffected and keeps running.",
+            )
+
     upd.status = "approved"
     upd.approved_at = _utcnow()
     upd.approved_by = user.user_id
@@ -1731,7 +1855,7 @@ async def dismiss_update(
     _require_admin(user)
     upd = await session.get(MarketplaceUpdateModel, uuid.UUID(update_id))
     if not upd:
-        raise HTTPException(404, "Update not found")
+        raise coded(404, MKT_NOTFOUND_404, "Update not found")
     upd.status = "dismissed"
     await session.commit()
     return {"dismissed": update_id}
@@ -2037,10 +2161,10 @@ async def approve_release_request(
     try:
         rid = uuid.UUID(request_id)
     except ValueError:
-        raise HTTPException(404, "Release request not found")
+        raise coded(404, MKT_NOTFOUND_404, "Release request not found")
     req = await session.get(MarketplaceReleaseRequestModel, rid)
     if not req or req.tenant_id != (user.tenant_id or "default") or req.status != "pending":
-        raise HTTPException(404, "Release request not found")
+        raise coded(404, MKT_NOTFOUND_404, "Release request not found")
 
     package_id = req.package_id
     pkg = await session.get(MarketplacePackageCacheModel, package_id)
@@ -2089,10 +2213,10 @@ async def reject_release_request(
     try:
         rid = uuid.UUID(request_id)
     except ValueError:
-        raise HTTPException(404, "Release request not found")
+        raise coded(404, MKT_NOTFOUND_404, "Release request not found")
     req = await session.get(MarketplaceReleaseRequestModel, rid)
     if not req or req.tenant_id != (user.tenant_id or "default") or req.status != "pending":
-        raise HTTPException(404, "Release request not found")
+        raise coded(404, MKT_NOTFOUND_404, "Release request not found")
     await session.delete(req)
     await session.commit()
     return {"status": "rejected"}
@@ -2118,9 +2242,9 @@ async def decommission_preview(
     _require_admin(user)
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
-        raise HTTPException(404, "Source not found")
+        raise coded(404, MKT_NOTFOUND_404, "Source not found")
     if source.tier == "official":
-        raise HTTPException(400, "Official Velaris sources cannot be removed.")
+        raise coded(400, MKT_OFFICIAL_400, "Official Velaris sources cannot be removed.")
 
     # Packages from this source
     pkgs_result = await session.execute(
@@ -2195,9 +2319,9 @@ async def decommission_source(
     _require_admin(user)
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
-        raise HTTPException(404, "Source not found")
+        raise coded(404, MKT_NOTFOUND_404, "Source not found")
     if source.tier == "official":
-        raise HTTPException(400, "Official Velaris sources cannot be removed.")
+        raise coded(400, MKT_OFFICIAL_400, "Official Velaris sources cannot be removed.")
     if not body.reason.strip():
         raise HTTPException(400, "Decommissioning reason is required for the audit trail.")
 
@@ -2290,3 +2414,392 @@ async def list_datasets(
         {"id": str(d.id), "name": d.name, "description": d.description}
         for d in result.scalars().all()
     ]}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Roadmap #27 — conformance gate + grandfather window (report §6.5)
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/conformance/window")
+async def conformance_window(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Grandfather-window status + the gate mode currently in force."""
+    _can_view(user)
+    from case_service.marketplace import conformance_gate as conf
+    state = await conf.window_state(session)
+    state["mode"] = conf.gate_mode()
+    return state
+
+
+@router.post("/conformance/window/activate")
+async def activate_conformance_window(
+    window_days: int = 60,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Open the grandfather window (admin).
+
+    Idempotent by design: calling it again returns the RUNNING window untouched
+    rather than restarting it. A restart would silently hand every lagging
+    publisher another 60 days and quietly void the deadline.
+    """
+    _require_admin(user)
+    from case_service.marketplace import conformance_gate as conf
+    already = await conf.get_window(session) is not None
+    await conf.activate_window(session, activated_by=user.user_id, window_days=window_days)
+    state = await conf.window_state(session)
+    state["already_active"] = already
+    state["mode"] = conf.gate_mode()
+    return state
+
+
+@router.get("/conformance")
+async def conformance_badges(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Badge for every installed package, in one call.
+
+    The catalogue needs a badge per row; fetching them one at a time would be an
+    N+1 against a list that is rendered on every visit to the Installed tab.
+
+    Sort order is part of the contract, not a UI preference: §6.5 requires
+    unverified packages to sort BELOW conformance-passing ones.
+    """
+    _can_view(user)
+    from case_service.marketplace import conformance_gate as conf
+
+    tenant_id = user.tenant_id or "default"
+    installs = (await session.execute(
+        select(MarketplaceInstallModel).where(
+            MarketplaceInstallModel.tenant_id == tenant_id,
+            MarketplaceInstallModel.revoked_at.is_(None),
+        )
+    )).scalars().all()
+
+    # Rank ascending = display order. Passing first, then the two "no verdict"
+    # states, with an outright failure last.
+    rank = {conf.BADGE_PASSED: 0, conf.BADGE_LEGACY: 1,
+            conf.BADGE_UNVERIFIED: 2, conf.BADGE_FAILED: 3}
+
+    out: list[dict] = []
+    for inst in installs:
+        pkg = await session.get(MarketplacePackageCacheModel, inst.package_id)
+        src = await session.get(MarketplaceSourceModel, pkg.source_id) if (pkg and pkg.source_id) else None
+        d = await conf.evaluate(
+            session, tenant_id=tenant_id, package_id=inst.package_id,
+            package_version=inst.package_version,
+            publisher_tier=_effective_tier(src.url if src else "", inst.package_id),
+            is_existing_install=True, installed_at=inst.installed_at,
+        )
+        out.append({
+            "package_id": inst.package_id,
+            "package_version": inst.package_version,
+            "badge": d.badge,
+            "grandfathered": d.grandfathered,
+            "reason": d.reason,
+            "sort_rank": rank.get(d.badge, 9),
+        })
+
+    out.sort(key=lambda r: (r["sort_rank"], r["package_id"]))
+    state = await conf.window_state(session)
+    return {"mode": conf.gate_mode(), "window": state, "packages": out}
+
+
+@router.get("/conformance/{package_id:path}")
+async def conformance_results(
+    package_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Conformance history + current badge for one package.
+
+    `badge` is what the catalogue sorts on: passing packages first, then
+    unverified ones. Nothing here uninstalls or delists anything (§6.5).
+    """
+    _can_view(user)
+    from case_service.db.models import MarketplaceConformanceModel as M
+    from case_service.marketplace import conformance_gate as conf
+
+    tenant_id = user.tenant_id or "default"
+    rows = (await session.execute(
+        select(M).where(M.tenant_id == tenant_id, M.package_id == package_id)
+                 .order_by(M.created_at.desc(), M.id.desc()).limit(20)
+    )).scalars().all()
+
+    install = (await session.execute(
+        select(MarketplaceInstallModel).where(
+            MarketplaceInstallModel.tenant_id == tenant_id,
+            MarketplaceInstallModel.package_id == package_id,
+            MarketplaceInstallModel.revoked_at.is_(None),
+        )
+    )).scalar_one_or_none()
+
+    pkg = await session.get(MarketplacePackageCacheModel, package_id)
+    src = await session.get(MarketplaceSourceModel, pkg.source_id) if (pkg and pkg.source_id) else None
+    decision = await conf.evaluate(
+        session, tenant_id=tenant_id, package_id=package_id,
+        package_version=(install.package_version if install else (pkg.version if pkg else "")),
+        publisher_tier=_effective_tier(src.url if src else "", package_id),
+        is_existing_install=install is not None,
+        installed_at=install.installed_at if install else None,
+    )
+    return {
+        "package_id": package_id,
+        "badge": decision.badge,
+        "allowed": decision.allowed,
+        "grandfathered": decision.grandfathered,
+        "reason": decision.reason,
+        "mode": decision.mode,
+        "results": [
+            {
+                "id": str(r.id), "version": r.package_version, "status": r.status,
+                "total": r.total, "passed": r.passed_count, "failed": r.failed_count,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "checks": r.checks_json,
+            } for r in rows
+        ],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Accelerator Packs P1 — vertical content packs (mig 134)
+# ══════════════════════════════════════════════════════════════════════
+
+async def _require_installed(session: AsyncSession, tenant_id: str, package_id: str) -> None:
+    """This tenant must hold an approved install of the pack.
+
+    Install is where the blacklist, per-access-group rules, checksum, manifest
+    validation and the #27 conformance gate all run. Provisioning straight from
+    the catalogue would walk past every one of them — a package could be
+    blacklisted, or fail conformance, and still have its case types, forms and
+    rules written into the tenant. Entitlement is checked here so no pack
+    endpoint can be the way around install.
+    """
+    install = (await session.execute(
+        select(MarketplaceInstallModel).where(
+            MarketplaceInstallModel.tenant_id == tenant_id,
+            MarketplaceInstallModel.package_id == package_id,
+            MarketplaceInstallModel.revoked_at.is_(None),
+        )
+    )).scalar_one_or_none()
+    if install is None:
+        raise HTTPException(
+            403,
+            f"'{package_id}' is not installed for this tenant. Install it from the "
+            f"marketplace first — that is where the conformance gate and access "
+            f"rules are applied.",
+        )
+
+
+async def _load_pack(session: AsyncSession, package_id: str) -> tuple[dict, Any]:
+    """Fetch + verify a pack bundle and parse it. Raises HTTPException on refusal."""
+    from case_service.marketplace import packs as mkt_packs
+    from case_service.marketplace.checksum import verify_checksum, parse_and_validate_manifest
+
+    pkg = await session.get(MarketplacePackageCacheModel, package_id)
+    if not pkg:
+        raise coded(404, MKT_NOTFOUND_404, f"Package '{package_id}' not found")
+    if not pkg.download_url or not pkg.checksum_sha256:
+        raise HTTPException(400, "Package has no verifiable bundle to provision")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.get(pkg.download_url)
+            r.raise_for_status()
+        verify_checksum(r.content, pkg.checksum_sha256)
+        manifest = parse_and_validate_manifest(r.content)
+    except Exception as exc:
+        # Fail closed: an unverifiable bundle is never provisioned.
+        raise HTTPException(502, f"Could not verify pack bundle: {exc}")
+
+    if manifest.get("type") != mkt_packs.PACK_TYPE:
+        raise HTTPException(400,
+            f"'{package_id}' is a '{manifest.get('type')}' package, not an accelerator pack")
+    try:
+        return mkt_packs.read_pack(r.content), pkg
+    except mkt_packs.PackError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/packs/{package_id:path}/preview")
+async def preview_pack(
+    package_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """What provisioning this pack would create. Changes nothing."""
+    _can_view(user)
+    from case_service.marketplace import packs as mkt_packs
+
+    await _require_installed(session, user.tenant_id or "default", package_id)
+    pack, _pkg = await _load_pack(session, package_id)
+    out = mkt_packs.preview(pack)
+    existing = await mkt_packs.already_provisioned(
+        session, user.tenant_id or "default", package_id)
+    out["already_provisioned"] = existing is not None
+    out["provisioned_at"] = existing.provisioned_at.isoformat() if existing else None
+    return out
+
+
+@router.post("/packs/{package_id:path}/provision")
+async def provision_pack(
+    package_id: str,
+    sample_data: bool = False,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Provision a pack into this tenant (Developer or Admin).
+
+    `sample_data` is opt-in and defaults to false — creating demo cases in a
+    live tenant unasked is not a reasonable default.
+
+    P1 provisions once: a second call is refused rather than re-importing, since
+    `apply_bundle` upserts and would overwrite whatever the tenant has edited
+    since. Pack upgrade is P2.
+    """
+    _require_developer_or_admin(user)
+    from case_service.marketplace import packs as mkt_packs
+
+    await _require_installed(session, user.tenant_id or "default", package_id)
+    pack, _pkg = await _load_pack(session, package_id)
+    try:
+        return await mkt_packs.provision(
+            session, tenant_id=user.tenant_id or "default", package_id=package_id,
+            pack=pack, provisioned_by=user.user_id, with_sample_data=sample_data)
+    except mkt_packs.PackError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.get("/packs")
+async def list_provisioned_packs(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Packs provisioned into this tenant, newest first."""
+    _can_view(user)
+    from case_service.db.models import MarketplacePackInstallModel as P
+
+    rows = (await session.execute(
+        select(P).where(P.tenant_id == (user.tenant_id or "default"))
+                 .order_by(P.provisioned_at.desc())
+    )).scalars().all()
+    return {"packs": [
+        {
+            "package_id": r.package_id, "version": r.pack_version,
+            "vertical": r.vertical, "status": r.status,
+            "imported": r.imported_count, "skipped": r.skipped_count,
+            "needs_configuration": r.needs_config, "errors": r.errors_json,
+            "sample_data": r.sample_data, "sample_cases": r.sample_count,
+            "provisioned_by": r.provisioned_by,
+            "provisioned_at": r.provisioned_at.isoformat() if r.provisioned_at else None,
+        } for r in rows
+    ]}
+
+
+@router.get("/packs/{package_id:path}/upgrade-preview")
+async def preview_pack_upgrade(
+    package_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """What a pack upgrade would apply, keep and flag (P2). Changes nothing."""
+    _can_view(user)
+    from case_service.marketplace import packs as mkt_packs
+
+    await _require_installed(session, user.tenant_id or "default", package_id)
+    pack, _pkg = await _load_pack(session, package_id)
+    try:
+        return await mkt_packs.upgrade_preview(
+            session, tenant_id=user.tenant_id or "default",
+            package_id=package_id, pack=pack)
+    except mkt_packs.PackError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/packs/{package_id:path}/upgrade")
+async def upgrade_pack(
+    package_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Upgrade a provisioned pack, merging around tenant edits (P2).
+
+    Artifacts changed by BOTH the pack and this tenant are reported as conflicts
+    and left alone — never auto-resolved, because silently picking a side loses
+    somebody's work. Everything non-conflicted still applies.
+    """
+    _require_developer_or_admin(user)
+    from case_service.marketplace import packs as mkt_packs
+
+    await _require_installed(session, user.tenant_id or "default", package_id)
+    pack, _pkg = await _load_pack(session, package_id)
+    try:
+        return await mkt_packs.upgrade(
+            session, tenant_id=user.tenant_id or "default", package_id=package_id,
+            pack=pack, upgraded_by=user.user_id)
+    except mkt_packs.PackError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.get("/packs/{package_id:path}/upgrades")
+async def pack_upgrade_history(
+    package_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Upgrade history for a pack, newest first."""
+    _can_view(user)
+    from case_service.db.models import MarketplacePackUpgradeModel as U
+
+    rows = (await session.execute(
+        select(U).where(U.tenant_id == (user.tenant_id or "default"),
+                        U.package_id == package_id)
+                 .order_by(U.upgraded_at.desc()).limit(50)
+    )).scalars().all()
+    return {"upgrades": [{
+        "from_version": r.from_version, "to_version": r.to_version,
+        "status": r.status, "applied": r.applied_count, "skipped": r.skipped_count,
+        "conflicts": r.conflicts_json, "errors": r.errors_json,
+        "upgraded_by": r.upgraded_by,
+        "upgraded_at": r.upgraded_at.isoformat() if r.upgraded_at else None,
+    } for r in rows]}
+
+
+@router.post("/packs/{package_id:path}/fork")
+async def fork_pack(
+    package_id: str,
+    new_id: str,
+    new_name: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Fork a provisioned pack into an editable pack of your own (P3).
+
+    Returns the pack as a downloadable `.hxapp`. Exports the tenant's CURRENT
+    state, customisations included — that is the point of forking. The fork is
+    community tier and carries no upgrade link to its parent.
+    """
+    _require_developer_or_admin(user)
+    from fastapi.responses import Response
+    from case_service.marketplace import packs as mkt_packs
+
+    try:
+        forked = await mkt_packs.fork(
+            session, tenant_id=user.tenant_id or "default", package_id=package_id,
+            new_id=new_id, new_name=new_name)
+        blob = mkt_packs.fork_to_hxapp(forked)
+    except mkt_packs.PackError as exc:
+        raise HTTPException(409, str(exc))
+
+    # new_id is user-supplied and lands in a response header. A quote or a
+    # newline would break out of the header value (response-header injection),
+    # and "../" would make the browser's suggested path a traversal. Reduce to a
+    # conservative charset rather than trying to escape it.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", new_id.replace("/", "-"))[:64] or "pack"
+    filename = safe + ".hxapp"
+    return Response(
+        content=blob, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

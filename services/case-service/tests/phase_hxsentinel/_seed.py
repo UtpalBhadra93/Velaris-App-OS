@@ -15,7 +15,7 @@ work does not reliably order a merged parent ahead of its child, and on a real
 engine the child insert would hit a foreign-key violation. Explicit flush makes the
 order deterministic on every engine while preserving the flake-free property.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

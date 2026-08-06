@@ -3,10 +3,10 @@
 An add-on: if AI is available it writes a short business narrative from the structure +
 already-classified semantics + compliance summary. It is fed **only derived data**
 (schema, categories, masked examples, compliance counts) — never raw sampled values — and
-runs through the HxNexus backend, so `HELIX_CASE_AI_EGRESS_POLICY` (local_only → Ollama)
+runs through the HxNexus backend, so `VELARIS_CASE_AI_EGRESS_POLICY` (local_only → Ollama)
 is enforced by the factory. Returns None if AI is unavailable or errors (never fatal).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

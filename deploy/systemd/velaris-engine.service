@@ -2,6 +2,9 @@
 Description=Velaris Engine — BPM runtime (:8100)
 After=network-online.target docker.service
 Wants=network-online.target
+# Requires, not just After: the database and Temporal are both containers, so
+# without a running Docker daemon this service has nothing to talk to.
+Requires=docker.service
 # Never stop trying: a service that gives up after N restarts is a service that
 # is down at 3am with no one watching.
 StartLimitIntervalSec=0
@@ -17,10 +20,17 @@ Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr
 # file-watching supervisor, which confuses systemd's process tracking and would
 # mask a crash as a reload. Code changes come through update-velaris.sh, which
 # restarts the unit.
+#
+# ExecStartPre blocks until the database is accepting connections — see the note
+# in velaris-case-service.service and the header of velaris-wait-deps.sh.
+ExecStartPre=__WAITDEPS__ __VELARIS_DIR__
 ExecStart=__EXEC__ __VELARIS_DIR__ __UV__ run uvicorn helix_engine.main:app --host 0.0.0.0 --port 8100
 
 Restart=always
 RestartSec=5
+# Must exceed the ExecStartPre wait (90s) so systemd reports the real cause
+# rather than a start-up timeout.
+TimeoutStartSec=180
 # uvicorn shuts down cleanly on SIGINT; SIGTERM leaves connections hanging.
 KillSignal=SIGINT
 TimeoutStopSec=20

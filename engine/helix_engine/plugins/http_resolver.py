@@ -68,7 +68,7 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
-from helix_ir.models.process import ServiceTask, SendTask, _TaskBase
+from velaris_ir.models.process import ServiceTask, SendTask, _TaskBase
 
 logger = structlog.get_logger()
 
@@ -475,7 +475,7 @@ class HttpTaskResolver:
                 raise ValueError(
                     f"Unknown helix:// service '{service_name}'. "
                     f"Registered services: {sorted(self._registry.keys())}. "
-                    f"Add it to HELIX_SERVICE_REGISTRY or the HttpTaskResolver constructor."
+                    f"Add it to VELARIS_SERVICE_REGISTRY or the HttpTaskResolver constructor."
                 )
 
             url = f"{base_url.rstrip('/')}{path}"

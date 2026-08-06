@@ -19,7 +19,7 @@ is authenticated-user-only. When the caller names a case, the case-level PDP
 decides (``stt.transcribe``). Honest 501 when no ASR engine is installed —
 same contract as HxMeet intelligence, never a silent degrade.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

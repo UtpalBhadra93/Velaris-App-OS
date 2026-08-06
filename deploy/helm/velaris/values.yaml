@@ -20,9 +20,9 @@ caseService:
     requests: { cpu: 250m, memory: 256Mi }
     limits:   { cpu: 1000m, memory: 1Gi }
   env:
-    HELIX_CASE_REDIS_ENABLED: "true"
-    HELIX_CASE_RATE_LIMIT_BACKEND: "redis"
-    HELIX_CASE_DEBUG: "false"
+    VELARIS_CASE_REDIS_ENABLED: "true"
+    VELARIS_CASE_RATE_LIMIT_BACKEND: "redis"
+    VELARIS_CASE_DEBUG: "false"
   autoscaling:
     enabled: true
     minReplicas: 2

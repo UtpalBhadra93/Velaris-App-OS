@@ -24,7 +24,7 @@ asker holds `meet.recording.view`; otherwise that source is withheld and the
 answer says so. Every ask writes a `case_qa_asked` case-audit row naming the
 sources that were used.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -261,6 +261,13 @@ async def ask_case(
     can_view_transcripts: bool,
     backend=None,
 ) -> dict[str, Any]:
+    # HxConsent gate for `ai_processing`, before any case content is gathered.
+    # Gathering first and refusing after would mean the personal data had
+    # already been assembled for a purpose with no lawful basis.
+    from case_service.compliance import consent as consent_svc
+
+    await consent_svc.require_case_purpose(session, case, consent_svc.AI_PROCESSING)
+
     backend, external_consented = await resolve_backend(
         session, case.tenant_id, backend=backend)
     external_capable = bool(getattr(backend, "is_external", False))

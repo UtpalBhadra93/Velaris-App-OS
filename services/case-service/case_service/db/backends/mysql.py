@@ -1,13 +1,13 @@
 """First-party MySQL / MariaDB backend (DB SDK Phase 1).
 
 MySQL 8+ / MariaDB 10.6+ via aiomysql (async) / pymysql (sync migrations). Implements
-the `helix_sdk.protocols.database.DatabaseBackend` contract.
+the `velaris_sdk.protocols.database.DatabaseBackend` contract.
 
 Connect-time hardening (`engine_options`): MySQL's default isolation is REPEATABLE READ,
 but case-service is written against READ COMMITTED semantics — so it is forced here. utf8mb4
 is enforced at schema-creation time (database/table charset), not per connection.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

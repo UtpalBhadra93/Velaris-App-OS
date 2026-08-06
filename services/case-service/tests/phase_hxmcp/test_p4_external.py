@@ -4,7 +4,7 @@ Delegation-of-self: a scoped token restricts the grantor's own authority
 (scope ⊆ visible tools), is valid ONLY on POST /api/v1/mcp, and dies
 instantly on grant revocation or the master kill switch.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

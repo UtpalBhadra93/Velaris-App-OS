@@ -7,7 +7,7 @@ Evaluates business rules against a context dict.  Supports:
 - Validation rules (data model field checks)
 - Urgency computation (delegates to urgency_calculator)
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

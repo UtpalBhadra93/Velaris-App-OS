@@ -12,7 +12,7 @@ marketplace-installed connector refuses any URL whose host is outside its
 granted domains, runs the SSRF guard on every call, and logs every attempt —
 allowed or blocked — to marketplace_network_log.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

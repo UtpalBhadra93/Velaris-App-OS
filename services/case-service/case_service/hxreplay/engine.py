@@ -24,7 +24,7 @@ Pure computation: this module never writes anywhere. Rule evaluation reuses the
 production ``rules_evaluator`` (deterministic; expression rules go through
 safe_expression inside it).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

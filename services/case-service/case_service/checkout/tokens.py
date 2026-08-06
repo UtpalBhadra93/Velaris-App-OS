@@ -13,7 +13,7 @@ Token shape:  vsk_<mode>_<keyid>_<secret>
 
 `token_prefix` (vsk_<mode>_<keyid>) is shown in Studio as the display hint.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

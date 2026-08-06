@@ -16,7 +16,7 @@ rendered as a card. The gate is the security boundary (design §6):
 
 No heuristic fallback: a guessed rule is a wrong rule. AI unavailable → RuleDraftError.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

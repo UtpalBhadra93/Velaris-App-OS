@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
+import LLMOpsPanel from "./LLMOpsPanel";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 import { VoiceInput, appendTranscript } from "@shared/components";
 import { useAuth } from "../../auth/AuthContext";
 
-type Tab = "chat" | "suggest" | "qa" | "translator";
+type Tab = "chat" | "suggest" | "qa" | "translator" | "llmops";
 type DraftKind = "rule" | "case_type" | "form" | "sla" | "user" | "connector"
                | "escalation" | "routing";
 type DraftDiff = { changed_fields: { field: string; base: any; branch: any }[];
@@ -486,7 +487,7 @@ export default function HxNexus() {
         display: "flex", alignItems: "center", gap: "var(--space-md)", flexShrink: 0,
       }}>
         <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {(["chat", "suggest", "qa", "translator"] as Tab[]).map(t => (
+          {(["chat", "suggest", "qa", "translator", "llmops"] as Tab[]).map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
               padding: "8px 16px", fontSize: 12, fontWeight: 500,
               fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em",
@@ -673,6 +674,7 @@ export default function HxNexus() {
       )}
 
       {/* ── Suggest tab ── */}
+      {tab === "llmops" && <LLMOpsPanel />}
       {tab === "suggest" && (
         <div style={{ flex: 1, overflowY: "auto", padding: "var(--space-xl) var(--space-2xl)" }}>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 0 }}>Get AI-powered next-best-action suggestions for any case.</p>

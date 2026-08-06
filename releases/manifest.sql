@@ -42,7 +42,7 @@
 INSERT INTO scheduled_releases
   (id, feature_key, version, title, description, status, enabled, released_at, created_at, updated_at)
 VALUES
-  (gen_random_uuid(), 'marketplace', 'v1.0.0',
+  (gen_random_uuid(), 'marketplace', 'v1.3.0',
    'Marketplace', 'Velaris App Store — browse, sandbox, and install platform extensions (official + community tiers)',
    'released', 'v1.0.0', NOW(), NOW(), NOW())
 ON CONFLICT (feature_key) DO NOTHING;
@@ -51,7 +51,7 @@ ON CONFLICT (feature_key) DO NOTHING;
 INSERT INTO scheduled_releases
   (id, feature_key, version, title, description, status, enabled, released_at, created_at, updated_at)
 VALUES
-  (gen_random_uuid(), 'customer_accounts', 'v1.0.1',
+  (gen_random_uuid(), 'customer_accounts', 'v1.0.2',
    'Customer Accounts', 'Persistent portal identity — OTP login, case history, GDPR erasure',
    'released', 'v1.0.1', NOW(), NOW(), NOW())
 ON CONFLICT (feature_key) DO NOTHING;
@@ -107,3 +107,28 @@ VALUES
    'Voice Form-Fill', 'Spoken answers proposed as form values, every candidate quoting the transcript verbatim; never auto-committed',
    'released', 'v1.1.0', NOW(), NOW(), NOW())
 ON CONFLICT (feature_key) DO NOTHING;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- v2.3.0 — NO NEW ENTRIES, deliberately.
+--
+-- Recorded explicitly because this file was found three flags behind at v2.2.0,
+-- and "did someone forget again?" is otherwise unanswerable without auditing
+-- the whole release.
+--
+-- v2.3.0 shipped HxConsent, HxPrivacy, HxLedger, HxDR, HxStatus, event
+-- sourcing, the CDC event bus, CRDT convergence, the Temporal interpreter,
+-- LLMOps and `ai_action` — and **none of them is an is_feature_enabled() flag**,
+-- which is the only thing this file governs. They are either always-on routes
+-- gated by role, or switched by environment variable:
+--
+--   VELARIS_CASE_LEDGER_POSTING_ENABLED   (default ON)
+--   VELARIS_CASE_HEALTH_SAMPLER_ENABLED   (default ON)
+--   VELARIS_CASE_EVENT_SOURCING_ENABLED   (default OFF)
+--   VELARIS_CASE_EVENT_BUS_ENABLED        (default OFF)
+--   VELARIS_CASE_TEMPORAL_INTERPRETER_ENABLED (default OFF)
+--   VELARIS_CASE_HXSANDBOX_ENABLED        (default OFF)
+--
+-- Env switches are per-deployment operator choices; a database row would make
+-- them look centrally released, which they are not. Verify with:
+--   grep -rho 'is_feature_enabled("[a-z_]*"' services/case-service | sort -u
+-- ══════════════════════════════════════════════════════════════════════════════

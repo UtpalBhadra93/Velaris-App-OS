@@ -9,7 +9,7 @@ manually, giving admins full visibility into every action in the system.
 Login/logout are handled explicitly in auth_real.py rather than here
 (the middleware has no actor until after login succeeds).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

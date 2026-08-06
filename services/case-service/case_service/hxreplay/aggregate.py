@@ -5,7 +5,7 @@ exclusion-reason histogram, and the selection-bias caveat — the excluded cases
 skew toward exactly the cases the change affects most, so the determinate-subset
 deltas can be biased, not merely lower-coverage.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

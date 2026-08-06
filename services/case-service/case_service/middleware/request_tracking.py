@@ -3,7 +3,7 @@
 Tracks in-flight requests so the shutdown hook can wait for
 them to complete before closing connections.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -15,8 +15,8 @@ def _inject_ctx(logger, method_name, event_dict):
 
 
 def configure_logging() -> None:
-    log_format = os.getenv("HELIX_LOG_FORMAT", "console").lower()
-    level = getattr(logging, os.getenv("HELIX_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    log_format = os.getenv("VELARIS_LOG_FORMAT", "console").lower()
+    level = getattr(logging, os.getenv("VELARIS_LOG_LEVEL", "INFO").upper(), logging.INFO)
     processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,

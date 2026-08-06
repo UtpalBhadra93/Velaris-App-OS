@@ -12,7 +12,7 @@ cross-references a case's signals (P1) against the tenant's own labelled history
 (``case_service.sentinel.engine``) owns the queries; this module owns the
 catalogue and the shared severity vocabulary.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

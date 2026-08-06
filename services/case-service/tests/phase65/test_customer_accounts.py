@@ -6,7 +6,7 @@ tenant.settings["portal"]["enabled"] (no portal_enabled column on tenants),
 tenant-scoped historical case auto-link, slug-bound customer tokens, and
 admin-role-gated customer management.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -14,7 +14,7 @@ Separation of concerns mirrors the sandbox:
   network_enforcer.py — iptables rules inside containers
   checksum.py         — manifest/image declaration validation
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

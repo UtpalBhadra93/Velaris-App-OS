@@ -29,7 +29,7 @@ never omits it):
   schema_summary(...)-> [{table_name, cols}]   (cols = "name type, name type, …")
   slow_queries(...)  -> {available: bool, queries: [...], message?: str}
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

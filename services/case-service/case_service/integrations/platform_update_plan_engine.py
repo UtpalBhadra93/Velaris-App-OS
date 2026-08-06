@@ -25,7 +25,7 @@ Background task (60 s cycle) that advances platform update rollout plans:
 Plans orchestrate PLATFORM CODE updates — sibling of HxDeploy, which is
 never used for this.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

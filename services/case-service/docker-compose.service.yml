@@ -2,18 +2,18 @@
 # Or use: docker compose -f docker-compose.yml -f services/case-service/docker-compose.service.yml up
 
 services:
-  helix-case-service:
+  velaris-case-service:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8200:8200"
     environment:
-      - HELIX_CASE_DATABASE_URL=postgresql+asyncpg://helix:helix_dev_password@helix-db:5432/helix
-      - HELIX_CASE_TEMPORAL_HOST=temporal:7233
-      - HELIX_CASE_DEBUG=false
+      - VELARIS_CASE_DATABASE_URL=postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
+      - VELARIS_CASE_TEMPORAL_HOST=temporal:7233
+      - VELARIS_CASE_DEBUG=false
     depends_on:
-      helix-db:
+      velaris-db:
         condition: service_healthy
       temporal:
         condition: service_started

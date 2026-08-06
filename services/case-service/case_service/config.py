@@ -1,6 +1,6 @@
 """Case-service configuration via environment variables.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     """Case-service settings loaded from env / .env file."""
 
     # Service
-    service_name: str = "helix-case-service"
+    service_name: str = "velaris-case-service"
     service_host: str = "0.0.0.0"
     service_port: int = 8200
     debug: bool = False
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Full URL takes precedence when set (current behaviour; trusted operator / OpenBao
     # config). Empty → the backend builds the URL from the typed components below.
     database_url: str = (
-        "postgresql+asyncpg://helix:helix_dev_password@localhost:5432/helix"
+        "postgresql+asyncpg://velaris:velaris_dev_password@localhost:5432/velaris"
     )
     # Typed connection components (used only when database_url is empty). Password is never
     # read from velaris.yaml plaintext — only from env / OpenBao.
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # Temporal
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
-    temporal_task_queue: str = "helix-case-queue"
+    temporal_task_queue: str = "velaris-case-queue"
 
     # Engine API (for deploying lifecycle processes)
     engine_api_url: str = "http://localhost:8100"
@@ -72,21 +72,21 @@ class Settings(BaseSettings):
     nlp_fallback_enabled: bool = True  # Use heuristic fallback if LLM unavailable
 
     # Auth
-    # IMPORTANT: auth_secret MUST be set via HELIX_CASE_AUTH_SECRET in production.
+    # IMPORTANT: auth_secret MUST be set via VELARIS_CASE_AUTH_SECRET in production.
     # The default is intentionally weak and prints a startup warning if unchanged.
     auth_mode: str = "jwt"  # "jwt" | "oidc"
-    auth_secret: str = "helix-dev-secret-change-in-production"
-    auth_issuer: str = "helix"
-    auth_audience: str = "helix-api"
-    token_expiry_days: int = 60             # refresh token lifetime; overridden by helix_settings DB table
-    access_token_expiry_minutes: int = 15   # short-lived access token (override via HELIX_CASE_ACCESS_TOKEN_EXPIRY_MINUTES)
+    auth_secret: str = "velaris-dev-secret-change-in-production"
+    auth_issuer: str = "velaris"
+    auth_audience: str = "velaris-api"
+    token_expiry_days: int = 60             # refresh token lifetime; overridden by velaris_settings DB table
+    access_token_expiry_minutes: int = 15   # short-lived access token (override via VELARIS_CASE_ACCESS_TOKEN_EXPIRY_MINUTES)
     oidc_discovery_url: str = ""
-    oidc_client_id: str = "helix-studio"
+    oidc_client_id: str = "velaris-studio"
 
     # RS256 asymmetric JWT (recommended for production).
     # When both are set, RS256 is used for all token operations and auth_secret is ignored.
     # Generate with: python -c "from case_service.auth.jwt_handler import generate_rsa_keypair; generate_rsa_keypair()"
-    # Set HELIX_CASE_AUTH_RSA_PRIVATE_KEY and HELIX_CASE_AUTH_RSA_PUBLIC_KEY to the PEM strings.
+    # Set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY and VELARIS_CASE_AUTH_RSA_PUBLIC_KEY to the PEM strings.
     # Newlines in env vars must be encoded as literal \n  (most .env loaders handle this).
     auth_rsa_private_key: str = ""  # PEM-encoded RSA-2048 private key (signing only)
     auth_rsa_public_key: str = ""   # PEM-encoded RSA-2048 public key  (verification only)
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # HxVault (#19) — master Key-Encryption-Key that wraps per-tenant DEKs.
     # 32 bytes, hex (64 chars) or base64. MUST be set via VELARIS_CASE_KEK in
     # production (rendered from OpenBao). New env vars use the VELARIS_CASE_ prefix
-    # (field-level alias; the class default prefix is still HELIX_CASE_ for legacy
+    # (field-level alias; the class default prefix is still VELARIS_CASE_ for legacy
     # vars). When empty, a dev KEK is derived from auth_secret (round-trips fine;
     # crypto-shred still works since DEKs are random+stored) + startup warning.
     kek: str = Field(default="", validation_alias="VELARIS_CASE_KEK")
@@ -106,21 +106,19 @@ class Settings(BaseSettings):
     # >>> P24 document storage
     storage_backend: str = "local"  # "local" | "minio"
     storage_local_path: str = Field(
-        default="./data/helix-docs",  # relative to working dir
-        # New installs use VELARIS_CASE_STORAGE_LOCAL_PATH; HELIX_CASE_ kept for legacy .env files.
-        validation_alias=AliasChoices(
-            "VELARIS_CASE_STORAGE_LOCAL_PATH",
-            "HELIX_CASE_STORAGE_LOCAL_PATH",
-        ),
+        default="./data/velaris-docs",  # relative to working dir
+        # Explicit alias is redundant now that the class prefix is VELARIS_CASE_,
+        # but kept so the name stays greppable at the field it configures.
+        validation_alias="VELARIS_CASE_STORAGE_LOCAL_PATH",
     )
     minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "helix"
-    minio_secret_key: str = "helix_dev_password"
-    minio_bucket: str = "helix-docs"
+    minio_access_key: str = "velaris"
+    minio_secret_key: str = "velaris_dev_password"
+    minio_bucket: str = "velaris-docs"
     minio_secure: bool = False
 
     # At-rest encryption for document storage (local and MinIO).
-    # Set HELIX_CASE_STORAGE_MASTER_KEY to a 64-char hex string (32 bytes).
+    # Set VELARIS_CASE_STORAGE_MASTER_KEY to a 64-char hex string (32 bytes).
     # Generate with: openssl rand -hex 32
     # When set, every file is encrypted with AES-256-GCM before being written
     # to disk or MinIO. Admins with direct filesystem/bucket access see only
@@ -174,7 +172,7 @@ class Settings(BaseSettings):
     livekit_http_url: str = Field(default="", validation_alias="VELARIS_CASE_LIVEKIT_HTTP_URL")
     # <<< HxMeet P3
 
-    # >>> HxGuard Phase B (env: HELIX_CASE_HXGUARD_CASE_ENFORCEMENT)
+    # >>> HxGuard Phase B (env: VELARIS_CASE_HXGUARD_CASE_ENFORCEMENT)
     # off    = case-level ReBAC checks skipped entirely
     # shadow = evaluated + would-be denials audited, requests pass
     # enforce = denials return 404 (anti-oracle) — the DEFAULT
@@ -215,18 +213,18 @@ class Settings(BaseSettings):
     # >>> P32 scaling
     redis_enabled: bool = False
     redis_url: str = "redis://localhost:6379/0"
-    redis_channel_prefix: str = "helix:rt:"
+    redis_channel_prefix: str = "velaris:rt:"
     rate_limit_backend: str = "memory"  # "memory" | "redis"
     # <<< P32 scaling
 
     # >>> Unified AI backend (used by HxNexus, NLP Builder, Scout AI)
     #
     # SIMPLE (new) — set just these 3-4 vars for any provider:
-    #   HELIX_CASE_AI_PROVIDER = groq | mistral | gemini | together | openai | anthropic | ollama | custom
-    #   HELIX_CASE_AI_API_KEY  = your API key
-    #   HELIX_CASE_AI_MODEL    = model name (e.g. llama-3.1-70b-versatile)
-    #   HELIX_CASE_AI_EMBED_MODEL = embedding model (optional, falls back to ollama)
-    #   HELIX_CASE_AI_BASE_URL = only needed for 'custom' or to override a known provider
+    #   VELARIS_CASE_AI_PROVIDER = groq | mistral | gemini | together | openai | anthropic | ollama | custom
+    #   VELARIS_CASE_AI_API_KEY  = your API key
+    #   VELARIS_CASE_AI_MODEL    = model name (e.g. llama-3.1-70b-versatile)
+    #   VELARIS_CASE_AI_EMBED_MODEL = embedding model (optional, falls back to ollama)
+    #   VELARIS_CASE_AI_BASE_URL = only needed for 'custom' or to override a known provider
     #
     # LEGACY (still supported) — existing vars keep working as before.
     #
@@ -275,6 +273,106 @@ class Settings(BaseSettings):
     # This kill switch is kept for emergency use only (set false to hard-disable).
     marketplace_kill_switch: bool = False
     marketplace_dev_only: bool = True
+    # Roadmap #27 conformance gate: off | warn | enforce.
+    # Defaults to `warn` deliberately — an existing platform that upgrades must
+    # not begin refusing installs purely because new code shipped. Flip to
+    # `enforce` once publishers have had the grandfather window to submit
+    # results (same shadow-then-enforce path HxGuard used for case enforcement).
+    marketplace_conformance_gate: str = Field(
+        default="warn", validation_alias="VELARIS_CASE_MARKETPLACE_CONFORMANCE_GATE"
+    )
+    # Temporal `definition_json` interpreter (Tier-1 §12 / Tier-2 #21).
+    # Option A of docs/Future/temporal-decision-record.md. OFF by default AND
+    # requiring the case type to declare `"orchestration": "temporal"` — a
+    # workflow that drives case advancement must never switch itself on for
+    # case types authored without it.
+    temporal_interpreter_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_TEMPORAL_INTERPRETER_ENABLED"
+    )
+    # Event sourcing for the Case aggregate (#30a / §2.2). OFF by default and
+    # a CLEAN CUTOVER when switched on: cases created from that point carry
+    # `event_sourced=True` and get a full append-only stream; earlier cases are
+    # deliberately NOT backfilled (§7.5 — their history was never recorded as a
+    # stream, so reconstructing it would produce a guess dressed as a fact).
+    event_sourcing_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_EVENT_SOURCING_ENABLED"
+    )
+    # HxStatus (§8.8) — periodic health sampling. ON by default: the status
+    # page is worthless without a history, the cost is one tiny insert per
+    # component per interval, and pruning keeps the table bounded.
+    health_sampler_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_ENABLED"
+    )
+    health_sampler_interval_seconds: int = Field(
+        default=60, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_INTERVAL"
+    )
+    # Slightly longer than the 30d reporting window, so a 30-day figure is
+    # never computed from a partially-pruned history.
+    health_sampler_retention_days: int = Field(
+        default=35, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_RETENTION_DAYS"
+    )
+    # Retention scheduler. TWO switches on purpose: the first only reports
+    # what would go, the second actually deletes. A single flag is easy to
+    # flip while skim-reading a config, and this one destroys customer data.
+    # There is deliberately no "enabled implies apply".
+    retention_scheduler_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_ENABLED"
+    )
+    retention_scheduler_apply: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_APPLY"
+    )
+    retention_scheduler_interval_seconds: int = Field(
+        default=86_400, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_INTERVAL"
+    )
+    # HxPrivacy (§8.10) — scheduled PII scan. ON by default for the same
+    # reason as the health sampler: an inventory nobody refreshes still looks
+    # authoritative. Daily, because forms are edited by people, not traffic;
+    # the scanner floors this at 1h so it cannot be turned into a load test.
+    pii_scanner_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_PII_SCANNER_ENABLED"
+    )
+    pii_scanner_interval_seconds: int = Field(
+        default=86_400, validation_alias="VELARIS_CASE_PII_SCANNER_INTERVAL"
+    )
+    # HxPrivacy — redact confirmed personal data from exports that LEAVE the
+    # tenant (billing, saved analytics reports). Deliberately NOT applied to
+    # the GDPR Article 15 export, whose entire purpose is to disclose that data
+    # to the subject it belongs to.
+    pii_redact_exports: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_PII_REDACT_EXPORTS"
+    )
+    # HxLedger (§8.4) — post captured payments and refunds into the books.
+    # ON by default, for the same reason the health sampler is: a ledger with
+    # no postings is worthless, and `/ledger/reconcile` reports every captured
+    # payment as a discrepancy until something keeps it. Purely additive — it
+    # writes new rows and changes no existing payment path.
+    ledger_posting_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_LEDGER_POSTING_ENABLED"
+    )
+    # Durable event log (§2.1) — fan-out of the transactional outbox onto
+    # Redpanda/Kafka so consumers other than webhooks can read the stream.
+    # OFF by default: the outbox is already safe on disk, so this adds
+    # distribution, not durability, and it should be a deliberate act.
+    event_bus_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_EVENT_BUS_ENABLED"
+    )
+    # 19092 is the EXTERNAL listener. The broker advertises `events:9092` on
+    # its internal listener, which a host-run case-service cannot resolve —
+    # it bootstraps and then fails DNS. Containers use events:9092.
+    event_bus_brokers: str = Field(
+        default="127.0.0.1:19092", validation_alias="VELARIS_CASE_EVENT_BUS_BROKERS"
+    )
+    event_bus_topic_prefix: str = Field(
+        default="velaris", validation_alias="VELARIS_CASE_EVENT_BUS_TOPIC_PREFIX"
+    )
+    # HxSandbox (#17) — execution of customer-authored WASM modules.
+    # OFF by default and deliberately so: turning this on lets a marketplace
+    # package's own compiled code run in-process (fuel/memory/wall-clock capped,
+    # no host imports). While off, `runtime: wasm` packages are refused at
+    # INSTALL, which is where roadmap #15 put the refusal — never at first run.
+    hxsandbox_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_HXSANDBOX_ENABLED"
+    )
     # Max concurrent sandbox workspaces per developer (raise based on available RAM/CPU).
     marketplace_max_workspaces_per_user: int = 2
     # URL of the official Velaris index file (sources.json) — override to self-host.
@@ -362,7 +460,7 @@ class Settings(BaseSettings):
     # >>> HxCheckout (marketplace app `velaris/hxcheckout`)
     # No `enabled` flag — availability is the marketplace install (the D2 gate,
     # like HxTest); there is no bespoke on/off switch. New vars use the
-    # VELARIS_CASE_ alias prefix (the class default prefix stays HELIX_CASE_).
+    # VELARIS_CASE_ alias prefix (the class default prefix stays VELARIS_CASE_).
     checkout_default_currency: str = Field(
         default="GBP", validation_alias="VELARIS_CASE_CHECKOUT_DEFAULT_CURRENCY")
     # stripe → inline payment via the existing HxConnect Stripe connector;
@@ -414,7 +512,7 @@ class Settings(BaseSettings):
             self.auth_rsa_public_key = self.auth_rsa_public_key.replace("\\n", "\n")
         return self
 
-    model_config = {"env_prefix": "HELIX_CASE_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_prefix": "VELARIS_CASE_", "env_file": ".env", "extra": "ignore"}
 
 
 @lru_cache

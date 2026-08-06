@@ -5,6 +5,6 @@ Phase 1 (Connect + Discover): a READ-ONLY connector to a customer's source DB
 data-quality scoring). Reuses the DB-SDK introspection layer against the source session.
 Never writes to the source. See `docs/Future/HxDBMigrate.md`.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """

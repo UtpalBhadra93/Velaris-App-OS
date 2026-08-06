@@ -9,7 +9,7 @@ not infer). All local — numpy, no external service.
 Setup inserts cases directly on the session (no client) so training/inference is
 deterministic (evaluate_case + build_feature_context only need the rows).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

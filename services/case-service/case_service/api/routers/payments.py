@@ -32,6 +32,10 @@ from case_service.db.session import get_session
 from case_service.hxbridge.encryption import decrypt_credentials, encrypt_credentials, mask_credentials
 from case_service.payments import service as payment_svc
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ── Bank reference encryption helpers (SD-1) ─────────────────────────────────
 
 def _encrypt_bank_ref(value: str) -> str:
@@ -294,6 +298,18 @@ async def mark_disbursement_sent(
     disb.disbursement_executed_at = datetime.now(timezone.utc)
     disb.status                   = "executed"
     disb.updated_at               = datetime.now(timezone.utc)
+
+    # HxLedger (§8.4): money has now actually left, which is the point at which
+    # it belongs on the books. Nested so a ledger fault cannot undo the
+    # confirmation — the transfer happened in the real world either way.
+    try:
+        from case_service.compliance import ledger_posting
+
+        async with session.begin_nested():
+            await ledger_posting.post_disbursement(session, disb)
+    except Exception as exc:
+        logger.warning("Ledger disbursement posting failed (non-fatal): %s", exc)
+
     await session.commit()
     return {
         "ok": True,

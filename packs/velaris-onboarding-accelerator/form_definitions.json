@@ -1,0 +1,42 @@
+[
+  {
+    "id": "fm-onb-starter",
+    "name": "New Starter Details",
+    "version": "1.0",
+    "definition_json": {
+      "title": "New Starter",
+      "description": "Who is joining, when, and into which team.",
+      "fields": [
+        { "key": "full_name",     "label": "Full name",      "type": "text",  "required": true },
+        { "key": "personal_email","label": "Personal email", "type": "email", "required": true },
+        { "key": "job_title",     "label": "Job title",      "type": "text",  "required": true },
+        { "key": "department",    "label": "Department",     "type": "select", "required": true,
+          "options": ["Engineering", "Sales", "Operations", "Finance", "People", "Other"] },
+        { "key": "manager_name",  "label": "Line manager",   "type": "text",  "required": true },
+        { "key": "start_date",    "label": "Start date",     "type": "date",  "required": true },
+        { "key": "employment_type","label": "Employment type","type": "select", "required": true,
+          "options": ["Permanent", "Fixed term", "Contractor"] },
+        { "key": "probation_months","label": "Probation (months)", "type": "number" },
+        { "key": "remote_worker", "label": "Primarily remote", "type": "checkbox" }
+      ]
+    }
+  },
+  {
+    "id": "fm-onb-preboard",
+    "name": "Pre-boarding Checklist",
+    "version": "1.0",
+    "definition_json": {
+      "title": "Pre-boarding",
+      "description": "Everything that must be true before day one.",
+      "fields": [
+        { "key": "right_to_work_verified", "label": "Right to work verified", "type": "checkbox", "required": true },
+        { "key": "references_complete",    "label": "References complete",    "type": "checkbox" },
+        { "key": "contract_signed",        "label": "Contract signed",        "type": "checkbox", "required": true },
+        { "key": "equipment_ordered",      "label": "Equipment ordered",      "type": "checkbox" },
+        { "key": "accounts_requested",     "label": "System accounts requested", "type": "checkbox" },
+        { "key": "buddy_assigned",         "label": "Buddy assigned",         "type": "text" },
+        { "key": "notes",                  "label": "Notes",                  "type": "textarea" }
+      ]
+    }
+  }
+]

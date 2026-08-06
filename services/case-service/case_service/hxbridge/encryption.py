@@ -1,7 +1,7 @@
 """HxBridge — credential encryption/decryption.
 
 Uses AES-256-GCM via stdlib hmac + hashlib + os.urandom (zero extra deps).
-The encryption key is derived from HELIX_CASE_AUTH_SECRET using HKDF-SHA256.
+The encryption key is derived from VELARIS_CASE_AUTH_SECRET using HKDF-SHA256.
 
 Encrypted values are stored as base64url strings prefixed with 'hxv1:'.
 Plain dicts (no prefix) are stored unencrypted — used only in dev/test.

@@ -10,7 +10,7 @@ installed = 501, AI unavailable = transcript still lands, summary is skipped
 and says so. Model versions are stored with every run so old results stay
 interpretable after upgrades.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

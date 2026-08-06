@@ -4,6 +4,8 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 const API = "/api/v1/fusion";
 
@@ -193,6 +195,9 @@ function DefinitionsTab() {
   const [loading, setLoading]     = useState(false);
   const [expanded, setExpanded]   = useState<string | null>(null);
   const [err, setErr]             = useState<string | null>(null);
+  // The body is parsed for `detail` anyway; this keeps the stable error
+  // code that sits beside it rather than discarding it on the same line.
+  const [errObj, setErrObj] = useState<unknown>(null);
   const [viewingXml, setViewingXml] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -234,7 +239,7 @@ function DefinitionsTab() {
       await load();
     } else {
       const d = await r.json().catch(() => ({}));
-      setErr(d.detail ?? "Create failed");
+      setErr(d.detail ?? "Create failed"); setErrObj(codedFrom(d) ?? null);
     }
     setLoading(false);
   };
@@ -276,7 +281,11 @@ function DefinitionsTab() {
         </button>
       </div>
 
-      {err && <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 10, padding: "7px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6 }}>{err}</div>}
+      {err && (
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 10, padding: "7px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6 }}>
+          {err}<ErrorCodeLink error={errObj} componentKey="hxfusion" />
+        </div>
+      )}
 
       {/* Create form */}
       {creating && (

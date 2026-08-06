@@ -7,10 +7,10 @@ gracefully without it), 66 rows across 4 tools, and the table has NO unique key 
 can't use ON DUPLICATE KEY for idempotency. This generator transcodes the PG VALUES rows
 into a single idempotent INSERT…SELECT…WHERE NOT EXISTS block (id=UUID(), created_at=NOW()
 supplied since the metadata-built MySQL schema lacks PG's server defaults), written to a
-SEPARATE file so the boot-critical 0002_seed.sql stays lean.
+SEPARATE file so the boot-critical 001_seed_bootstrap.sql stays lean.
 
 Usage:
-    python scripts/gen_mysql_bpm_seed.py            # writes migrations/mysql/0003_seed_bpm_concepts.sql
+    python scripts/gen_mysql_bpm_seed.py            # writes migrations/mysql/002_seed_bpm_concepts.sql
     python scripts/gen_mysql_bpm_seed.py --check     # non-zero exit if the file is stale
 
 Regenerate + hand-review the diff whenever migration 040 changes.
@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = next((ROOT / "migrations" / "postgresql").glob("040_*.sql"))
-OUT = ROOT / "migrations" / "mysql" / "0003_seed_bpm_concepts.sql"
+OUT = ROOT / "migrations" / "mysql" / "002_seed_bpm_concepts.sql"
 
 # A bpm_concepts VALUES row is a single line beginning with ('<tool>', … and closing on
 # the same line. (Verified: all 66 rows are single-line.)

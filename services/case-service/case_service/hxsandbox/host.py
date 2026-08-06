@@ -24,7 +24,7 @@ The module must export ``memory``, ``hx_alloc(i32) -> i32`` and
 to ``hx_alloc``'d memory, calls ``hx_transform``, and reads ``{"value": …}``
 back from the returned ``out_ptr<<32 | out_len`` packed pointer.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

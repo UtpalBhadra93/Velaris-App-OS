@@ -1,6 +1,6 @@
 """HxTest (#27) Phases D/E/F — AI test generation + app-bundled tests.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

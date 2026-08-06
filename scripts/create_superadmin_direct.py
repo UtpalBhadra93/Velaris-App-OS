@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import os
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://helix:helix@localhost:5432/helix")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://velaris:velaris@localhost:5432/velaris")
 
 def green(s):  return f"\033[0;32m{s}\033[0m"
 def red(s):    return f"\033[0;31m{s}\033[0m"
@@ -26,7 +26,7 @@ conn = psycopg2.connect(host=parsed.hostname or "localhost", port=parsed.port or
     dbname=parsed.path.lstrip("/"), user=parsed.username, password=parsed.password)
 cur = conn.cursor()
 
-cur.execute("SELECT COUNT(*) FROM helix_users WHERE is_superadmin = TRUE")
+cur.execute("SELECT COUNT(*) FROM velaris_users WHERE is_superadmin = TRUE")
 if cur.fetchone()[0] > 0:
     print(green("✓ Superadmin already exists. Nothing to do.")); conn.close(); sys.exit(0)
 
@@ -45,11 +45,11 @@ while True:
     break
 
 pw_hash = bcrypt.hashpw(pwd1.encode(), bcrypt.gensalt(12)).decode()
-cur.execute("SELECT COUNT(*) FROM helix_users WHERE username = %s", (username,))
+cur.execute("SELECT COUNT(*) FROM velaris_users WHERE username = %s", (username,))
 if cur.fetchone()[0] > 0:
     print(red(f"  Username '{username}' already taken.")); conn.close(); sys.exit(1)
 
-cur.execute("""INSERT INTO helix_users
+cur.execute("""INSERT INTO velaris_users
     (username, email, display_name, password_hash, roles, is_superadmin, is_active)
     VALUES (%s,%s,%s,%s,%s,TRUE,TRUE)""",
     (username, email, "Superadmin", pw_hash, '["superadmin","admin"]'))

@@ -2,7 +2,7 @@
 
 Provides get_current_user and require_role dependencies for routes.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -249,7 +249,7 @@ async def _security_check(
         raise HTTPException(401, "Session has been revoked",
                             headers={"WWW-Authenticate": "Bearer"})
 
-    # Check is_active on helix_users (breach auto-disable lands here)
+    # Check is_active on velaris_users (breach auto-disable lands here)
     try:
         hu = await session.get(HelixUserModel, uuid.UUID(user.user_id))
         if hu is not None and not hu.is_active:

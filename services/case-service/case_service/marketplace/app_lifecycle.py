@@ -9,7 +9,7 @@ the deletion SQL is Velaris-authored. HxTest has no tables of its own (it reuses
 core Test Suite's `hxtest_*` tables), so its "data" is the AI-generated suites it
 produced — those are deleted; the core builtin/conformance suites are untouched.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

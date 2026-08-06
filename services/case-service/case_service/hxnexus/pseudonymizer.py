@@ -12,7 +12,7 @@ Covered (regex-detectable, structured PII):
 Honest limitation: free-text *names* are not reliably detectable without an
 NER model and are NOT redacted. Documented in hxnexus.md.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

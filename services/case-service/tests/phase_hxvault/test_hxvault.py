@@ -1,6 +1,6 @@
 """HxVault (#19) — per-tenant DEK envelope encryption.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -68,7 +68,9 @@ async def test_shred_makes_data_unrecoverable(session):
     await hxvault.ensure_dek(session, tid)
     ct = hxvault.encrypt(tid, b"gdpr", "ctx")
     assert await hxvault.shred(session, tid) is True
-    with pytest.raises(hxvault.DekNotLoadedError):
+    # KeyShreddedError, NOT DekNotLoadedError: this read is unrecoverable, and the
+    # two map to different HTTP codes (410 vs a transient 503 that invites a retry).
+    with pytest.raises(keyring.KeyShreddedError):
         hxvault.decrypt(ct)
     # re-ensure after shred must refuse to resurrect the shredded key
     with pytest.raises(keyring.KeyShreddedError):
@@ -186,3 +188,75 @@ async def test_resync_evicts_shredded_dek(session):
     out = await hxvault.resync_cache(session)
     assert out["evicted"] >= 1
     assert keyring.cached_dek(tid) is None
+
+
+# ── Shredded vs. merely-absent: the distinction the error codes rest on ───────
+
+@pytest.mark.asyncio
+async def test_cold_cache_is_transient_not_shredded(session):
+    """A key that was never warmed must stay DekNotLoadedError.
+
+    The counterpart to the shred test: if every cache miss reported "shredded",
+    the 410 would be as useless as the 500 both codes replaced.
+    """
+    tid = uuid.uuid4()
+    await hxvault.ensure_dek(session, tid)
+    ct = hxvault.encrypt(tid, b"cold", "ctx")
+    keyring.clear_cache()
+
+    assert keyring.is_shredded(tid) is False
+    with pytest.raises(hxvault.DekNotLoadedError):
+        hxvault.decrypt(ct)
+    # ...and it must NOT be the shredded subclassless sibling
+    try:
+        hxvault.decrypt(ct)
+    except Exception as e:  # noqa: BLE001
+        assert not isinstance(e, keyring.KeyShreddedError)
+
+
+@pytest.mark.asyncio
+async def test_encrypt_after_shred_also_reports_shredded(session):
+    """The write path shares the distinction — not just decrypt."""
+    tid = uuid.uuid4()
+    await hxvault.ensure_dek(session, tid)
+    await hxvault.shred(session, tid)
+    with pytest.raises(keyring.KeyShreddedError):
+        hxvault.encrypt(tid, b"nope", "ctx")
+
+
+@pytest.mark.asyncio
+async def test_warm_cache_learns_shredded_from_db(session):
+    """A worker that starts *after* the shred still reports it correctly.
+
+    `warm_cache` used to select only active rows, so a restarted worker lost all
+    evidence of shredding and fell back to the transient error.
+    """
+    tid = uuid.uuid4()
+    await hxvault.ensure_dek(session, tid)
+    ct = hxvault.encrypt(tid, b"gone", "ctx")
+    await hxvault.shred(session, tid)
+
+    keyring.clear_cache()                 # fresh process, knows nothing
+    assert keyring.is_shredded(tid) is False
+    await hxvault.warm_cache(session)     # startup
+
+    assert keyring.is_shredded(tid) is True
+    with pytest.raises(keyring.KeyShreddedError):
+        hxvault.decrypt(ct)
+
+
+@pytest.mark.asyncio
+async def test_resync_learns_shredded_from_another_worker(session):
+    """Shredded elsewhere → this worker converges to 410 within one interval."""
+    tid = uuid.uuid4()
+    await hxvault.ensure_dek(session, tid)
+    ct = hxvault.encrypt(tid, b"gone", "ctx")
+    await hxvault.shred(session, tid)
+
+    keyring._SHREDDED.clear()             # simulate: shred happened on worker A
+    out = await hxvault.resync_cache(session)
+
+    assert out["shredded"] >= 1
+    assert keyring.is_shredded(tid) is True
+    with pytest.raises(keyring.KeyShreddedError):
+        hxvault.decrypt(ct)

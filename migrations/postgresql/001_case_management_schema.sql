@@ -2,7 +2,7 @@
 -- Version: 001
 -- Description: Create all case management tables
 --
--- Copyright (c) 2024-2025 HELIX Contributors
+-- Copyright (c) 2024-2025 Velaris Contributors
 -- SPDX-License-Identifier: BSL-1.1
 
 BEGIN;

@@ -11,7 +11,7 @@ plain structural check:
     ("this rule can never fire — claim.amount is text on this case-type");
   * an ``advance_stage`` / ``skip_stage`` action whose target isn't a stage id.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

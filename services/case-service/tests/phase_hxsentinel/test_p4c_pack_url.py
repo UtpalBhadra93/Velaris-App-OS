@@ -7,7 +7,7 @@ sandbox validation as a pasted one — no extra trust for being remote.
 The HTTP fetch (`packs._fetch`) is patched so tests never hit the network; the
 SSRF guard runs for real against loopback.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

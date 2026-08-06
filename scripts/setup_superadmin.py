@@ -9,7 +9,7 @@ Steps:
   2. Validate key offline (Ed25519 format check)
   3. Send activation ping to registration server (binds key to this machine)
   4. Prompt for superadmin username + password
-  5. Create superadmin in helix_users with is_superadmin=True
+  5. Create superadmin in velaris_users with is_superadmin=True
   6. Write .velaris-key cache file
 """
 from __future__ import annotations
@@ -42,8 +42,8 @@ DATABASE_URL  = os.environ.get(
     "DATABASE_URL",
     f"postgresql+asyncpg://helix:{_db_password}@localhost:5432/helix"
 )
-HELIX_DIR     = Path(__file__).parent.parent
-KEY_CACHE     = HELIX_DIR / ".velaris-key"
+VELARIS_DIR     = Path(__file__).parent.parent
+KEY_CACHE     = VELARIS_DIR / ".velaris-key"
 
 
 # ── Colours ───────────────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ def activate_key(full_key: str, key_id: str, mac: str, machine_id: str) -> dict:
 # ── Superadmin creation ───────────────────────────────────────────────────────
 
 def create_superadmin_sync(username: str, password: str, email: str) -> None:
-    """Create superadmin in helix_users — dialect-aware (psycopg2 / pymysql).
+    """Create superadmin in velaris_users — dialect-aware (psycopg2 / pymysql).
 
     Both drivers use %s placeholders and accept TRUE/FALSE/NOW(); the one portability
     trap is server-side defaults. The Postgres migrations give id/failed_attempts/
@@ -173,14 +173,14 @@ def create_superadmin_sync(username: str, password: str, email: str) -> None:
     cur = conn.cursor()
 
     # Check if superadmin already exists
-    cur.execute("SELECT COUNT(*) FROM helix_users WHERE is_superadmin = TRUE")
+    cur.execute("SELECT COUNT(*) FROM velaris_users WHERE is_superadmin = TRUE")
     if cur.fetchone()[0] > 0:
         conn.close()
         print(yellow("  ⚠  A superadmin already exists. Skipping creation."))
         return
 
     # Check username taken
-    cur.execute("SELECT COUNT(*) FROM helix_users WHERE username = %s", (username,))
+    cur.execute("SELECT COUNT(*) FROM velaris_users WHERE username = %s", (username,))
     if cur.fetchone()[0] > 0:
         conn.close()
         raise ValueError(f"Username '{username}' is already taken.")
@@ -188,7 +188,7 @@ def create_superadmin_sync(username: str, password: str, email: str) -> None:
     pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
 
     cur.execute("""
-        INSERT INTO helix_users
+        INSERT INTO velaris_users
           (id, username, email, display_name, password_hash, roles,
            is_superadmin, is_active, failed_attempts, password_change_required,
            mfa_enabled, created_at, updated_at)
@@ -329,7 +329,7 @@ def main():
         sys.exit(1)
 
     # ── Write setup complete marker ───────────────────────────────────
-    marker = HELIX_DIR / ".velaris-setup-complete"
+    marker = VELARIS_DIR / ".velaris-setup-complete"
     marker.write_text(datetime.now(timezone.utc).isoformat())
 
     print()

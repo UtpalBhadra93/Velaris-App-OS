@@ -17,7 +17,7 @@ that, so a future split remains a 1-2 day job instead of a rewrite:
 
 See docs/Future/tier2-sequence-and-service-extraction.md.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -112,7 +112,11 @@ TARGETS: dict[str, dict] = {
     "analytics": {
         "own": {"analytics"},
         "router": "api/routers/analytics.py",
-        "allowed_external": {"hxnexus"},
+        # `core` added 2026-08-04 for `core.pii_redaction` (HxPrivacy export
+        # redaction). Deliberate: the helpers were deliberately placed in a
+        # leaf so analytics would NOT have to depend on `compliance`, which
+        # would drag the audit chain, ledger and DR along at extraction.
+        "allowed_external": {"core", "hxnexus"},
     },
     "process_mining": {
         "own": {"process_mining"},
@@ -128,7 +132,11 @@ TARGETS: dict[str, dict] = {
     "hxmigrate": {
         "own": {"hxmigrate"},
         "router": "api/routers/hxmigrate.py",
-        "allowed_external": {"bpm_importer", "hxnexus", "hxstream", "orchestrator", "scout"},
+        # `core` added 2026-08-04 for `core.error_codes`. A deliberate,
+        # reviewed decision: error_codes is a leaf (logging, typing, fastapi —
+        # nothing else), every extracted service needs stable error codes, and
+        # bundling it at split time is trivial.
+        "allowed_external": {"bpm_importer", "core", "hxnexus", "hxstream", "orchestrator", "scout"},
     },
 }
 

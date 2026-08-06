@@ -5,7 +5,7 @@ so the Postgres behaviour is byte-identical to what shipped — Postgres is the 
 production backend and this port must not change a single plan or result column for it.
 See ``base.py`` for the return-shape contract.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -10,7 +10,7 @@ guests join via single-use invites bound to a portal-customer or email
 principal — never an ambient "anyone with the link" room. No recording until
 P3.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -35,6 +35,7 @@ from case_service.db.models import (
 )
 from case_service.hxbridge.encryption import decrypt_credentials
 from case_service.hxbridge.protocol import get_connector
+from case_service.compliance import consent as _consent
 from case_service.meet import livekit
 
 logger = logging.getLogger(__name__)
@@ -268,6 +269,70 @@ async def _stamp_biometric_consent(session: AsyncSession, row: CaseSessionModel,
             and await meet_kyc.tenant_kyc_biometrics_enabled(session, row.tenant_id)):
         participant.biometric_consent_at = _utcnow()
         session.add(participant)
+        await _bridge_to_consent_ledger(session, row, participant, _consent.BIOMETRIC)
+
+
+def _subject_of(participant: CaseSessionParticipantModel) -> tuple[str, str]:
+    """Map a participant identity to a (subject_ref, subject_type) pair.
+
+    Identities are `email:{addr}` | `customer:{uuid}` | `user:{id}`. An email
+    identity resolves to the bare address **because that is what the portal
+    records** — a subject who consented at submission and again on a call must
+    be one subject in the ledger, not two.
+    """
+    identity = participant.identity or ""
+    for prefix, kind in (("email:", "email"), ("customer:", "customer"), ("user:", "user")):
+        if identity.startswith(prefix):
+            return identity[len(prefix):], kind
+    return identity, "identity"
+
+
+async def _bridge_to_consent_ledger(
+    session: AsyncSession,
+    row: CaseSessionModel,
+    participant: CaseSessionParticipantModel,
+    purpose: str,
+) -> None:
+    """Mirror a HxMeet consent act into the HxConsent ledger (§8.1).
+
+    **HxMeet keeps enforcing.** `consent_recorded_at` / `biometric_consent_at`
+    are checked before recording starts and produce a 409 listing whoever is
+    missing; none of that moves. Gating the call on `has_consent()` instead
+    would create a second mechanism that can disagree with the first about
+    whether processing was lawful, which is worse than having one.
+
+    What the ledger adds is *evidence in one place*: a regulator asking "on
+    what basis did you record this person" should not have to know that meeting
+    consent lives on a participant row while portal consent lives in a ledger.
+
+    Best-effort, deliberately. The consent act already happened and is already
+    stamped on the participant — the row here is a second record of it, and
+    losing a second record must never cost someone their seat in a call.
+    """
+    subject_ref, subject_type = _subject_of(participant)
+    if not subject_ref:
+        return
+    try:
+        await _consent.record(
+            session,
+            subject_ref=subject_ref,
+            subject_type=subject_type,
+            purpose=purpose,
+            action=_consent.GRANTED,
+            basis=_consent.CONSENT,
+            source="hxmeet_join",
+            evidence={
+                "session_id": str(row.id),
+                "identity": participant.identity,
+                "record_intent": bool(row.record_intent),
+            },
+            case_id=row.case_id,
+            tenant_id=str(row.tenant_id) if row.tenant_id else None,
+            actor_id=participant.identity,
+        )
+    except Exception as exc:                       # noqa: BLE001 — see docstring
+        logger.warning("consent ledger not updated for %s/%s: %s",
+                    participant.identity, purpose, exc)
 
 
 async def mint_worker_token(
@@ -290,6 +355,7 @@ async def mint_worker_token(
     # Studio shows the recording notice before requesting one.
     if row.record_intent and participant.consent_recorded_at is None:
         participant.consent_recorded_at = _utcnow()
+        await _bridge_to_consent_ledger(session, row, participant, _consent.RECORDING)
         session.add(participant)
     await _stamp_biometric_consent(session, row, participant)
     await session.commit()
@@ -326,6 +392,7 @@ async def join_customer(
     # recording notice before requesting a token — the request is the consent.
     if row.record_intent and participant.consent_recorded_at is None:
         participant.consent_recorded_at = _utcnow()
+        await _bridge_to_consent_ledger(session, row, participant, _consent.RECORDING)
     session.add(participant)
     await _stamp_biometric_consent(session, row, participant)
     await session.commit()
@@ -430,6 +497,7 @@ async def exchange_guest_invite(session: AsyncSession, raw_token: str) -> dict:
     # exchanging on a record-intent session is the guest's consent act.
     if row.record_intent and participant.consent_recorded_at is None:
         participant.consent_recorded_at = _utcnow()
+        await _bridge_to_consent_ledger(session, row, participant, _consent.RECORDING)
         session.add(participant)
     await _stamp_biometric_consent(session, row, participant)
     await session.commit()

@@ -50,6 +50,12 @@ class DecisionOutcome:
     confidence: float                   # 1.0 for policy (deterministic)
     policy_alternative: Any | None      # what policy would have done (ai only)
     reason: str
+    # §5.5 GDPR Art-22 provenance — populated on the ai path only. A policy
+    # decision is deterministic and reproducible from the code, so naming a
+    # model there would be noise.
+    model: str | None = None            # the model that actually answered
+    provider: str | None = None         # ollama | openai | anthropic
+    prompt_sha256: str | None = None    # hash of the prompt, not the prompt
 
 
 class PolicyResolver(Protocol):
@@ -61,7 +67,11 @@ class AIResolver(Protocol):
     name: str
     async def resolve(
         self, session: AsyncSession, context: dict[str, Any],
-    ) -> tuple[Any, float]: ...          # (decision, confidence 0.0-1.0)
+    ) -> tuple[Any, float] | tuple[Any, float, dict[str, Any]]: ...
+    # (decision, confidence 0.0-1.0) — or (decision, confidence, provenance)
+    # where provenance carries §5.5 keys: model, provider, prompt_sha256.
+    # The 2-tuple form stays valid: a resolver that cannot name its model
+    # simply records no provenance rather than recording a wrong one.
 
 
 def decision_ai_config(case_type_definition: dict | None) -> tuple[bool, float]:
@@ -113,15 +123,29 @@ class DecisionPoint:
 
         if self.ai is not None and ai_enabled and cognitive_mode == "automatic":
             try:
-                ai_decision, confidence = await asyncio.wait_for(
+                # A resolver may return (decision, confidence) or, when it can
+                # name the model it used, (decision, confidence, provenance).
+                # Provenance is returned rather than stashed on the resolver
+                # because resolvers are module-level singletons — concurrent
+                # decisions sharing one would attribute each other's models.
+                ai_result = await asyncio.wait_for(
                     self.ai.resolve(session, context), timeout=AI_TIMEOUT_SECONDS,
                 )
+                provenance: dict[str, Any] = {}
+                if len(ai_result) == 3:
+                    ai_decision, confidence, provenance = ai_result
+                    provenance = provenance or {}
+                else:
+                    ai_decision, confidence = ai_result
                 confidence = min(max(float(confidence), 0.0), 1.0)
                 if ai_decision is not None and confidence >= threshold:
                     outcome = DecisionOutcome(
                         decision=ai_decision, source="ai", confidence=confidence,
                         policy_alternative=policy_decision,
                         reason=f"ai:{self.ai.name} conf={confidence:.2f} >= {threshold:.2f}",
+                        model=provenance.get("model"),
+                        provider=provenance.get("provider"),
+                        prompt_sha256=provenance.get("prompt_sha256"),
                     )
                 else:
                     outcome = DecisionOutcome(
@@ -158,6 +182,13 @@ class DecisionPoint:
                     "decision": _jsonable(outcome.decision),
                     "policy_alternative": _jsonable(outcome.policy_alternative),
                     "reason": outcome.reason,
+                    # §5.5 — omitted entirely on the policy path so a
+                    # deterministic decision does not carry null AI fields.
+                    **({
+                        "model": outcome.model,
+                        "provider": outcome.provider,
+                        "prompt_sha256": outcome.prompt_sha256,
+                    } if outcome.source == "ai" else {}),
                 },
             })
         except Exception as exc:

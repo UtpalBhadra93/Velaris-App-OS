@@ -8,7 +8,7 @@ judgment: passed/failed/skipped + notes, stamped), cross-session challenge =
 uniform 404, meet.kyc.run enforce-mode registration + anti-oracle, and the
 audit events.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

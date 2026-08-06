@@ -5,13 +5,15 @@
  */
 import React, { useState, useMemo, useCallback } from "react";
 import { useAuth } from "@/auth";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type PackageType = string;   // dynamic — loaded from types.json via API
 type PublisherTier = "official" | "community";
 type PriceType = "free" | "paid";
-type MainTab = "browse" | "installed" | "workspaces" | "review";
+type MainTab = "browse" | "installed" | "packs" | "workspaces" | "review";
 
 interface MktType { id: string; label: string; color: string; description: string; }
 interface MktTypeCategory { label: string; types: MktType[]; }
@@ -249,6 +251,69 @@ function TierBadge({ tier }: { tier: PublisherTier }) {
         padding: "2px 7px", borderRadius: 4 }}>Community</span>;
 }
 
+/* ── Conformance badges (roadmap #27, report §6.5) ──────────────────────────
+   A badge is never a removal notice. §6.5 is explicit that an existing package
+   is downranked and labelled, never delisted, so the failing/unverified styles
+   are informational — amber and grey — and deliberately not the red used for
+   destructive actions elsewhere in this module.                              */
+type ConformanceBadgeKind =
+  | "conformance_passed" | "conformance_failed" | "legacy_unverified" | "unverified";
+
+const _conformanceMeta: Record<ConformanceBadgeKind, { label: string; color: string; title: string }> = {
+  conformance_passed: {
+    label: "Conformant", color: "#0d9488",
+    title: "Passed structural conformance checks.",
+  },
+  conformance_failed: {
+    label: "Failed checks", color: "#f59e0b",
+    title: "Failed structural conformance. The installed version keeps running — updates are blocked until it passes.",
+  },
+  legacy_unverified: {
+    label: "Legacy", color: "#8b5cf6",
+    title: "Installed before the conformance gate. Grandfathered — the publisher has until the window closes to submit results.",
+  },
+  unverified: {
+    label: "Unverified", color: "#94a3b8",
+    title: "No conformance results submitted. Sorted below verified packages; not removed.",
+  },
+};
+
+function ConformanceBadge({ kind, reason }: { kind?: string; reason?: string }) {
+  const m = _conformanceMeta[kind as ConformanceBadgeKind];
+  if (!m) return null;                       // gate off, or a badge we don't know
+  return (
+    <span
+      title={reason ? `${m.title}\n\n${reason}` : m.title}
+      style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em",
+        color: m.color, background: `${m.color}1a`, padding: "2px 7px", borderRadius: 4,
+        fontFamily: "var(--font-mono)", cursor: "help" }}>
+      {m.label}
+    </span>
+  );
+}
+
+/* Grandfather-window banner. Shown only while a window is actually open —
+   there is nothing useful to say once it has closed or was never activated. */
+function ConformanceWindowBanner({ window: w, mode }: { window?: any; mode?: string }) {
+  if (!w?.active || !w?.open) return null;
+  const days = w.days_remaining ?? 0;
+  const urgent = days <= 14;
+  const color = urgent ? "#f59e0b" : "#8b5cf6";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+      background: `${color}14`, border: `1px solid ${color}30`, borderRadius: 6,
+      marginBottom: "var(--space-lg)", fontSize: 12 }}>
+      <span style={{ fontWeight: 700, color }}>Conformance grandfather window</span>
+      <span style={{ color: "var(--text-muted)" }}>
+        {days} day{days === 1 ? "" : "s"} remaining. Packages installed before the gate went
+        live keep working; after the window they are labelled Unverified and sorted lower.
+        No package is uninstalled.
+        {mode === "warn" && " Gate is in warn mode — nothing is blocked yet."}
+      </span>
+    </div>
+  );
+}
+
 function PkgIcon({ pkg, size = 56 }: { pkg: MktPackage; size?: number }) {
   const textSize = size < 40 ? 11 : size < 56 ? 14 : 18;
   return (
@@ -384,6 +449,76 @@ function PackageCard({ pkg, onSelect, onInstall, canInstall, installed, requeste
   );
 }
 
+
+function PackProvisionPanel({ packageId }: { packageId: string }) {
+  const [pv, setPv] = useState<any>(null);
+  const [sample, setSample] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<any>(null);
+
+  React.useEffect(() => {
+    let off = false;
+    apiFetch(`/packs/${packageId}/preview`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!off) setPv(d); })
+      .catch(() => {});
+    return () => { off = true; };
+  }, [packageId]);
+
+  if (!pv) return null;
+
+  const provision = async () => {
+    setBusy(true);
+    const r = await apiFetch(`/packs/${packageId}/provision?sample_data=${sample}`, { method: "POST" });
+    setDone(r.ok ? await r.json() : { error: await r.text() });
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ marginBottom: 20, padding: "10px 12px", borderRadius: 6,
+      background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)" }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)",
+        textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+        Accelerator pack{pv.vertical ? ` · ${pv.vertical}` : ""}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+        Provisioning creates {pv.total_items} item(s):{" "}
+        {Object.entries(pv.contents ?? {}).map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`).join(", ")}.
+      </div>
+
+      {pv.already_provisioned ? (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+          Already provisioned{pv.provisioned_at ? ` on ${new Date(pv.provisioned_at).toLocaleDateString()}` : ""}.
+          Use the Accelerator Packs tab to check for updates — re-provisioning would
+          overwrite anything you have changed since.
+        </div>
+      ) : done ? (
+        <div style={{ fontSize: 11, marginTop: 6, color: done.error ? "#f59e0b" : "#0d9488" }}>
+          {done.error
+            ? `Provisioning failed: ${done.error}`
+            : `Provisioned — ${done.applied ?? done.imported} item(s)` +
+              (done.sample_cases ? `, ${done.sample_cases} sample case(s)` : "") + "."}
+        </div>
+      ) : (
+        <>
+          {pv.sample_data_available && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8,
+              fontSize: 11, color: "var(--text-secondary)", cursor: "pointer" }}>
+              <input type="checkbox" checked={sample} onChange={e => setSample(e.target.checked)} />
+              Also create {pv.sample_data_count} sample case(s) — demo data, marked synthetic
+            </label>
+          )}
+          <button style={{ ...S.btn, fontSize: 11, marginTop: 8, background: "#8b5cf61a",
+            color: "#8b5cf6", border: "1px solid #8b5cf630" }}
+            disabled={busy} onClick={provision}>
+            {busy ? "Provisioning…" : "Provision into this tenant"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── DetailPanel ───────────────────────────────────────────────────────────────
 
 function DetailPanel({ pkg, onClose, onInstall, canInstall, installed, requested, isManager }:
@@ -393,6 +528,21 @@ function DetailPanel({ pkg, onClose, onInstall, canInstall, installed, requested
     ...S.btn, width: "100%", padding: "11px 0", fontSize: 13,
     background: "var(--bg-subtle)", color, cursor: "default",
   });
+
+  /* Conformance for THIS package, fetched when the panel opens. Only rendered
+     once a verdict exists: a package nobody has installed has no results yet,
+     and showing every catalogue entry as "Unverified" would be noise that says
+     nothing about the package's quality. */
+  const [conf, setConf] = useState<any>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/conformance/${pkg.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) setConf(d); })
+      .catch(() => { /* gate absent or unreachable — panel renders unchanged */ });
+    return () => { cancelled = true; };
+  }, [pkg.id]);
+  const latest = conf?.results?.[0];
   return (
     <div style={S.panel}>
       {/* Header */}
@@ -406,6 +556,7 @@ function DetailPanel({ pkg, onClose, onInstall, canInstall, installed, requested
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <TierBadge tier={pkg.publisher_tier} />
                 <TypeBadge type={pkg.type} />
+                {latest && <ConformanceBadge kind={conf?.badge} reason={conf?.reason} />}
               </div>
             </div>
           </div>
@@ -433,6 +584,43 @@ function DetailPanel({ pkg, onClose, onInstall, canInstall, installed, requested
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>Price</div>
           </div>
         </div>
+
+        {/* Accelerator pack — preview what provisioning would create, and do it.
+            Installing entitles the tenant to the content; PROVISIONING is what
+            makes the case types appear. Sample data is opt-in. */}
+        {pkg.type === "accelerator_pack" && <PackProvisionPanel packageId={pkg.id} />}
+
+        {/* Conformance detail — only when a verdict exists. A failure names the
+            checks, because "this package is downranked" is not actionable to a
+            publisher without knowing which check produced it. */}
+        {latest && (
+          <div style={{ marginBottom: 20, padding: "10px 12px", borderRadius: 6,
+            background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)",
+                textTransform: "uppercase", letterSpacing: "0.06em" }}>Structural conformance</span>
+              <ConformanceBadge kind={conf?.badge} reason={conf?.reason} />
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {latest.passed}/{latest.total} checks passed on v{latest.version}
+              {latest.created_at && ` · ${new Date(latest.created_at).toLocaleDateString()}`}
+            </div>
+            {latest.status === "failed" && (
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 11,
+                color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                {(latest.checks ?? []).filter((c: any) => !c.ok).slice(0, 6).map((c: any, i: number) => (
+                  <li key={i}><code style={{ fontFamily: "var(--font-mono)" }}>{c.check}</code>
+                    {c.detail ? ` — ${c.detail}` : ""}</li>
+                ))}
+              </ul>
+            )}
+            {conf?.grandfathered && (
+              <div style={{ fontSize: 11, color: "#8b5cf6", marginTop: 6 }}>
+                Grandfathered — this install predates the gate and is not affected.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Description */}
         <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: 20,
@@ -1141,7 +1329,7 @@ function WorkspacesTab({ wsLimit = 2 }: { wsLimit?: number }) {
           <div style={{ background: "#f59e0b12", border: "1px solid #f59e0b40", borderRadius: "var(--radius-md)",
             padding: "10px 16px", marginBottom: "var(--space-md)", fontSize: 12, color: "#f59e0b", fontWeight: 600 }}>
             ⚠ Workspace limit reached ({wsLimit} active). Delete or get one approved before creating a new one.
-            Admins can raise this limit via <code>HELIX_CASE_MARKETPLACE_MAX_WORKSPACES_PER_USER</code>.
+            Admins can raise this limit via <code>VELARIS_CASE_MARKETPLACE_MAX_WORKSPACES_PER_USER</code>.
           </div>
         ) : null;
       })()}
@@ -1554,6 +1742,10 @@ function CapabilityGrantsSection() {
   const [ticked, setTicked] = useState<Record<string, Record<string, boolean>>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Kept beside the message: the body is parsed for `detail` anyway, and the
+  // stable code sits next to it. VEL-MKT-VERIFY-502 in particular is not
+  // self-diagnosable from the text alone.
+  const [errObj, setErrObj] = useState<unknown>(null);
 
   const load = () => {
     apiFetch("/grants").then(r => r.ok ? r.json() : null).catch(() => null)
@@ -1585,10 +1777,14 @@ function CapabilityGrantsSection() {
   };
 
   const act = async (id: string, path: string, body: any) => {
-    setBusy(id); setErr(null);
+    setBusy(id); setErr(null); setErrObj(null);
     try {
       const r = await apiFetch(path, { method: "POST", body: JSON.stringify(body) });
-      if (!r.ok) setErr((await r.json())?.detail || "Request failed");
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setErr(body?.detail || "Request failed");
+        setErrObj(codedFrom(body) ?? null);
+      }
       load();
     } finally { setBusy(null); }
   };
@@ -1620,7 +1816,11 @@ function CapabilityGrantsSection() {
   return (
     <>
       <div style={S.sectionHd}>Capability Grants — Layer-1 Remote Apps · {grants.length}</div>
-      {err && <div style={{ fontSize: 12, color: "var(--status-failed, #f66)", marginBottom: 8 }}>{err}</div>}
+      {err && (
+        <div style={{ fontSize: 12, color: "var(--status-failed, #f66)", marginBottom: 8 }}>
+          {err}<ErrorCodeLink error={errObj} componentKey="marketplace" />
+        </div>
+      )}
       {grants.map(g => {
         const requested = g.status === "pending_reapproval" ? (g.proposed?.requested ?? {}) : (g.requested ?? {});
         const isContainer = g.descriptor_format === "container_image";
@@ -1973,6 +2173,8 @@ function ReviewQueueTab() {
 function InstalledTab({ isAdmin = false }: { isAdmin?: boolean }) {
   const [installs, setInstalls] = useState<any[]>([]);
   const [packages, setPackages] = useState<Record<string, any>>({});
+  const [conformance, setConformance] = useState<Record<string, any>>({});
+  const [confMeta, setConfMeta] = useState<{ mode?: string; window?: any }>({});
   const [loading,  setLoading]  = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
 
@@ -1980,14 +2182,35 @@ function InstalledTab({ isAdmin = false }: { isAdmin?: boolean }) {
     Promise.all([
       apiFetch("/installs").then(r => r.json()),
       apiFetch("/packages").then(r => r.json()),
-    ]).then(([inst, pkgs]) => {
+      // One bulk call rather than one per row. Non-fatal: an older backend
+      // without the gate simply yields no badges, and the tab renders as before.
+      apiFetch("/conformance").then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([inst, pkgs, conf]) => {
       setInstalls(inst.installs ?? []);
       const map: Record<string, any> = {};
       (pkgs.packages ?? []).forEach((p: any) => { map[p.id] = p; });
       setPackages(map);
+      if (conf) {
+        const cmap: Record<string, any> = {};
+        (conf.packages ?? []).forEach((c: any) => { cmap[c.package_id] = c; });
+        setConformance(cmap);
+        setConfMeta({ mode: conf.mode, window: conf.window });
+      }
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
+
+  /* §6.5 requires unverified packages to sort BELOW conformance-passing ones.
+     The backend already returns a sort_rank; mirror it here so the ordering
+     survives regardless of the order /installs came back in. Unranked rows
+     (gate off) fall back to rank 0 so nothing is reshuffled when it is off. */
+  const orderedInstalls = useMemo(() => {
+    return [...installs].sort((a, b) => {
+      const ra = conformance[a.package_id]?.sort_rank ?? 0;
+      const rb = conformance[b.package_id]?.sort_rank ?? 0;
+      return ra !== rb ? ra - rb : String(a.package_id).localeCompare(String(b.package_id));
+    });
+  }, [installs, conformance]);
 
   const revoke = async (id: string, pkgId: string) => {
     if (!confirm(`Uninstall ${pkgId.split("/").pop()}?\n\nThis will immediately disable the package in production. Active case workflows using this connector will lose their integration. This action is logged and cannot be undone here.`)) return;
@@ -2018,9 +2241,12 @@ function InstalledTab({ isAdmin = false }: { isAdmin?: boolean }) {
         </div>
       </div>
 
+      <ConformanceWindowBanner window={confMeta.window} mode={confMeta.mode} />
+
       <div style={S.grid}>
-        {installs.map(inst => {
+        {orderedInstalls.map(inst => {
           const pkg = packages[inst.package_id];
+          const conf = conformance[inst.package_id];
           const licenceExpired = inst.licence_expires && new Date(inst.licence_expires) < new Date();
           return (
             <div key={inst.id} style={S.card}>
@@ -2031,7 +2257,10 @@ function InstalledTab({ isAdmin = false }: { isAdmin?: boolean }) {
                 <div style={S.cardMeta}>
                   <div style={S.cardName}>{pkg?.name ?? inst.package_id}</div>
                   <div style={S.cardPub}>v{inst.package_version}</div>
-                  {pkg && <TypeBadge type={pkg.type} />}
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                    {pkg && <TypeBadge type={pkg.type} />}
+                    <ConformanceBadge kind={conf?.badge} reason={conf?.reason} />
+                  </div>
                 </div>
               </div>
 
@@ -2053,6 +2282,184 @@ function InstalledTab({ isAdmin = false }: { isAdmin?: boolean }) {
                   onClick={() => revoke(inst.id, inst.package_id)}>
                   {revoking === inst.id ? "Uninstalling…" : "Uninstall"}
                 </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+// ── PacksTab (Accelerator Packs P1–P3) ────────────────────────────────────────
+
+function PacksTab({ canInstall }: { canInstall: boolean }) {
+  const [rows,    setRows]    = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy,    setBusy]    = useState<string | null>(null);
+  const [detail,  setDetail]  = useState<Record<string, any>>({});
+
+  const load = useCallback(() => {
+    apiFetch("/packs").then(r => r.ok ? r.json() : { packs: [] })
+      .then(d => { setRows(d.packs ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+  React.useEffect(load, [load]);
+
+  /* Upgrade is preview-then-apply on purpose. An upgrade can hit conflicts —
+     artifacts the pack AND this tenant both changed — and those are never
+     auto-resolved, so the operator sees them before deciding. */
+  const checkUpgrade = async (pkgId: string) => {
+    setBusy(pkgId);
+    const r = await apiFetch(`/packs/${pkgId}/upgrade-preview`);
+    const d = r.ok ? await r.json() : { error: await r.text() };
+    setDetail(prev => ({ ...prev, [pkgId]: d }));
+    setBusy(null);
+  };
+
+  const applyUpgrade = async (pkgId: string) => {
+    const d = detail[pkgId];
+    const conflicts = d?.conflicts?.length ?? 0;
+    if (conflicts > 0 && !confirm(
+      `${conflicts} item(s) were changed by both the pack and this tenant.\n\n` +
+      `They will be SKIPPED and your versions kept. Everything else will be applied.\n\nContinue?`
+    )) return;
+    setBusy(pkgId);
+    const r = await apiFetch(`/packs/${pkgId}/upgrade`, { method: "POST" });
+    const res = r.ok ? await r.json() : null;
+    setBusy(null);
+    if (res) { setDetail(prev => ({ ...prev, [pkgId]: null })); load(); }
+    else alert("Upgrade failed — see the pack's upgrade history.");
+  };
+
+  /* Fork downloads a new .hxapp built from the tenant's CURRENT state,
+     customisations included. It is severed from the parent by design. */
+  const forkPack = async (pkgId: string) => {
+    const name = prompt("Name for your fork?", `My ${pkgId.split("/").pop()}`);
+    if (!name) return;
+    const id = prompt("Pack id (publisher/name)?", `mycompany/${pkgId.split("/").pop()}`);
+    if (!id) return;
+    setBusy(pkgId);
+    const r = await apiFetch(
+      `/packs/${pkgId}/fork?new_id=${encodeURIComponent(id)}&new_name=${encodeURIComponent(name)}`,
+      { method: "POST" });
+    if (r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = id.replace("/", "-") + ".hxapp";
+      a.click(); URL.revokeObjectURL(url);
+    } else {
+      alert("Fork failed: " + (await r.text()));
+    }
+    setBusy(null);
+  };
+
+  if (loading) return <div style={S.empty}><div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading…</div></div>;
+
+  if (rows.length === 0) return (
+    <div style={S.empty}>
+      <div style={{ fontSize: 32, marginBottom: 12 }}>📦</div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>No accelerator packs provisioned</div>
+      <div style={{ fontSize: 13 }}>
+        Install an accelerator pack from Browse, then provision it to create its case
+        types, forms, rules and SLAs in one step.
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ flex: 1, padding: "var(--space-xl) var(--space-2xl)", overflow: "auto" }}>
+      <div style={{ marginBottom: "var(--space-lg)" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>
+          Accelerator Packs — {rows.length}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+          Vertical content provisioned into this tenant. Upgrades merge around your edits.
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {rows.map(p => {
+          const d = detail[p.package_id];
+          const failed = p.status !== "provisioned";
+          return (
+            <div key={p.package_id} style={{ ...S.card, gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div style={S.cardName}>{p.package_id}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                    v{p.version}{p.vertical ? ` · ${p.vertical}` : ""} · {p.imported} item(s) provisioned
+                    {p.sample_data ? ` · ${p.sample_cases} sample case(s)` : ""}
+                  </div>
+                </div>
+                {failed && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#f59e0b",
+                    background: "#f59e0b1a", padding: "2px 7px", borderRadius: 4 }}>
+                    FAILED
+                  </span>
+                )}
+              </div>
+
+              {(p.needs_configuration?.length ?? 0) > 0 && (
+                <div style={{ fontSize: 11, color: "#f59e0b" }}>
+                  ⚠ {p.needs_configuration.length} item(s) need configuring before this
+                  process is usable — the pack cannot supply credentials or endpoints.
+                </div>
+              )}
+
+              {d && !d.error && (
+                <div style={{ padding: "8px 10px", borderRadius: 6, background: "var(--bg-subtle)",
+                  border: "1px solid var(--border-subtle)", fontSize: 11 }}>
+                  {d.up_to_date ? (
+                    <span style={{ color: "var(--text-muted)" }}>Already up to date.</span>
+                  ) : (
+                    <>
+                      <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+                        v{d.from_version} → v{d.to_version}: {d.will_apply} item(s) would apply
+                      </div>
+                      {(d.conflicts?.length ?? 0) > 0 && (
+                        <div style={{ marginTop: 4, color: "#f59e0b" }}>
+                          {d.conflicts.length} conflict(s) — changed by both the pack and you.
+                          These are skipped and your version kept:
+                          <ul style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+                            {d.conflicts.slice(0, 5).map((c: any, i: number) => (
+                              <li key={i}>{c.section} · {c.name}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {(d.kept_tenant_edits?.length ?? 0) > 0 && (
+                        <div style={{ marginTop: 4, color: "var(--text-muted)" }}>
+                          {d.kept_tenant_edits.length} of your edit(s) left untouched.
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {canInstall && (
+                <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                  <button style={{ ...S.btn, fontSize: 11 }} disabled={busy === p.package_id}
+                    onClick={() => checkUpgrade(p.package_id)}>
+                    {busy === p.package_id ? "Checking…" : "Check for updates"}
+                  </button>
+                  {d && !d.error && !d.up_to_date && (
+                    <button style={{ ...S.btn, fontSize: 11, background: "#0d94881a", color: "#0d9488",
+                      border: "1px solid #0d948830" }}
+                      disabled={busy === p.package_id}
+                      onClick={() => applyUpgrade(p.package_id)}>
+                      Apply upgrade
+                    </button>
+                  )}
+                  <button style={{ ...S.btn, fontSize: 11 }} disabled={busy === p.package_id}
+                    onClick={() => forkPack(p.package_id)}
+                    title="Download this pack's current state — your customisations included — as an editable pack of your own.">
+                    Fork
+                  </button>
+                </div>
               )}
             </div>
           );
@@ -2101,6 +2508,7 @@ export default function Marketplace() {
   const tabs: { key: MainTab; label: string; adminOnly?: boolean }[] = [
     { key: "browse",     label: "Browse" },
     { key: "installed",  label: "Installed" },
+    { key: "packs",      label: "Accelerator Packs" },
     { key: "workspaces", label: "Workspaces" },
     { key: "review",     label: "Review Queue", adminOnly: true },
   ];
@@ -2123,6 +2531,7 @@ export default function Marketplace() {
 
       {tab === "browse"     && <BrowseTab canInstall={canInstall} isManager={isManager} />}
       {tab === "installed"  && <InstalledTab isAdmin={isAdmin} />}
+      {tab === "packs"      && <PacksTab canInstall={canInstall} />}
       {tab === "workspaces" && <WorkspacesTab wsLimit={wsLimit} />}
       {tab === "review"     && <ReviewQueueTab />}
     </div>

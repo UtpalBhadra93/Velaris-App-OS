@@ -18,9 +18,9 @@
 # KMS auto-unseal; rotate the root token after setting up admin policies.
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BAO="$HELIX_DIR/scripts/bao.sh"
-OUT_DIR="$HELIX_DIR/deploy/openbao"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BAO="$VELARIS_DIR/scripts/bao.sh"
+OUT_DIR="$VELARIS_DIR/deploy/openbao"
 INIT_FILE="$OUT_DIR/.bao-init.json"
 
 command -v jq >/dev/null || { echo "✗ jq is required"; exit 1; }

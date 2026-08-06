@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from helix_ir.models.process import (
+from velaris_ir.models.process import (
     BPMNProcess,
     EventBasedGateway,
     ExclusiveGateway,
@@ -38,7 +38,7 @@ from helix_ir.models.process import (
     ParallelGateway,
     SequenceFlow,
 )
-from helix_sdk.protocols.llm import LLMProvider  # noqa: F401 — future AI-based routing
+from velaris_sdk.protocols.llm import LLMProvider  # noqa: F401 — future AI-based routing
 
 logger = structlog.get_logger()
 

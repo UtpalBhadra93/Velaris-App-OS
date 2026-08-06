@@ -8,8 +8,8 @@
 
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
 
 # uv installs itself to ~/.local/bin, which is NOT on PATH in a fresh non-login
 # shell. Add it here rather than making the operator export it — a missing uv
@@ -18,21 +18,21 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) PATH="$HOME/.local/bin:$PATH"; export PATH ;;
 esac
-DB_CONTAINER="docker-compose-helix-db-1"
-DB_USER="helix"
-DB_NAME="helix"
+DB_CONTAINER="docker-compose-velaris-db-1"
+DB_USER="velaris"
+DB_NAME="velaris"
 
 # ── Step 0: OpenBao secrets (Group K, opt-in) ─────────────────────
 # Enabled by the sentinel file deploy/openbao/enabled. When active, .env is
 # RENDERED from OpenBao before anything reads it. Render is fail-closed: on
 # any problem the existing .env stays untouched and we continue on the
 # last-known-good secrets (warning printed). No sentinel = no change at all.
-if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
+if [ -f "$VELARIS_DIR/deploy/openbao/enabled" ]; then
   echo "▶ Step 0: OpenBao secrets..."
-  [ -f "$HELIX_DIR/.env" ] || touch "$HELIX_DIR/.env"   # compose interpolation needs the file to exist
+  [ -f "$VELARIS_DIR/.env" ] || touch "$VELARIS_DIR/.env"   # compose interpolation needs the file to exist
   # Every failure below degrades to "continue on the existing .env" — Step 0
   # must never be the reason the platform fails to start (set -e is active).
-  if ! docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d openbao 2>/dev/null; then
+  if ! docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" up -d openbao 2>/dev/null; then
     echo -e "  \033[0;33m⚠ Could not start the OpenBao container\033[0m"
   fi
   BAO_HEALTH="000"
@@ -44,14 +44,14 @@ if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
   done
   if [ "$BAO_HEALTH" = "472" ]; then
     echo "  Unsealing OpenBao from local keyfile..."
-    if "$HELIX_DIR/scripts/secrets-unseal.sh" >/dev/null 2>&1; then
+    if "$VELARIS_DIR/scripts/secrets-unseal.sh" >/dev/null 2>&1; then
       BAO_HEALTH=200
     else
       echo -e "  \033[0;33m⚠ Unseal failed (bad or unreadable keyfile)\033[0m"
     fi
   fi
   if [ "$BAO_HEALTH" = "200" ] || [ "$BAO_HEALTH" = "429" ]; then
-    if "$HELIX_DIR/scripts/secrets-render.sh"; then
+    if "$VELARIS_DIR/scripts/secrets-render.sh"; then
       echo -e "  \033[0;32m✓ .env rendered from OpenBao\033[0m"
     else
       echo -e "  \033[0;33m⚠ Render failed — continuing on the existing .env\033[0m"
@@ -63,8 +63,8 @@ if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
 fi
 
 # Load .env early so VELARIS_DB_PASSWORD is available for docker compose
-if [ -f "$HELIX_DIR/.env" ]; then
-  set -o allexport; source "$HELIX_DIR/.env"; set +o allexport
+if [ -f "$VELARIS_DIR/.env" ]; then
+  set -o allexport; source "$VELARIS_DIR/.env"; set +o allexport
 fi
 
 green()  { echo -e "\033[0;32m$*\033[0m"; }
@@ -106,7 +106,7 @@ fi
 
 echo "▶ Verifying product key…"
 set +e
-uv run python "$HELIX_DIR/scripts/verify_key.py"
+uv run python "$VELARIS_DIR/scripts/verify_key.py"
 KEY_STATUS=$?
 set -e
 if [ "$KEY_STATUS" -eq 1 ]; then
@@ -127,7 +127,7 @@ echo ""
 
 # ── Update check (non-blocking notice) ──────────────────────────
 _yaml_val() {
-  grep -E "^\s+${1}:" "$HELIX_DIR/velaris.yaml" 2>/dev/null \
+  grep -E "^\s+${1}:" "$VELARIS_DIR/velaris.yaml" 2>/dev/null \
     | head -1 | sed -E "s/.*${1}:[[:space:]]*[\"']?([^\"'#]+)[\"']?.*/\1/" | xargs || echo "${2:-}"
 }
 _CURRENT_VER=$(_yaml_val "version" "")
@@ -193,7 +193,7 @@ fi
 
 # ── Step 0: Free ports and clean old containers ──────────────────
 echo "▶ Preparing ports..."
-docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" down 2>/dev/null || true
+docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down 2>/dev/null || true
 sudo systemctl stop postgresql 2>/dev/null || true
 for port in 5432 8100 8201 5173; do
   fuser -k "${port}/tcp" 2>/dev/null || true
@@ -204,22 +204,22 @@ echo ""
 
 # ── Step 1: Start Docker infrastructure ──────────────────────────
 echo "▶ Starting Docker infrastructure..."
-docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d
+docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" up -d
 echo "  Waiting for services to initialise..."
 sleep 10
 
 # Group K: the global down/up above restarted OpenBao sealed. .env is already
 # rendered (Step 0); re-unseal so day-2 secret operations work without manual
 # intervention. Failure is non-fatal — the platform runs fine sealed.
-if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
-  "$HELIX_DIR/scripts/secrets-unseal.sh" 2>/dev/null \
+if [ -f "$VELARIS_DIR/deploy/openbao/enabled" ]; then
+  "$VELARIS_DIR/scripts/secrets-unseal.sh" 2>/dev/null \
     && green "  ✓ OpenBao unsealed" \
     || yellow "  ⚠ OpenBao still sealed — run ./scripts/secrets-unseal.sh before pushing secrets"
 fi
 
 echo ""
 echo "  Checking containers:"
-for svc in helix-db temporal temporal-ui minio cache mailpit; do
+for svc in velaris-db temporal temporal-ui minio cache mailpit; do
   if docker ps --format '{{.Names}}' | grep -q "$svc"; then
     green "    ✓ $svc running"
   else
@@ -276,7 +276,7 @@ if [ "$DB_FAMILY" = "mysql" ]; then
   applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 );"
   APPLIED=0; SKIPPED=0
-  for migration_file in $(find "$HELIX_DIR/migrations/mysql" -maxdepth 1 -name "*.sql" | sort); do
+  for migration_file in $(find "$VELARIS_DIR/migrations/mysql" -maxdepth 1 -name "*.sql" | sort); do
     filename="$(basename "$migration_file")"
     EXISTS=$(mysql_client "$DB_NAME" -N -e "SELECT 1 FROM schema_migrations WHERE filename='$filename';" 2>/dev/null || echo "")
     if [ "$EXISTS" = "1" ]; then
@@ -304,7 +304,7 @@ SQL
 
 APPLIED=0; SKIPPED=0; FAILED=0
 
-for migration_file in $(find "$HELIX_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
+for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
   filename="$(basename "$migration_file")"
   EXISTS=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
     -c "SELECT 1 FROM schema_migrations WHERE filename='$filename';" 2>/dev/null || echo "")
@@ -334,9 +334,9 @@ fi
 # existing rows, only inserts new ones).
 # MySQL uses the dialect sibling manifest.mysql.sql (UUID() / ON DUPLICATE KEY).
 if [ "$DB_FAMILY" = "mysql" ]; then
-  MANIFEST_FILE="$HELIX_DIR/releases/manifest.mysql.sql"
+  MANIFEST_FILE="$VELARIS_DIR/releases/manifest.mysql.sql"
 else
-  MANIFEST_FILE="$HELIX_DIR/releases/manifest.sql"
+  MANIFEST_FILE="$VELARIS_DIR/releases/manifest.sql"
 fi
 if [ -f "$MANIFEST_FILE" ]; then
   MANIFEST_COUNT=$(grep -c "^INSERT" "$MANIFEST_FILE" 2>/dev/null || echo 0)
@@ -373,10 +373,10 @@ if [ "$DB_FAMILY" = "mysql" ]; then
   # env (sourced from .env above), so a special-char password can't corrupt the URL.
   SUPERADMIN_DB_URL="mysql://${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 else
-  SUPERADMIN_DB_URL="postgresql://helix:${VELARIS_DB_PASSWORD:-helix_dev_password}@localhost:5432/helix"
+  SUPERADMIN_DB_URL="postgresql://velaris:${VELARIS_DB_PASSWORD:-velaris_dev_password}@localhost:5432/velaris"
 fi
 DATABASE_URL="$SUPERADMIN_DB_URL" \
-  uv run python "$HELIX_DIR/scripts/check_superadmin.py" || {
+  uv run python "$VELARIS_DIR/scripts/check_superadmin.py" || {
   echo ""
   red "╔═══════════════════════════════════════════════════════╗"
   red "║  STARTUP BLOCKED: no superadmin account found.       ║"
@@ -389,7 +389,7 @@ echo ""
 
 # ── Step 4b: Sync Python workspace dependencies ──────────────────
 echo "▶ Syncing Python dependencies..."
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 # Optional ML extras are NOT part of the default install (a base box stays lean,
 # no model weights). But `uv sync` is exact by default — it prunes anything not
 # declared, so an operator who installed an extra would silently lose it on the
@@ -401,7 +401,7 @@ uv sync --all-packages $_EXTRAS --quiet 2>/dev/null && green "  ✓ Dependencies
 echo ""
 
 # ── Step 5: Set environment variables ────────────────────────────
-export HELIX_SERVICE_REGISTRY='{"order-service":"http://localhost:3001","notification-service":"http://localhost:3002"}'
+export VELARIS_SERVICE_REGISTRY='{"order-service":"http://localhost:3001","notification-service":"http://localhost:3002"}'
 
 # DB SDK: the database backend was already detected, allowlist-gated, and exported
 # near the top (so Steps 3/4/4b/Gate-2 could branch). The Python layer
@@ -417,8 +417,8 @@ if curl -s --max-time 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
     | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('models',[])))" 2>/dev/null || echo "?")
   if [ "$MODEL_COUNT" = "0" ]; then
     yellow "  ⚠ Ollama online but NO models pulled — HxNexus answers will be empty."
-    yellow "    Pull the defaults:  docker exec docker-compose-ollama-1 ollama pull ${HELIX_CASE_AI_OLLAMA_MODEL:-llama3.2}"
-    yellow "                        docker exec docker-compose-ollama-1 ollama pull ${HELIX_CASE_AI_OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+    yellow "    Pull the defaults:  docker exec docker-compose-ollama-1 ollama pull ${VELARIS_CASE_AI_OLLAMA_MODEL:-llama3.2}"
+    yellow "                        docker exec docker-compose-ollama-1 ollama pull ${VELARIS_CASE_AI_OLLAMA_EMBED_MODEL:-nomic-embed-text}"
   else
     green "  ✓ Ollama online ($MODEL_COUNT model(s)) — HxNexus ready"
   fi
@@ -429,7 +429,7 @@ echo ""
 
 # ── Step 6: Start Engine ──────────────────────────────────────────
 echo "▶ Starting Velaris Engine (port 8100)..."
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 nohup uv run uvicorn helix_engine.main:app \
   --host 0.0.0.0 --port 8100 --reload \
   > /tmp/velaris-engine.log 2>&1 &
@@ -461,7 +461,7 @@ echo ""
 
 # ── Step 8: Start Studio ─────────────────────────────────────────
 echo "▶ Starting Velaris Studio (port 5173)..."
-cd "$HELIX_DIR/studio"
+cd "$VELARIS_DIR/studio"
 
 # Reinstall npm deps if package.json changed since the last install, OR if the
 # installed tree doesn't actually satisfy package.json (a release can add
@@ -470,13 +470,13 @@ cd "$HELIX_DIR/studio"
 # node_modules lives at the workspace root in dev (npm workspaces) or inside
 # studio/ in a standalone clone — check whichever marker exists.
 _NM_MARK=""
-for _m in "$HELIX_DIR/node_modules/.package-lock.json" "$HELIX_DIR/studio/node_modules/.package-lock.json"; do
+for _m in "$VELARIS_DIR/node_modules/.package-lock.json" "$VELARIS_DIR/studio/node_modules/.package-lock.json"; do
   [ -f "$_m" ] && _NM_MARK="$_m" && break
 done
 _NEED_NPM=0
 if [ -z "$_NM_MARK" ] \
-   || [ "$HELIX_DIR/studio/package.json" -nt "$_NM_MARK" ] \
-   || { [ -f "$HELIX_DIR/package.json" ] && [ "$HELIX_DIR/package.json" -nt "$_NM_MARK" ]; }; then
+   || [ "$VELARIS_DIR/studio/package.json" -nt "$_NM_MARK" ] \
+   || { [ -f "$VELARIS_DIR/package.json" ] && [ "$VELARIS_DIR/package.json" -nt "$_NM_MARK" ]; }; then
   _NEED_NPM=1
 elif ! npm ls --depth=0 >/dev/null 2>&1; then
   # mtimes look fine but the tree is broken/incomplete (failed earlier install)
@@ -487,7 +487,7 @@ if [ "$_NEED_NPM" = 1 ]; then
   _NPM_LOG=/tmp/velaris-npm-install.log
   if npm install --prefer-offline >"$_NPM_LOG" 2>&1 \
      || npm install >"$_NPM_LOG" 2>&1; then   # retry online if offline-first failed
-    rm -rf "$HELIX_DIR/studio/node_modules/.vite"
+    rm -rf "$VELARIS_DIR/studio/node_modules/.vite"
     green "  ✓ Studio dependencies installed"
   else
     tail -5 "$_NPM_LOG"
@@ -501,11 +501,11 @@ nohup npm run dev -- --host 0.0.0.0 > /tmp/velaris-studio.log 2>&1 &
 echo "  PID: $! | Logs: tail -f /tmp/velaris-studio.log"
 sleep 3
 echo ""
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 
 # ── Heartbeat ping (background, non-blocking) ─────────────────────
-if [ -f "$HELIX_DIR/.velaris-key" ]; then
-  KEY_ID=$(python3 -c "import json; d=json.load(open('$HELIX_DIR/.velaris-key')); print(d.get('key_id',''))" 2>/dev/null || echo "")
+if [ -f "$VELARIS_DIR/.velaris-key" ]; then
+  KEY_ID=$(python3 -c "import json; d=json.load(open('$VELARIS_DIR/.velaris-key')); print(d.get('key_id',''))" 2>/dev/null || echo "")
   if [ -n "$KEY_ID" ]; then
     curl -s -X POST "${VELARIS_REGISTER_URL:-https://register.velaris.io}/heartbeat" \
       -H "Content-Type: application/json" \

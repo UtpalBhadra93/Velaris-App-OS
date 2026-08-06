@@ -8,7 +8,7 @@ window, and produce the signed certificate. Admin-gated; tenant-scoped;
 credentials HxVault-encrypted, decrypted only at connect. The source is never
 written to.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

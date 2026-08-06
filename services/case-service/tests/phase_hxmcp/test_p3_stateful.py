@@ -1,6 +1,6 @@
 """HxNexus Operator (MCP) P3 — stateful actions + human-in-the-loop confirm.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

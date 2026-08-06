@@ -3,7 +3,7 @@
 The single crypto chokepoint. Real AEAD via `cryptography` (no homebrew).
 Key material is never logged.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

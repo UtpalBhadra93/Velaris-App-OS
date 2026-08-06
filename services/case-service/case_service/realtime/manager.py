@@ -7,7 +7,7 @@ Channels follow a hierarchical structure:
   presence.{resource}    — active users viewing/editing a resource
   events.global          — global system events
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

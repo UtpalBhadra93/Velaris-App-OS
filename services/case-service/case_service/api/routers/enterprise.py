@@ -1,6 +1,6 @@
 """Enterprise hardening API — security events, GDPR, retention.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -20,6 +20,10 @@ from case_service.auth.dependencies import require_role, get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_session
 from case_service.enterprise import security_events, gdpr
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"], dependencies=[Depends(require_role("admin"))])
 
@@ -309,12 +313,17 @@ async def _ensure_default_policies(session: AsyncSession):
         ("Security event retention", "security_events", 1095, "archive"),
         ("Process mining event log", "event_log", 365, "delete"),
     ]
-    existing = await session.execute(select(RetentionPolicyModel.resource_type))
+    existing = await session.execute(
+        select(RetentionPolicyModel.resource_type)
+        .where(RetentionPolicyModel.tenant_id.is_(None))
+    )
     existing_types = {r[0] for r in existing.all()}
     for name, rtype, days, action in defaults:
         if rtype not in existing_types:
+            # Seeded with tenant_id NULL — the platform default, applied to
+            # any tenant that has not defined its own policy for this type.
             session.add(RetentionPolicyModel(
-                name=name, resource_type=rtype,
+                name=name, resource_type=rtype, tenant_id=None,
                 retention_days=days, action=action, enabled=False,
             ))
     await session.flush()
@@ -333,6 +342,7 @@ async def list_retention_policies(
         {
             "id": str(p.id),
             "name": p.name,
+            "tenant_id": p.tenant_id,
             "resource_type": p.resource_type,
             "retention_days": p.retention_days,
             "action": p.action,
@@ -341,6 +351,58 @@ async def list_retention_policies(
         }
         for p in result.scalars().all()
     ]
+
+
+@router.get("/retention-policies/preview")
+async def preview_retention(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """What would each enabled policy delete? Counts only, touches nothing.
+
+    The first thing anyone should be able to do with a deletion job is find
+    out what it would destroy. This is that, and it is a GET so it cannot be
+    mistaken for the thing that acts.
+    """
+    from case_service.compliance import retention
+
+    # Scoped to the caller's tenant: a preview that counted another tenant's
+    # rows would misreport the impact of a policy they cannot even see.
+    return await retention.run_all(
+        session, apply=False,
+        tenant_id=str(user.tenant_id) if user.tenant_id else None,
+    )
+
+
+@router.post("/retention-policies/run")
+async def run_retention(
+    confirm: bool = False,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Apply every enabled policy. **Deletes data.**
+
+    Admin-only and gated behind an explicit `confirm=true`, because there is no
+    undo: a retention run that removed the wrong rows cannot be reversed, and a
+    misclick should not be able to start it. Without the flag this behaves as
+    the preview.
+    """
+    from case_service.compliance import retention
+
+    tenant = str(user.tenant_id) if user.tenant_id else None
+    if not confirm:
+        out = await retention.run_all(session, apply=False, tenant_id=tenant)
+        out["hint"] = ("this was a dry run — re-send with ?confirm=true to delete. "
+                       "There is no undo.")
+        return out
+
+    out = await retention.run_all(session, apply=True, tenant_id=tenant)
+    await session.commit()
+    logger.warning(
+        "retention run applied by %s — %d row(s) deleted",
+        user.user_id, out.get("total_rows", 0),
+    )
+    return out
 
 
 class RetentionPolicyUpdate(BaseModel):

@@ -4,7 +4,7 @@ When a child case resolves and ``propagate_status=True``, the parent
 may be unblocked.  When a child's priority changes and
 ``propagate_priority=True``, the parent's priority may be raised.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

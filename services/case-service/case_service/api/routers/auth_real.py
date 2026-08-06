@@ -48,6 +48,17 @@ OTP_VALID_MINS = 10
 # Complements the per-user lockout (MAX_ATTEMPTS): the lockout stops attacks
 # on one account; these stop one IP from spraying across many accounts.
 from case_service.middleware.endpoint_rate_limit import rate_limit
+from case_service.core.error_codes import (
+    AUTH_CREDENTIALS_401,
+    AUTH_DEVICE_MISMATCH_401,
+    AUTH_DISABLED_403,
+    AUTH_EMAIL_TAKEN_409,
+    AUTH_OTP_INVALID_400,
+    AUTH_RATE_LIMIT_429,
+    AUTH_SSO_REQUIRED_400,
+    AUTH_SSO_UNCONFIGURED_404,
+    coded,
+)
 
 _login_rl    = rate_limit(max_calls=10, window_seconds=60,  name="login")
 _register_rl = rate_limit(max_calls=10, window_seconds=300, name="registration")
@@ -241,17 +252,17 @@ async def login_real(
     )).scalar_one_or_none()
 
     if not user:
-        raise HTTPException(401, "Invalid username or password.")
+        raise coded(401, AUTH_CREDENTIALS_401, "Invalid username or password.")
 
     if not user.is_active:
-        raise HTTPException(403, "Account is disabled. Contact an administrator.")
+        raise coded(403, AUTH_DISABLED_403, "Account is disabled. Contact an administrator.")
 
     if _is_locked(user):
         remaining = int((user.locked_until - datetime.now(timezone.utc)).total_seconds() / 60) + 1
         raise HTTPException(423, f"Account locked. Try again in {remaining} minute(s).")
 
     if not user.password_hash:
-        raise HTTPException(400, "This account uses SSO login. Use the SSO button instead.")
+        raise coded(400, AUTH_SSO_REQUIRED_400, "This account uses SSO login. Use the SSO button instead.")
 
     if not _verify_password(body.password, user.password_hash):
         user.failed_attempts += 1
@@ -547,7 +558,7 @@ async def update_my_profile(
             .where(HelixUserModel.id != u.id)
         )).scalar_one_or_none()
         if existing:
-            raise HTTPException(409, "That email is already in use by another account.")
+            raise coded(409, AUTH_EMAIL_TAKEN_409, "That email is already in use by another account.")
         u.email = body.email.strip()
     u.updated_at = datetime.now(timezone.utc)
     await session.commit()
@@ -631,7 +642,7 @@ async def reset_password(
         select(HelixUserModel).where(HelixUserModel.email == body.email)
     )).scalar_one_or_none()
     if not u:
-        raise HTTPException(400, "Invalid or expired OTP.")
+        raise coded(400, AUTH_OTP_INVALID_400, "Invalid or expired OTP.")
 
     # Account lockout check — failed OTP attempts share the same counter as password failures.
     if _is_locked(u):
@@ -658,7 +669,7 @@ async def reset_password(
             if otp_rec:
                 otp_rec.used_at = datetime.now(timezone.utc)
         await session.commit()
-        raise HTTPException(400, "Invalid or expired OTP.")
+        raise coded(400, AUTH_OTP_INVALID_400, "Invalid or expired OTP.")
 
     u.password_hash = _hash_password(body.new_password)
     u.password_change_required = False
@@ -880,7 +891,7 @@ async def sso_callback(
         .limit(1)
     )).scalar_one_or_none()
     if not p_row:
-        raise HTTPException(404, "SSO provider not configured")
+        raise coded(404, AUTH_SSO_UNCONFIGURED_404, "SSO provider not configured")
 
     ep     = OAUTH_ENDPOINTS[body.provider]
     secret = decrypt_credentials(p_row.client_secret_enc)["secret"] if p_row.client_secret_enc else ""
@@ -1013,7 +1024,7 @@ async def refresh_token_endpoint(
     """Exchange a valid refresh token for a new access token + rotated refresh token."""
     client_ip = request.client.host if request.client else "unknown"
     if not _check_refresh_rate(client_ip):
-        raise HTTPException(429, "Too many refresh attempts. Please wait before retrying.")
+        raise coded(429, AUTH_RATE_LIMIT_429, "Too many refresh attempts. Please wait before retrying.")
 
     token_hash = hashlib.sha256(body.refresh_token.encode()).hexdigest()
 
@@ -1053,7 +1064,7 @@ async def refresh_token_endpoint(
         client_ip,
     ):
         await session.commit()  # persist the chain revocation
-        raise HTTPException(401, "Session device check failed. Please log in again.")
+        raise coded(401, AUTH_DEVICE_MISMATCH_401, "Session device check failed. Please log in again.")
 
     user = await session.get(HelixUserModel, uuid.UUID(row[0]))
     if not user or not user.is_active:
@@ -1355,7 +1366,7 @@ async def webauthn_login_verify(
 
     user = await session.get(HelixUserModel, uuid.UUID(cred.user_id))
     if not user or not user.is_active:
-        raise HTTPException(403, "Account is disabled. Contact an administrator.")
+        raise coded(403, AUTH_DISABLED_403, "Account is disabled. Contact an administrator.")
     if _is_locked(user):
         remaining = int((user.locked_until - datetime.now(timezone.utc)).total_seconds() / 60) + 1
         raise HTTPException(423, f"Account locked. Try again in {remaining} minute(s).")

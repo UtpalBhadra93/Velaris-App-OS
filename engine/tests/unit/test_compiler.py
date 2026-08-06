@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from helix_ir.models.process import (
+from velaris_ir.models.process import (
     EndEvent,
     ExclusiveGateway,
     ParallelGateway,

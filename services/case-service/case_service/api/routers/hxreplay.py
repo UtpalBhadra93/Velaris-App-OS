@@ -8,7 +8,7 @@ Authorization: creating a single-case replay inherits the authz of viewing that
 case (it exposes that case's history); cohort replay (Phase C) is a bulk read
 gated behind the dedicated HxGuard capability ``replay.run``.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

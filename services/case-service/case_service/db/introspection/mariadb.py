@@ -15,7 +15,7 @@ Dispatch to this class happens in ``introspection/__init__.py`` on the live bind
 MariaDB server reached via the mysql driver), so a MariaDB server is routed here even
 when the operator configured ``database: mysql``.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

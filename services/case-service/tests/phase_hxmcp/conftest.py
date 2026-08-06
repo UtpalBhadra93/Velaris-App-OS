@@ -5,7 +5,7 @@ fixed id — so without a reset the limiter's 30/min bucket is shared across the
 whole phase and later tests spuriously 429. Give every test a fresh, generous
 limiter.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

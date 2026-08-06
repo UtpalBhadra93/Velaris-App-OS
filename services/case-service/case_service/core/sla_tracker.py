@@ -4,7 +4,7 @@ Manages the lifecycle of SLA instances — starting, pausing, resuming,
 checking, and handling breaches.  Temporal workflows call these
 functions as activities.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

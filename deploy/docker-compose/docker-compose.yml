@@ -15,6 +15,13 @@ services:
     # the internal compose network (POSTGRES_SEEDS=temporal-db). Never expose a
     # database to the host or network unless something off-Docker must reach it.
     volumes: [temporal-db:/var/lib/postgresql/data]
+    # Every long-running service here carries `restart: unless-stopped`. On
+    # 2026-08-05 only the five that already had it survived a Docker daemon
+    # restart; the DB, cache, broker and vault stayed Exited(255) while the
+    # case-service systemd unit came back and served 500s against a dead
+    # Postgres. "unless-stopped" (not "always") is deliberate: a container you
+    # stopped on purpose — or that stop-velaris.sh brought down — stays down.
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U temporal"]
       interval: 5s
@@ -33,6 +40,7 @@ services:
     # Loopback-only: the host case-service reaches Temporal at 127.0.0.1:7233.
     # Not reachable from the network.
     ports: ["127.0.0.1:7233:7233"]
+    restart: unless-stopped
 
   temporal-ui:
     image: temporalio/ui:2.31.2
@@ -41,19 +49,24 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
     # Loopback-only admin UI. Reach it via SSH tunnel, not over the network.
     ports: ["127.0.0.1:8233:8080"]
+    restart: unless-stopped
 
-  helix-db:
+  velaris-db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: helix
+      POSTGRES_USER: velaris
       POSTGRES_PASSWORD: ${VELARIS_DB_PASSWORD:?not set - run scripts/secrets-render.sh or pass --env-file ~/helix/.env}
-      POSTGRES_DB: helix
+      POSTGRES_DB: velaris
     # Loopback-only: the host case-service connects at 127.0.0.1:5432. This is
     # your application database — it must NEVER be reachable from the network.
     ports: ["127.0.0.1:5432:5432"]
-    volumes: [helix-db:/var/lib/postgresql/data]
+    volumes: [velaris-db:/var/lib/postgresql/data]
+    # THE one that took the platform down on 2026-08-05. Without this, a Docker
+    # daemon restart leaves the application database Exited(255) and every login
+    # returns 500.
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U helix"]
+      test: ["CMD-SHELL", "pg_isready -U velaris"]
       interval: 5s
       retries: 10
 
@@ -65,6 +78,7 @@ services:
     # Loopback-only: host case-service reaches the cache at 127.0.0.1:6379.
     ports: ["127.0.0.1:6379:6379"]
     volumes: [cache-data:/data]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -77,11 +91,18 @@ services:
       - --smp 1
       - --memory 512M
       - --overprovisioned
-      - --kafka-addr PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://events:9092
-    # Loopback-only: host case-service reaches the broker at 127.0.0.1:9092.
-    ports: ["127.0.0.1:9092:9092"]
+      # TWO listeners, deliberately. A single listener advertising `events:9092`
+      # works for containers and is unreachable from the host: a host client
+      # bootstraps fine on 127.0.0.1 and then fails DNS on the advertised name.
+      # case-service runs on the HOST in this deployment, so it needs an
+      # externally-advertised address it can actually resolve.
+      - --kafka-addr INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092
+      - --advertise-kafka-addr INTERNAL://events:9092,EXTERNAL://127.0.0.1:19092
+    # Loopback-only: host case-service reaches the broker at 127.0.0.1:19092;
+    # containers use events:9092 on the compose network.
+    ports: ["127.0.0.1:9092:9092", "127.0.0.1:19092:19092"]
     volumes: [events-data:/var/lib/redpanda/data]
+    restart: unless-stopped
 
 
   # search (OpenSearch) removed 2026-06-12 — zero references in platform
@@ -102,7 +123,9 @@ services:
       - ollama-data:/root/.ollama
       - ../../models:/models:ro
     entrypoint: ["/bin/bash", "/models/.ollama-init.sh"]
-    
+    restart: unless-stopped
+
+
   # ── HxMeet P2 — embedded driver (self-hosted LiveKit SFU, Apache-2.0) ──
   livekit:
     image: livekit/livekit-server:v1.13
@@ -167,12 +190,12 @@ services:
 #    build: ../../services/case-service
 #    ports: ["8200:8200"]
 #    depends_on:
-#      helix-db: { condition: service_healthy }
+#      velaris-db: { condition: service_healthy }
 #      temporal: { condition: service_started }
 #    environment:
-#      HELIX_CASE_DATABASE_URL: postgresql+asyncpg://helix:helix_dev_password@helix-db:5432/helix
-#      HELIX_CASE_TEMPORAL_HOST: temporal:7233
-#      HELIX_CASE_SERVICE_PORT: "8200"
+#      VELARIS_CASE_DATABASE_URL: postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
+#      VELARIS_CASE_TEMPORAL_HOST: temporal:7233
+#      VELARIS_CASE_SERVICE_PORT: "8200"
 
   # ── API Gateway (roadmap #13a — stable /api/v1 prefix + discovery) ──
   # Single ingress; routes by sub-prefix to the owning service. All seams
@@ -193,38 +216,40 @@ services:
   # >>> P23 observability services
   prometheus:
     image: prom/prometheus:v2.54.1
-    container_name: helix-prometheus
+    container_name: velaris-prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=7d'
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - helix-prometheus-data:/prometheus
+      - velaris-prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
     profiles: [observability]
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.105.0
-    container_name: helix-otel-collector
+    container_name: velaris-otel-collector
     command: ['--config=/etc/otel-collector-config.yaml']
     volumes:
       - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       - "127.0.0.1:4317:4317"
       - "127.0.0.1:4318:4318"
+    restart: unless-stopped
     profiles: [observability]
   # <<< P23 observability services
 
   # >>> P24 document storage
   minio:
     image: minio/minio:RELEASE.2024-10-02T17-50-41Z
-    container_name: helix-minio
+    container_name: velaris-minio
     command: server /data --console-address ":9001"
     environment:
-      - MINIO_ROOT_USER=helix
+      - MINIO_ROOT_USER=velaris
       - MINIO_ROOT_PASSWORD=${VELARIS_MINIO_PASSWORD:?not set - run scripts/secrets-render.sh or pass --env-file ~/helix/.env}
     # Loopback-only: API (9000) for the host case-service, console (9001) via
     # SSH tunnel. Object storage must not be network-reachable.
@@ -232,7 +257,8 @@ services:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
     volumes:
-      - helix-minio-data:/data
+      - velaris-minio-data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -240,14 +266,17 @@ services:
 
   minio-init:
     image: minio/mc:RELEASE.2024-10-02T08-27-28Z
+    # NO restart policy on purpose: this is a one-shot bucket-create that exits
+    # 0. A restart policy would re-run it on every daemon start forever.
+    restart: "no"
     depends_on:
       minio: { condition: service_healthy }
     environment:
-      - MC_HELIX_PASSWORD=${VELARIS_MINIO_PASSWORD:?not set - run scripts/secrets-render.sh or pass --env-file ~/helix/.env}
+      - MC_VELARIS_PASSWORD=${VELARIS_MINIO_PASSWORD:?not set - run scripts/secrets-render.sh or pass --env-file ~/helix/.env}
     entrypoint: >
       /bin/sh -c "
-      mc alias set helix http://minio:9000 helix $${MC_HELIX_PASSWORD};
-      mc mb --ignore-existing helix/helix-docs;
+      mc alias set velaris http://minio:9000 velaris $${MC_VELARIS_PASSWORD};
+      mc mb --ignore-existing velaris/velaris-docs;
       exit 0;
       "
   # <<< P24 document storage
@@ -255,7 +284,7 @@ services:
   # >>> P25b mailpit (local dev SMTP/IMAP)
   mailpit:
     image: axllent/mailpit:latest
-    container_name: helix-mailpit
+    container_name: velaris-mailpit
     # Loopback-only. mailpit accepts any SMTP auth (MP_SMTP_AUTH_ACCEPT_ANY) and
     # must never be network-reachable — it would be an open relay / data leak.
     ports:
@@ -268,7 +297,8 @@ services:
       - MP_DATABASE=/data/mailpit.db
       - MP_MAX_MESSAGES=5000
     volumes:
-      - helix-mailpit-data:/data
+      - velaris-mailpit-data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8025/api/v1/info"]
       interval: 10s
@@ -289,7 +319,19 @@ services:
       - "127.0.0.1:8350:8200"
     volumes:
       - openbao-data:/openbao/data
+      # The image declares VOLUME for /openbao/file and /openbao/logs (upstream
+      # defaults we don't use — storage is file@/openbao/data per server.hcl).
+      # Unmapped, Docker mints a fresh anonymous volume for each on every `up`
+      # and orphans the previous pair, so restarts leak 2 dead volumes forever.
+      # Naming them pins the churn to these two, reused across restarts.
+      - openbao-file:/openbao/file
+      - openbao-logs:/openbao/logs
       - ../openbao/server.hcl:/openbao/config/server.hcl:ro
+    # Comes back SEALED after any restart — by design, that is what a vault does.
+    # scripts/secrets-unseal.sh is what reopens it; start-velaris.sh calls it.
+    # The platform runs fine sealed (.env is already rendered), so an unattended
+    # reboot recovers the API even though day-2 secret writes wait for a human.
+    restart: unless-stopped
     healthcheck:
       # uninit/sealed/standby remapped to 200 — "API up" is the health bar;
       # seal state is handled by the start script, not the orchestrator
@@ -359,12 +401,14 @@ networks:
 
 volumes:
   temporal-db:
-  helix-db:
+  velaris-db:
   cache-data:
   events-data:
   ollama-data:
-  helix-minio-data:
-  helix-prometheus-data:
-  helix-mailpit-data:
+  velaris-minio-data:
+  velaris-prometheus-data:
+  velaris-mailpit-data:
   openbao-data:
+  openbao-file:
+  openbao-logs:
 

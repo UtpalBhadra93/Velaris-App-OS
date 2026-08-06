@@ -11,9 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
+from case_service.core.error_codes import (
+    DOC_DELETE_403,
+    DOC_FILETYPE_400,
+    DOC_CASE_404,
+    DOC_ENCRYPT_503,
+    DOC_LASTVERSION_409,
+    DOC_NOTFOUND_404,
+    DOC_PREVIEW_415,
+    DOC_STORAGE_503,
+    coded,
+)
 from case_service.db.models import CaseInstanceModel
 from case_service.db.session import get_session
 from case_service.documents import DocumentService, generate_preview
+from case_service.storage.backend import StorageError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 service = DocumentService()
@@ -73,7 +85,7 @@ async def upload_document(
     raw_name = file.filename or "unnamed"
     ok, reason = validate_upload_filename(raw_name, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
     if not ok:
-        raise HTTPException(400, f"File rejected: {reason}")
+        raise coded(400, DOC_FILETYPE_400, f"File rejected: {reason}")
     safe_name = safe_filename(raw_name)
     data = await file.read()
     try:
@@ -83,7 +95,34 @@ async def upload_document(
             tenant_id=tenant_id,
         )
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        # `service.upload` raises ValueError when the case does not exist —
+        # the catalog documents that as its own code, distinct from a missing
+        # document, because the operator fix is completely different.
+        raise coded(404, DOC_CASE_404, str(e))
+    except (OSError, PermissionError) as e:
+        # The catalog's reference incident: an unwritable storage path made
+        # every upload a bare 500 with nothing to look up. Now it names the
+        # code, and the operator resolution is one search away.
+        raise coded(
+            503, DOC_STORAGE_503,
+            f"Document storage is unavailable: {e}. Check the configured "
+            f"storage path is writable, or that the object store is reachable.",
+        )
+    except StorageError as e:
+        # At-rest encryption is configured but unusable — a bad or missing
+        # master key. Documented separately from a disk fault because the
+        # operator fix is completely different, and the upload is NOT stored.
+        #
+        # Matched on the exception TYPE, not on message text: an earlier
+        # version sniffed for "key" in the message, which would have reported
+        # any KeyError mentioning a key as an encryption failure and sent an
+        # operator chasing the wrong problem.
+        raise coded(
+            503, DOC_ENCRYPT_503,
+            f"Document encryption or storage failed: {e}. If at-rest "
+            f"encryption is enabled, check VELARIS_CASE_STORAGE_MASTER_KEY is "
+            f"a valid 64-char hex key.",
+        )
     return _doc_to_response(doc)
 
 
@@ -95,7 +134,7 @@ async def get_document(
     from case_service.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
     return _doc_to_response(doc)
 
 
@@ -126,7 +165,7 @@ async def preview_document(
         raise HTTPException(404, str(e))
     png = generate_preview(data, content_type)
     if png is None:
-        raise HTTPException(415, "Preview not available for this content type")
+        raise coded(415, DOC_PREVIEW_415, "Preview not available for this content type")
     return Response(content=png, media_type="image/png")
 
 
@@ -139,14 +178,14 @@ async def delete_document(
     from case_service.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
 
     case = await session.get(CaseInstanceModel, doc.case_id)
     is_admin = user.is_admin or user.has_role("admin")
     is_case_owner = case is not None and case.created_by == user.user_id
     if not (is_admin or is_case_owner):
-        raise HTTPException(
-            403,
+        raise coded(
+            403, DOC_DELETE_403,
             "Only the case owner or an admin can delete this document.",
         )
 
@@ -183,7 +222,7 @@ async def delete_document_version(
     from case_service.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
 
     case = await session.get(CaseInstanceModel, doc.case_id)
     is_admin = user.is_admin or user.has_role("admin")
@@ -199,8 +238,8 @@ async def delete_document_version(
     except ValueError as e:
         msg = str(e)
         if "only remaining" in msg:
-            raise HTTPException(409, msg)
-        raise HTTPException(404, msg)
+            raise coded(409, DOC_LASTVERSION_409, msg)
+        raise coded(404, DOC_NOTFOUND_404, msg)
     return _doc_to_response(updated)
 
 
@@ -239,7 +278,7 @@ async def set_portal_visibility(
     from case_service.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
     doc.portal_visible = body.portal_visible
     if body.portal_visible and not doc.portal_source:
         doc.portal_source = "staff"
@@ -382,7 +421,7 @@ async def verify_document(
 
     doc = await session.get(_DocModel, document_id)
     if doc is None or doc.is_deleted or doc.case_id is None:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
     await _hxguard.require_case(session, user, "docs.verify", doc.case_id)
 
     data, _name, content_type = await service.download(session, document_id)
@@ -420,7 +459,7 @@ async def list_document_verifications(
 ):
     doc = await session.get(_DocModel, document_id)
     if doc is None or doc.is_deleted or doc.case_id is None:
-        raise HTTPException(404, "Document not found")
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
     await _hxguard.require_case(session, user, "case.read", doc.case_id)
     rows = (await session.execute(
         _select(_DocVerif).where(_DocVerif.document_id == document_id)

@@ -4,7 +4,7 @@ Given an ``AssignmentRule`` from the case type IR, this module
 resolves the concrete assignee (user, role, or queue) and creates
 the assignment record.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.db import repository as repo
-from case_service.db.models import CaseAssignmentModel
+from case_service.db.models import CaseAssignmentModel, UserDirectoryModel
 
 logger = logging.getLogger(__name__)
 
@@ -175,23 +175,109 @@ async def _resolve_manager_of(
 ) -> tuple[str, str]:
     """Assign to the manager of the current assignee.
 
-    TODO: Look up org hierarchy via user-service protocol.
+    The org hierarchy is `user_directory.manager_user_id`. Every step degrades
+    to the `manager` role rather than failing, because a case that cannot find
+    a named manager still has to go somewhere: no current assignee, no
+    directory row, no manager recorded, or a manager who has been deactivated.
     """
-    current_assignee = context.get("current_assignee_id", "")
-    logger.info("Manager-of routing for %s (stub)", current_assignee)
-    return "role", "manager"
+    current_assignee = str(context.get("current_assignee_id") or "").strip()
+    if not current_assignee:
+        logger.info("manager_of: no current assignee, falling back to manager role")
+        return "role", "manager"
+
+    stmt = select(UserDirectoryModel.manager_user_id).where(
+        UserDirectoryModel.user_id == current_assignee,
+        UserDirectoryModel.is_active.is_(True),
+    )
+    manager_id = (await session.execute(stmt)).scalar_one_or_none()
+    if not manager_id:
+        logger.info("manager_of: no manager recorded for %s", current_assignee)
+        return "role", "manager"
+
+    # The manager must still be an active user — a stale pointer to a leaver
+    # would silently park work on nobody.
+    active = (
+        await session.execute(
+            select(UserDirectoryModel.user_id).where(
+                UserDirectoryModel.user_id == manager_id,
+                UserDirectoryModel.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if not active:
+        logger.info("manager_of: manager %s is inactive", manager_id)
+        return "role", "manager"
+
+    return "user", str(manager_id)
+
+
+def _required_skills(rule: dict[str, Any]) -> list[str]:
+    """Skill requirements, normalised to lowercase non-empty strings."""
+    raw = rule.get("skill_requirements") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [s.strip().lower() for s in raw if isinstance(s, str) and s.strip()]
 
 
 async def _resolve_skill_based(
     session: AsyncSession, rule: dict[str, Any], context: dict[str, Any]
 ) -> tuple[str, str]:
-    """Find a user matching required skills.
+    """Assign to the least-loaded active user holding ALL required skills.
 
-    TODO: Query user-service for skill matching.
+    Skills live in `user_directory.skills` (a JSON array of names) and are
+    matched case-insensitively. ALL requirements must be held — a partial match
+    is not a match, since "claims + fraud" asks for someone who can do both.
+
+    Falls back to the rule's target queue whenever no one qualifies, which is
+    also what an empty requirement list does: an unconfigured rule must not
+    quietly resolve to an arbitrary person.
     """
-    skills = rule.get("skill_requirements", [])
-    logger.info("Skill-based routing for skills %s (stub)", skills)
-    return "queue", rule.get("target", "default-queue")
+    required = _required_skills(rule)
+    fallback = rule.get("target", "default-queue")
+    if not required:
+        logger.info("skill_based: no skill_requirements set, using queue %s", fallback)
+        return "queue", fallback
+
+    rows = (
+        await session.execute(
+            select(UserDirectoryModel.user_id, UserDirectoryModel.skills).where(
+                UserDirectoryModel.is_active.is_(True)
+            )
+        )
+    ).all()
+
+    # Matching in Python, not SQL: the JSON containment operators differ across
+    # PostgreSQL, MySQL and MariaDB, and the directory is small enough that a
+    # portable scan is worth more than a dialect-specific query here.
+    needed = set(required)
+    qualified = [
+        r.user_id
+        for r in rows
+        if needed <= {s.strip().lower() for s in (r.skills or []) if isinstance(s, str)}
+    ]
+
+    if not qualified:
+        logger.info("skill_based: nobody holds %s, using queue %s", required, fallback)
+        return "queue", fallback
+
+    # Spread the work: pick whoever of the qualified holds the fewest active
+    # assignments. Anyone with zero assignments has no row here, so they win by
+    # being absent from the load map.
+    load_rows = (
+        await session.execute(
+            select(CaseAssignmentModel.assignee_id, func.count().label("load"))
+            .where(
+                CaseAssignmentModel.assignee_type == "user",
+                CaseAssignmentModel.status == "active",
+                CaseAssignmentModel.assignee_id.in_(qualified),
+            )
+            .group_by(CaseAssignmentModel.assignee_id)
+        )
+    ).all()
+    load = {r.assignee_id: r.load for r in load_rows}
+
+    chosen = min(sorted(qualified), key=lambda uid: load.get(uid, 0))
+    return "user", str(chosen)
 
 
 _RESOLVERS = {
@@ -240,6 +326,61 @@ async def resolve_assignment(
     return assignee_type, assignee_id
 
 
+async def _due_at_for_step(
+    session: AsyncSession, *, case_id: uuid.UUID, step: dict[str, Any]
+) -> datetime | None:
+    """When this work item is due, from the step's SLA policy.
+
+    Uses the policy's **goal** duration, not its deadline: the deadline is the
+    breach point, while the goal is the "you should be done by" target. The
+    Work Center renders a past `due_at` as *Overdue*, so pinning it to the goal
+    warns the assignee while there is still time to act. Falls back to the
+    deadline when a policy declares no goal.
+
+    Returns None whenever the due date cannot be established — no SLA on the
+    step, an unresolvable case type, a policy id the definition does not carry,
+    or an unparseable duration. A missing due date is the correct outcome
+    there; inventing one would make the Work Center lie.
+    """
+    sla_policy_id = step.get("sla_policy_id")
+    if not sla_policy_id:
+        return None
+
+    from case_service.core.sla_tracker import parse_iso8601_duration
+    from case_service.db.models import CaseInstanceModel, CaseTypeModel
+
+    ct_def = (
+        await session.execute(
+            select(CaseTypeModel.definition_json)
+            .join(CaseInstanceModel, CaseInstanceModel.case_type_id == CaseTypeModel.id)
+            .where(CaseInstanceModel.id == case_id)
+        )
+    ).scalar_one_or_none()
+    if not ct_def:
+        return None
+
+    for policy in (ct_def.get("sla_policies") or []):
+        if policy.get("id") != sla_policy_id:
+            continue
+        duration = policy.get("goal_duration") or policy.get("deadline_duration")
+        if not duration:
+            return None
+        try:
+            return datetime.now(timezone.utc) + parse_iso8601_duration(duration)
+        except ValueError:
+            logger.warning(
+                "SLA policy %s has an unparseable duration %r; assignment left undated",
+                sla_policy_id, duration,
+            )
+            return None
+
+    logger.warning(
+        "Step %s references SLA policy %s not present in the case type definition",
+        step.get("id"), sla_policy_id,
+    )
+    return None
+
+
 async def create_assignment_for_step(
     session: AsyncSession,
     *,
@@ -283,11 +424,7 @@ async def create_assignment_for_step(
     assignee_id = outcome.decision["assignee_id"]
 
     # Compute due date from step SLA if available
-    due_at = None
-    sla_policy_id = step.get("sla_policy_id")
-    if sla_policy_id:
-        # TODO: look up SLA policy duration and compute due_at
-        pass
+    due_at = await _due_at_for_step(session, case_id=case_id, step=step)
 
     assignment = await repo.create_assignment(
         session,
@@ -297,6 +434,19 @@ async def create_assignment_for_step(
             "assignee_type": assignee_type,
             "assignee_id": assignee_id,
             "due_at": due_at,
+        },
+    )
+
+    # #30a: assignment is one of the five events §2.2 names for the Case
+    # aggregate. Recorded here rather than at the router so every path that
+    # creates an assignment is covered, not just the HTTP one.
+    from case_service.core import event_store as _es
+    await _es.record(
+        session, case_id=case_id, event_type=_es.ASSIGNED,
+        data={
+            "step_id": step["id"],
+            "assignee_type": assignee_type,
+            "assignee_id": assignee_id,
         },
     )
 

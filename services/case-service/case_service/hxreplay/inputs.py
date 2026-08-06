@@ -12,7 +12,7 @@ SECURITY INVARIANT (design §5): a missing/unprovable input is flagged
 ``unreconstructable`` — downstream decisions become ``indeterminate`` and are
 EXCLUDED from hard metrics. Nothing here ever infers or imputes a value.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

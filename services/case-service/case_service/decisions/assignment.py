@@ -37,8 +37,10 @@ class AssignmentAIResolver:
 
     async def resolve(
         self, session: AsyncSession, context: dict[str, Any],
-    ) -> tuple[Any, float]:
-        from case_service.hxnexus.factory import generate_json
+    ) -> tuple[Any, float] | tuple[Any, float, dict[str, Any]]:
+        import hashlib
+
+        from case_service.hxnexus.factory import active_model, generate_json
 
         rule = context.get("rule") or {}
         case_ctx = context.get("context") or {}
@@ -50,6 +52,14 @@ class AssignmentAIResolver:
             '"assignee_id": "<id>", "confidence": <0.0-1.0>}'
         )
         parsed = await generate_json(prompt, temperature=0.1, max_tokens=200)
+        # §5.5 GDPR Art-22: name the model and fingerprint the input. The
+        # prompt itself is NOT stored — it carries case context, and the audit
+        # trail is not the place to duplicate it. The hash still proves which
+        # input produced this decision when one is disputed.
+        provenance = {
+            **active_model(),
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        }
         if not isinstance(parsed, dict):
             return None, 0.0
         try:
@@ -77,7 +87,11 @@ class AssignmentAIResolver:
             if exists is None:
                 log.warning("assignment AI proposed unknown user %r — discarded", assignee_id)
                 return None, 0.0
-        return {"assignee_type": assignee_type, "assignee_id": assignee_id}, confidence
+        return (
+            {"assignee_type": assignee_type, "assignee_id": assignee_id},
+            confidence,
+            provenance,
+        )
 
 
 assignment_decision_point = DecisionPoint(

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "rl-onb-rtw",
+    "name": "Onboarding — right to work gates equipment",
+    "version": "1.0",
+    "rule_type": "expression",
+    "scope": "case_type",
+    "scope_target_id": "ct-onboarding-0001",
+    "enabled": true,
+    "priority": 10,
+    "definition_json": {
+      "description": "No equipment or system access is issued until right to work is verified. This is a compliance gate, not a preference.",
+      "expression": "right_to_work_verified == False and equipment_ordered == True",
+      "action": "block_stage_exit"
+    }
+  },
+  {
+    "id": "rl-onb-contract",
+    "name": "Onboarding — contract before first day",
+    "version": "1.0",
+    "rule_type": "expression",
+    "scope": "case_type",
+    "scope_target_id": "ct-onboarding-0001",
+    "enabled": true,
+    "priority": 20,
+    "definition_json": {
+      "description": "A starter cannot reach First Day without a signed contract.",
+      "expression": "contract_signed == False",
+      "action": "block_stage_exit"
+    }
+  },
+  {
+    "id": "rl-onb-contractor",
+    "name": "Onboarding — contractors skip probation",
+    "version": "1.0",
+    "rule_type": "expression",
+    "scope": "case_type",
+    "scope_target_id": "ct-onboarding-0001",
+    "enabled": true,
+    "priority": 30,
+    "definition_json": {
+      "description": "Contractors have no probation period — route straight to Complete after induction.",
+      "expression": "employment_type == 'Contractor'",
+      "action": "skip_probation"
+    }
+  }
+]

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import SLARiskBadge from "./SLARiskBadge";
 import { useNavigate } from "react-router-dom";
 import { useApi, useInterval } from "@shared/hooks";
 import { useAuth } from "@/auth";
@@ -1838,6 +1839,10 @@ function AssignmentRow({ assignment, showClaim, allowDirectComplete, onClaim, on
             due <TimeAgo date={assignment.due_at} />
           </span>
         )}
+
+        {/* #40 — statistical breach risk. Renders nothing when history is too
+            thin to say anything honest. */}
+        {assignment.case_id && <SLARiskBadge caseId={String(assignment.case_id)} />}
 
         {/* Actions */}
         {showClaim && assignment.status === "active" && !assignment.claimed_at && onClaim && (

@@ -11,7 +11,7 @@ runtime enforcement (host_allowed semantics, block-all before grant, allowed
 tenant 404 anti-oracle on every grant endpoint; workspace approval links the
 production install but never activates capabilities.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

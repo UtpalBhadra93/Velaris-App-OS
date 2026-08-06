@@ -41,7 +41,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
       if (!retry.ok) {
         const body = await retry.json().catch(() => ({ detail: retry.statusText }));
-        throw new ApiError(retry.status, typeof body.detail === "object" ? JSON.stringify(body.detail) : (body.detail || retry.statusText));
+        throw new ApiError(retry.status, typeof body.detail === "object" ? JSON.stringify(body.detail) : (body.detail || retry.statusText), codedFrom(body));
       }
       return retry.json();
     }
@@ -51,17 +51,73 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, typeof body.detail === 'object' ? JSON.stringify(body.detail) : (body.detail || res.statusText));
+    throw new ApiError(res.status, typeof body.detail === 'object' ? JSON.stringify(body.detail) : (body.detail || res.statusText), codedFrom(body));
   }
 
   return res.json();
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * Stable error code from `core/error_codes.py`, e.g. `VEL-DOC-STORAGE-503`.
+   *
+   * The backend has emitted `{"detail": …, "error": {"code", "docs"}}` since
+   * the catalog was wired, but nothing read it — so the code appeared in the
+   * response and the server log and then died at the network boundary, which
+   * is the one place a user could have used it. Undefined for the many
+   * subsystems that still raise a plain `HTTPException`.
+   */
+  code?: string;
+  /** Deep link the server supplies alongside the code, e.g. `/docs/errors#VEL-…`. */
+  docs?: string;
+
+  constructor(public status: number, message: string, coded?: { code?: string; docs?: string }) {
     super(message);
     this.name = "ApiError";
+    this.code = coded?.code;
+    this.docs = coded?.docs;
   }
+}
+
+/**
+ * Pull the coded-error block off a parsed error body.
+ *
+ * Defensive on purpose: this runs on a response that already failed, so a
+ * body in an unexpected shape must yield "no code" rather than throw and
+ * replace a useful HTTP error with a TypeError.
+ */
+/**
+ * Build an ApiError from a failed Response, reading the coded block off it.
+ *
+ * Several modules predate the shared client and hand-roll their own fetch
+ * helpers. Those threw `new Error(\`${url} → ${status}\`)` without ever reading
+ * the body — so the error code the API returns died at the network boundary
+ * and `<ErrorCodeLink>` had nothing to show. This gives them a one-line way to
+ * keep it without adopting the whole client.
+ *
+ * Never throws: it runs on a response that has already failed, and a
+ * non-JSON body (a gateway HTML page, say) must still yield a useful error
+ * rather than a parse exception.
+ */
+export async function errorFromResponse(res: Response, fallback?: string): Promise<ApiError> {
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON error body — still an error, just an uncoded one */
+  }
+  const detail =
+    typeof body?.detail === "string" ? body.detail
+    : body?.detail ? JSON.stringify(body.detail)
+    : fallback || res.statusText || `Request failed (${res.status})`;
+  return new ApiError(res.status, detail, codedFrom(body));
+}
+
+export function codedFrom(body: any): { code?: string; docs?: string } | undefined {
+  const e = body?.error;
+  if (!e || typeof e !== "object") return undefined;
+  const code = typeof e.code === "string" ? e.code : undefined;
+  return code ? { code, docs: typeof e.docs === "string" ? e.docs : undefined } : undefined;
 }
 
 /* ── Processes ──────────────────────────────────────────────────── */
@@ -204,7 +260,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
       }
       if (!retry.ok) {
         const body = await retry.json().catch(() => ({ detail: retry.statusText }));
-        throw new ApiError(retry.status, body.detail || retry.statusText);
+        throw new ApiError(retry.status, body.detail || retry.statusText, codedFrom(body));
       }
       return retry.json();
     }
@@ -214,7 +270,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, body.detail || res.statusText);
+    throw new ApiError(res.status, body.detail || res.statusText, codedFrom(body));
   }
 
   return res.json();
@@ -301,6 +357,26 @@ export async function listCases(params?: {
 
 export async function getCase(id: string): Promise<CaseSummary> {
   return caseRequest(`/cases/${id}`);
+}
+
+/**
+ * Everything the case detail view needs, in one request.
+ *
+ * Replaces five calls — case, history, SLA, case type, my-task — one of which
+ * was a real waterfall: the case type could not be requested until the case had
+ * returned its `case_type_id`.
+ *
+ * The individual getters stay exported and live; other callers still use them,
+ * and marketplace packages call the REST paths directly. This is additive.
+ */
+export async function getCaseDetail(id: string): Promise<{
+  case: CaseSummary;
+  history: CaseAuditEntry[];
+  slas: SLAStatusInfo[];
+  case_type: CaseTypeSummary | null;
+  my_task: MyTaskResult | null;
+}> {
+  return caseRequest(`/cases/${id}/detail`);
 }
 
 export async function createCase(body: {
@@ -839,7 +915,7 @@ export async function fetchRecordingUrl(sessionId: string): Promise<string> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, body.detail || res.statusText);
+    throw new ApiError(res.status, body.detail || res.statusText, codedFrom(body));
   }
   return URL.createObjectURL(await res.blob());
 }
@@ -852,7 +928,7 @@ export async function fetchSessionTranscript(sessionId: string): Promise<string>
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, body.detail || res.statusText);
+    throw new ApiError(res.status, body.detail || res.statusText, codedFrom(body));
   }
   return res.text();
 }

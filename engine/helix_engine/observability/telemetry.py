@@ -23,7 +23,7 @@ def configure_telemetry(service_name: str, app=None, sql_engine=None) -> None:
     resource = Resource.create({
         "service.name": service_name,
         "service.namespace": "helix",
-        "deployment.environment": os.getenv("HELIX_ENV", "development"),
+        "deployment.environment": os.getenv("VELARIS_ENV", "development"),
     })
     provider = TracerProvider(resource=resource)
 
@@ -37,7 +37,7 @@ def configure_telemetry(service_name: str, app=None, sql_engine=None) -> None:
         except Exception as e:
             print(f"[helix.observability] OTLP exporter disabled: {e}")
 
-    if os.getenv("HELIX_OTEL_CONSOLE") == "1":
+    if os.getenv("VELARIS_OTEL_CONSOLE") == "1":
         provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 
     trace.set_tracer_provider(provider)

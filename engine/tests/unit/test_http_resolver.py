@@ -14,7 +14,7 @@ import json
 import pytest
 import httpx
 
-from helix_ir.models.process import ServiceTask, SendTask, UserTask
+from velaris_ir.models.process import ServiceTask, SendTask, UserTask
 from helix_engine.plugins.http_resolver import HttpTaskResolver
 
 

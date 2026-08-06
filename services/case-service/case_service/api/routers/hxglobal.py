@@ -151,9 +151,35 @@ async def create_region(
         is_primary=body.is_primary,
     )
     session.add(r)
+    if body.is_primary:
+        await _demote_other_primaries(session, keep=r)
     await session.commit()
     await session.refresh(r)
     return _region(r)
+
+
+async def _demote_other_primaries(session: AsyncSession, *, keep) -> None:
+    """Make `keep` the only primary region.
+
+    A unique index enforces at-most-one (migration 152 / mysql 0025), but a
+    constraint alone would turn "promote this region" into a 500 whenever
+    another already held the flag. Promotion is a legitimate operation; the
+    incumbent simply stops being primary, which is what an operator means when
+    they tick the box.
+
+    Flushed before the demotion so `keep` has an id to exclude, and both writes
+    land in the caller's transaction — a promotion that demoted the old primary
+    and then failed would leave the platform with none, which is the state that
+    makes HxDR unable to resolve a region at all.
+    """
+    await session.flush()
+    for other in (await session.execute(
+        select(RegionModel).where(
+            RegionModel.is_primary.is_(True),
+            RegionModel.id != keep.id,
+        )
+    )).scalars().all():
+        other.is_primary = False
 
 
 @router.get("/regions/{region_id}")
@@ -180,6 +206,8 @@ async def update_region(
     if body.is_primary is not None:        r.is_primary = body.is_primary
     if body.enabled is not None:           r.enabled = body.enabled
     r.updated_at = datetime.now(timezone.utc)
+    if body.is_primary:
+        await _demote_other_primaries(session, keep=r)
     await session.commit()
     await session.refresh(r)
     return _region(r)

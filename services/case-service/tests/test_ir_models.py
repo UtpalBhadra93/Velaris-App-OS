@@ -3,7 +3,7 @@
 Validates that all dataclasses instantiate, serialize to dict,
 and enforce enum values correctly.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import pytest
 # ── Adjust path so imports work standalone ────────────────────────
 
 
-from helix_ir.models.case import (
+from velaris_ir.models.case import (
     AssignmentRule,
     AssignmentStrategy,
     AuditEntry,
@@ -39,14 +39,14 @@ from helix_ir.models.case import (
     WorkQueueDefinition,
     WorkQueueSortField,
 )
-from helix_ir.models.data_model import (
+from velaris_ir.models.data_model import (
     DataModelDefinition,
     FieldDefinition,
     FieldType,
     FieldValidation,
     ValidationRule,
 )
-from helix_ir.models.form import (
+from velaris_ir.models.form import (
     FormActionButton,
     FormAction,
     FormDefinition,
@@ -55,7 +55,7 @@ from helix_ir.models.form import (
     FormSection,
     VisibilityCondition,
 )
-from helix_ir.models.rule import (
+from velaris_ir.models.rule import (
     DecisionTableColumn,
     DecisionTableRow,
     RuleAction,
@@ -64,7 +64,7 @@ from helix_ir.models.rule import (
     RuleScope,
     RuleType,
 )
-from helix_ir.models.security import (
+from velaris_ir.models.security import (
     AccessEffect,
     AccessPolicy,
     FieldLevelAccess,
@@ -72,7 +72,7 @@ from helix_ir.models.security import (
     RoleDefinition,
     SecurityProfile,
 )
-from helix_ir.models.application import ApplicationDefinition
+from velaris_ir.models.application import ApplicationDefinition
 
 
 # ═══════════════════════════════════════════════════════════════════

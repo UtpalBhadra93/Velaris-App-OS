@@ -3,7 +3,7 @@
 Supports configurable work days, work hours, and holiday exclusions.
 When computing SLA deadlines, only business hours count.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

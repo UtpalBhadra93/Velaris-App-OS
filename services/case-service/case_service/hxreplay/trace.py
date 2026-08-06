@@ -4,7 +4,7 @@ Loads a case's ordered ``case_event_log`` events (the process shape that actuall
 happened) and derives baseline metrics from them. This is the ground truth every
 counterfactual is compared against — it is never recomputed, only read.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

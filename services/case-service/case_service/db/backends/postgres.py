@@ -1,11 +1,11 @@
 """First-party PostgreSQL backend (DB SDK Phase 0).
 
 The default and, in Phase 0, only allowlisted backend. Implements the
-`helix_sdk.protocols.database.DatabaseBackend` contract as a stateless URL/driver
+`velaris_sdk.protocols.database.DatabaseBackend` contract as a stateless URL/driver
 descriptor. PostgreSQL needs no connect-time hardening for the things case-service
 assumes (its default isolation is already READ COMMITTED), so `initialize` is a no-op.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -54,8 +54,8 @@ class PostgresBackend:
     def _build(self, driver: str, config: Any) -> str:
         host = getattr(config, "db_host", "") or "localhost"
         port = getattr(config, "db_port", None) or self.DEFAULT_PORT
-        name = getattr(config, "db_name", "") or "helix"
-        user = getattr(config, "db_user", "") or "helix"
+        name = getattr(config, "db_name", "") or "velaris"
+        user = getattr(config, "db_user", "") or "velaris"
         password = getattr(config, "db_password", "") or ""
         # URL-encode credential parts so passwords with @ : / ? # etc. don't corrupt the URL.
         userinfo = quote(str(user), safe="")

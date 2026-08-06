@@ -20,11 +20,11 @@ spec:
           image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}"
           command: ["python", "-m", "case_service.temporal.worker"]
           env:
-            - name: HELIX_CASE_DATABASE_URL
+            - name: VELARIS_CASE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
             - name: TEMPORAL_HOST
               value: {{ .Values.worker.temporalHost | quote }}
-            - name: HELIX_CASE_TASK_QUEUE
+            - name: VELARIS_CASE_TASK_QUEUE
               value: {{ .Values.worker.taskQueue | quote }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "fm-claims-intake",
+    "name": "Claim Intake",
+    "version": "1.0",
+    "definition_json": {
+      "title": "First Notice of Loss",
+      "description": "What happened, when, and under which policy.",
+      "fields": [
+        { "key": "policy_number",  "label": "Policy number",   "type": "text",     "required": true },
+        { "key": "claimant_name",  "label": "Claimant name",   "type": "text",     "required": true },
+        { "key": "claimant_email", "label": "Email",           "type": "email",    "required": true },
+        { "key": "claimant_phone", "label": "Phone",           "type": "phone" },
+        { "key": "incident_date",  "label": "Date of incident", "type": "date",    "required": true },
+        { "key": "incident_type",  "label": "Type of incident", "type": "select",  "required": true,
+          "options": ["Motor", "Property", "Travel", "Liability", "Other"] },
+        { "key": "description",    "label": "What happened",   "type": "textarea", "required": true },
+        { "key": "estimated_value", "label": "Estimated value", "type": "currency" },
+        { "key": "evidence",       "label": "Photos or documents", "type": "file" }
+      ]
+    }
+  },
+  {
+    "id": "fm-claims-assessment",
+    "name": "Claim Assessment",
+    "version": "1.0",
+    "definition_json": {
+      "title": "Assessment",
+      "description": "The assessor's findings and the settlement figure.",
+      "fields": [
+        { "key": "assessor_name",    "label": "Assessor",              "type": "text",     "required": true },
+        { "key": "inspection_date",  "label": "Inspection date",       "type": "date" },
+        { "key": "cover_confirmed",  "label": "Cover confirmed",       "type": "checkbox", "required": true },
+        { "key": "assessed_value",   "label": "Assessed value",        "type": "currency", "required": true },
+        { "key": "excess_amount",    "label": "Policy excess",         "type": "currency" },
+        { "key": "settlement_value", "label": "Settlement value",      "type": "currency", "required": true },
+        { "key": "fraud_indicators", "label": "Fraud indicators noted", "type": "checkbox" },
+        { "key": "assessor_notes",   "label": "Notes",                 "type": "textarea" }
+      ]
+    }
+  }
+]

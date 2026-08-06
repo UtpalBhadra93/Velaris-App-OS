@@ -3,7 +3,7 @@
 Phase A ships a minimal read-only Platform Smoke suite. Phase B fills out the
 Component / Security suites; Phase C adds the structural Conformance suite.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

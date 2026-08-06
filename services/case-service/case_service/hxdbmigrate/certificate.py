@@ -11,7 +11,7 @@ Nothing in the certificate is invented: every figure is read back from the
 analyses/runs/links tables. Raw source values never appear (the P2 invariant —
 classifications and MASKED examples only — carries through).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

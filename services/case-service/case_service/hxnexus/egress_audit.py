@@ -5,7 +5,7 @@ recorded as a SecurityEventModel row (event_type="ai.egress"), which makes
 it visible in HxShield and available for anomaly detection (runaway egress
 volume = compromised key or injection attack).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

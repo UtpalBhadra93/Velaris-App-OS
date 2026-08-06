@@ -15,7 +15,7 @@ Design rules enforced here:
   update (backup → checkout → images → migrations → .env sync → restart →
   health gate) and reports via the `.update-status` beacon.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

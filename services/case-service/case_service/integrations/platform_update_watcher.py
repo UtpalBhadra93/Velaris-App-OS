@@ -15,7 +15,7 @@ never re-spam. The dashboard banner remains the always-on in-app surface;
 push delivery is best-effort (silently skipped when no devices/channels are
 configured).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -158,6 +158,19 @@ class PlatformUpdateWatcher:
                     logger.info("ai.egress: flushed %d queued event(s)", flushed)
         except Exception as exc:
             logger.warning("ai.egress flush failed: %s", exc)
+
+        # #32 LLMOps: drain per-call metrics on the same cycle. Separate try
+        # block on purpose — a metrics failure must not stop the egress audit
+        # from flushing, and vice versa.
+        try:
+            from case_service.hxnexus.llmops import flush_pending as flush_llm
+            async with self._factory() as session:
+                flushed = await flush_llm(session)
+                if flushed:
+                    await session.commit()
+                    logger.info("llmops: flushed %d call metric(s)", flushed)
+        except Exception as exc:
+            logger.warning("llmops flush failed: %s", exc)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

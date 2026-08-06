@@ -17,7 +17,7 @@ approval. This module owns the platform side:
   * access-log ingest into marketplace_network_log (egress:// scheme,
     grant-anchored, blocked attempts flagged undeclared)
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

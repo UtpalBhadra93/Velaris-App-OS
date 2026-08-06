@@ -7,7 +7,7 @@ notification-service later — `_emit` is the single integration point for that.
 
 Channel matrix mirrors docs/Future/HxCheckout.md.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -36,6 +36,10 @@ NPM="$(sudo -u "$VELARIS_USER" bash -lc 'command -v npm' 2>/dev/null || true)"
 # silently defaults to postgresql — wrong on a MySQL/MariaDB install.
 [ -f "$VELARIS_DIR/velaris.yaml" ] || { echo "No velaris.yaml at $VELARIS_DIR — velaris-exec.sh derives DATABASE_BACKEND from it"; exit 1; }
 chmod +x "$SRC_DIR/velaris-exec.sh"
+# ExecStartPre= for the engine and case-service units: blocks until the DB port
+# is open so neither service can win the race against a still-booting Postgres.
+[ -f "$SRC_DIR/velaris-wait-deps.sh" ] || { echo "Missing $SRC_DIR/velaris-wait-deps.sh — the units reference it as ExecStartPre"; exit 1; }
+chmod +x "$SRC_DIR/velaris-wait-deps.sh"
 
 echo "user=$VELARIS_USER  dir=$VELARIS_DIR"
 echo "uv=$UV  npm=$NPM"
@@ -49,9 +53,19 @@ for unit in velaris-engine velaris-case-service velaris-studio; do
       -e "s|__UV__|$UV|g" \
       -e "s|__NPM__|$NPM|g" \
       -e "s|__EXEC__|$SRC_DIR/velaris-exec.sh|g" \
+      -e "s|__WAITDEPS__|$SRC_DIR/velaris-wait-deps.sh|g" \
       "$SRC_DIR/$unit.service" > "$UNIT_DIR/$unit.service"
   echo "  installed $UNIT_DIR/$unit.service"
 done
+
+# The units Require= docker.service, and every backing service (database, cache,
+# broker, vault) is a container carrying `restart: unless-stopped`. If Docker
+# itself is not enabled at boot, none of that fires and the platform comes back
+# from a reboot with no database — the 2026-08-05 outage.
+if ! systemctl is-enabled --quiet docker 2>/dev/null; then
+  echo "  docker.service was not enabled at boot — enabling it"
+  systemctl enable docker
+fi
 
 systemctl daemon-reload
 systemctl enable velaris-engine velaris-case-service velaris-studio

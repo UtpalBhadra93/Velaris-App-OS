@@ -10,8 +10,8 @@
 #  unauthorised shutdowns of a running production environment.
 # ═══════════════════════════════════════════════════════════════════
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
 
 red()   { echo -e "\033[0;31m$*\033[0m"; }
 green() { echo -e "\033[0;32m$*\033[0m"; }
@@ -64,7 +64,12 @@ done
 if [ "${1:-}" = "--all" ]; then
   echo ""
   echo "▶ Stopping Docker infrastructure..."
-  docker compose -f "$COMPOSE_FILE" down
+  # --env-file is REQUIRED, not optional tidiness: compose interpolates the whole
+  # file for every subcommand including `down`, and two services declare secrets
+  # with `${VAR:?...}`. Without it this aborts with "required variable
+  # VELARIS_MINIO_PASSWORD is missing" on any host that lacks a stray .env beside
+  # the compose file — which is every real server.
+  docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down
   green "  ✓ Docker services stopped"
 fi
 

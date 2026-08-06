@@ -5,7 +5,7 @@ children, assignments, step-completions) or no case-level check (transition).
 Now: Bearer required + require_case (case.read for reads / case.update for
 writes), with the standard enforce-mode 404 anti-oracle.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -87,7 +87,7 @@ class TestRouteMigration:
         """Back-compat: in shadow mode nothing is blocked.
 
         Set the mode explicitly rather than leaning on the code default — a
-        deployment .env that sets HELIX_CASE_HXGUARD_CASE_ENFORCEMENT=enforce
+        deployment .env that sets VELARIS_CASE_HXGUARD_CASE_ENFORCEMENT=enforce
         is read into Settings and would otherwise make this test fail on a
         configured box while passing on a bare one.
         """

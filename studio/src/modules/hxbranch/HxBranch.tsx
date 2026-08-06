@@ -10,6 +10,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ReviewerPicker } from "@shared/components";
 import { useCurrentUserGroups } from "@shared/hooks";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 const API  = "/api/v1/branches";
 const DAPI = "/api/v1/deploy";
@@ -114,7 +116,12 @@ async function api(method: string, path: string, body?: unknown) {
     method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) { const e = await r.json().catch(() => ({ detail: r.statusText })); throw new Error(e.detail ?? "Request failed"); }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ detail: r.statusText }));
+    // Object.assign rather than a bare Error: the stable code sits beside
+    // `detail` in the body and dies here otherwise, one step short of the UI.
+    throw Object.assign(new Error(e.detail ?? "Request failed"), codedFrom(e) ?? {});
+  }
   if (r.status === 204) return null;
   return r.json();
 }
@@ -589,6 +596,7 @@ function CreateLocalBranchForm({ onCreated }: { onCreated: () => void }) {
   const [reviewerId, setReviewerId] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [errObj, setErrObj] = useState<unknown>(null);
 
   const loadArtifacts = useCallback(async (type: string) => {
     setLoadingArtifacts(true);
@@ -614,7 +622,7 @@ function CreateLocalBranchForm({ onCreated }: { onCreated: () => void }) {
       setName(""); setArtifactId(""); setDescription(""); setReviewerId("");
       setOpen(false);
       onCreated();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setErrObj(e); }
     finally { setBusy(false); }
   };
 
@@ -633,7 +641,11 @@ function CreateLocalBranchForm({ onCreated }: { onCreated: () => void }) {
       <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12, color: "var(--text-secondary)" }}>
         NEW BRANCH FROM LOCAL ARTIFACT
       </div>
-      {err && <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 8 }}>{err}</div>}
+      {err && (
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 8 }}>
+          {err}<ErrorCodeLink error={errObj} componentKey="hxbranch" />
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
         <div>
           <label style={S.label}>Branch Name</label>

@@ -1,6 +1,6 @@
 """Process Mining API.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -14,8 +14,21 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
-from case_service.db.session import get_session
-from case_service.process_mining import analyzer, event_logger
+# Read-replica session, not the operations pool (report §1.1 / §2.8).
+#
+# Every route here is a GET, the analyzer performs no writes, and the one
+# writer in this package (`event_logger`) is never called from a route — so
+# these queries have no business competing with case CRUD for the main pool.
+# §2.8 proposed a lakehouse to solve exactly this; the pool separation the
+# platform already has solves it at 228 event rows, and HxSync destinations
+# are the path when real volume arrives.
+#
+# `get_replica_session` falls back to the analytics pool when no standby is
+# configured, so this changes nothing today and starts using a real replica
+# the moment one exists. Its contract is zero writes — adding one to this
+# router will break against a live standby.
+from case_service.db.session import get_replica_session as get_session
+from case_service.process_mining import analyzer
 
 router = APIRouter(prefix="/process-mining", tags=["process-mining"], dependencies=[Depends(require_role("designer", "admin"))])
 

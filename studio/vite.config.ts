@@ -343,6 +343,13 @@ export default defineConfig({
         target: "http://localhost:8200",
         changeOrigin: true,
       },
+      // HxStatus (§8.8). Must sit BEFORE the "/api" catch-all below, or the
+      // browser 404s while curl against :8200 works perfectly — the documented
+      // trap for every new case-service router.
+      "/api/v1/status": {
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
       "/api/v1/releases": {
         target: "http://localhost:8200",
         changeOrigin: true,

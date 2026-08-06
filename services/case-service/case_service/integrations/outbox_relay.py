@@ -15,7 +15,7 @@ Design guarantees:
 - SSRF-safe: validate_outbound_url() is called before every HTTP delivery.
 - Exponential back-off: 30s × 2^(attempts-1) between retries; max 5 attempts.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

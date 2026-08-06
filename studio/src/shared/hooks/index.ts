@@ -8,6 +8,16 @@ interface UseApiState<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
+  /**
+   * The thrown value itself, kept alongside its message.
+   *
+   * `error` is flattened to `err.message` for display, which discarded the
+   * stable error code the API returns beside it — so every one of the 30-odd
+   * modules using this hook lost the code at the same line. Additive: existing
+   * consumers are untouched, and `<ErrorCodeLink error={errorObj} />` renders
+   * nothing when there is no code.
+   */
+  errorObj: unknown;
   refetch: () => void;
 }
 
@@ -15,6 +25,7 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): UseA
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorObj, setErrorObj] = useState<unknown>(null);
   const [tick, setTick] = useState(0);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
@@ -23,6 +34,7 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): UseA
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setErrorObj(null);
 
     fetcher()
       .then((result) => {
@@ -34,6 +46,7 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): UseA
       .catch((err) => {
         if (!cancelled) {
           setError(err.message || "Unknown error");
+          setErrorObj(err);
           setLoading(false);
         }
       });
@@ -43,7 +56,7 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): UseA
     };
   }, [tick, ...deps]);
 
-  return { data, loading, error, refetch };
+  return { data, loading, error, errorObj, refetch };
 }
 
 /* ═══════════════════════════════════════════════════════════════════

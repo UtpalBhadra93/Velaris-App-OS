@@ -19,7 +19,7 @@ side and ``base.py`` for the return-shape contract). Key differences handled her
   * slow queries:    ``pg_stat_statements`` is PG-only -> reported unavailable (degraded
                      by design; reimplementing on performance_schema is out of scope).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

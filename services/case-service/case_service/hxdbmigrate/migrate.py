@@ -11,7 +11,7 @@ PII handling (`pii_mode`), honouring the P2 compliance scan classified from the 
   * ``exclude_all`` — drop every compliance-flagged column.
   * ``as_is`` — copy everything verbatim (admin explicitly accepts moving raw PII).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -35,6 +35,212 @@ export interface ComponentErrors {
  * Pages with no own errors can be omitted — the modal still opens for global search.
  */
 export const ERROR_CATALOG: Record<string, ComponentErrors> = {
+  hxvault: {
+    label: "Vault",
+    entries: [
+      {
+        code: "VEL-VAULT-SHREDDED-410",
+        http: "410",
+        symptom: "410 — the data was encrypted with a key that has been destroyed.",
+        rootCause:
+          "Crypto-shredding destroyed the tenant's data-encryption key, which is how GDPR " +
+          "erasure is honoured for encrypted-at-rest data. The ciphertext remains and is now " +
+          "permanently undecryptable. 410 rather than 500 or 404: 500 invites a retry loop, " +
+          "404 implies it never existed.",
+        resolution:
+          "Operator: there is NO recovery path — restoring a database backup does not help, " +
+          "since the backup holds the same ciphertext and the key is gone from the vault too. " +
+          "Confirm the shred was intended; if not, this is an incident. User: do not retry.",
+        related: ["VEL-VAULT-DEK-503"],
+      },
+      {
+        code: "VEL-VAULT-DEK-503",
+        http: "503",
+        symptom: "503 — encryption keys are unavailable.",
+        rootCause:
+          "OpenBao is sealed or unreachable, or the KEK is unset. Transient — the data is " +
+          "intact and will decrypt once the vault is back. That is why it is a different code " +
+          "from a shredded key.",
+        resolution:
+          "Operator: unseal OpenBao, restore connectivity, confirm the KEK. Check DEK cache " +
+          "resync if only some workers are affected. User: retry shortly, nothing is lost.",
+        related: ["VEL-VAULT-SHREDDED-410", "VEL-DOC-ENCRYPT-503"],
+      },
+    ],
+  },
+
+  database: {
+    label: "Database",
+    entries: [
+      {
+        code: "VEL-DB-UNAVAILABLE-503",
+        http: "503",
+        symptom: "503 — the database is unavailable.",
+        rootCause:
+          "Connection refused, a pool exhausted, a restart, or a network partition. It used to " +
+          "surface as a bare 500, which reads as an application bug and sends people debugging " +
+          "the wrong layer.",
+        resolution:
+          "Operator: check the database is reachable and whether a pool is exhausted — " +
+          "operations, auth and analytics are separate pools, so one can starve unnoticed. " +
+          "The driver message (host, port, user) is logged, never returned. User: retry shortly.",
+        related: ["VEL-SYS-STORAGE-PRECHECK-000"],
+      },
+      {
+        code: "VEL-CONSENT-REFUSED-403",
+        http: "403",
+        symptom:
+          "403 — 'Refused: no recipient has a lawful basis for <purpose>. N address(es) were dropped.'",
+        rootCause:
+          "Every recipient of a consent-gated send either withdrew consent for that purpose " +
+          "or has no record at all. The HxConsent ledger fails closed, so an address it has " +
+          "never seen is dropped exactly like one that withdrew.",
+        resolution:
+          "Operator: this is the gate working, not a fault. Check the subject's ledger under " +
+          "Compliance → Consent; if consent genuinely exists it was recorded under a different " +
+          "address spelling (the ledger lowercases but does not alias). Case correspondence is " +
+          "never gated — a case email that hit this was sent with the wrong purpose. " +
+          "User: N/A, the recipient asked not to be contacted for this purpose.",
+        related: ["VEL-CASE-GUARD-403"],
+      },
+      {
+        code: "VEL-SYS-UNHANDLED-500",
+        http: "500",
+        symptom:
+          "500 — 'The server hit an unexpected error. It has been logged with a request id; " +
+          "your request was not applied.'",
+        rootCause:
+          "Unknown by definition — this is the floor under every other handler, and it exists " +
+          "for the SHAPE of the response rather than the diagnosis. Without it the server " +
+          "returns text/plain 'Internal Server Error', which this app cannot parse, and the " +
+          "browser reports 'JSON.parse: unexpected character at line 1 column 1' — a message " +
+          "about the content type that tells you nothing about the actual fault.",
+        resolution:
+          "Operator: the response carries no detail on purpose (an unclassified error is the " +
+          "most likely to leak a connection string or token). Read the traceback in the " +
+          "service log, keyed by the x-request-id header on the failed response. A code that " +
+          "recurs deserves its own handler — this one is a safety net, not a destination. " +
+          "User: retry, and quote the request id if it persists.",
+        related: ["VEL-DB-UNAVAILABLE-503"],
+      },
+    ],
+  },
+
+  hxnexus: {
+    label: "HxNexus",
+    entries: [
+      {
+        code: "VEL-LLM-NOT-ASSIGNED-403",
+        http: "403",
+        symptom: "403 on case-scoped Q&A.",
+        rootCause: "Case-scoped AI is restricted to assignees. Broad AI access to case content would defeat case-level authorization by routing around it.",
+        resolution: "Operator: Assign the user, or widen the case's access group. User: Ask to be assigned.",
+      },
+      {
+        code: "VEL-LLM-NOTFOUND-404",
+        http: "404",
+        symptom: "404 on an HxNexus request.",
+        rootCause: "The case or conversation does not exist or is outside the caller's tenant.",
+        resolution: "Operator: Confirm the id and tenant. User: Reopen the case from the list.",
+      },
+    ],
+  },
+
+  authentication: {
+    label: "Authentication",
+    entries: [
+      {
+        code: "VEL-AUTH-CREDENTIALS-401",
+        http: "401",
+        symptom: "Login is rejected with \"Invalid credentials\".",
+        rootCause:
+          "The username/email does not exist, or the password did not verify. These are " +
+          "deliberately indistinguishable — a code that told them apart would be a " +
+          "user-enumeration oracle, since it appears in the response body.",
+        resolution:
+          "Operator: confirm the account exists and is enabled in User Directory. Repeated " +
+          "failures from one IP may be an attack, not a forgetful user. " +
+          "User: re-enter your details, or reset your password.",
+        related: ["VEL-AUTH-DISABLED-403", "VEL-AUTH-SSO-REQUIRED-400"],
+      },
+      {
+        code: "VEL-AUTH-DISABLED-403",
+        http: "403",
+        symptom: "\"Account is disabled. Contact an administrator.\"",
+        rootCause:
+          "The account was disabled by an administrator, or auto-disabled by a security " +
+          "control such as HxDBManager breach detection.",
+        resolution:
+          "Operator: establish WHY it was disabled before re-enabling — especially if a " +
+          "security control did it. User: contact your administrator.",
+        related: ["VEL-AUTH-CREDENTIALS-401"],
+      },
+      {
+        code: "VEL-AUTH-SSO-REQUIRED-400",
+        http: "400",
+        symptom: "\"This account uses SSO login. Use the SSO button instead.\"",
+        rootCause: "The account is provisioned against an SSO provider and has no local password.",
+        resolution: "User: sign in with the SSO button for your provider. Operator: none — correct behaviour.",
+        related: ["VEL-AUTH-SSO-UNCONFIGURED-404"],
+      },
+      {
+        code: "VEL-AUTH-OTP-INVALID-400",
+        http: "400",
+        symptom: "\"Invalid or expired OTP.\"",
+        rootCause:
+          "The code was mistyped, already used, or past its expiry. One code for all three — " +
+          "telling the user which narrows an attacker's search.",
+        resolution:
+          "Operator: confirm mail delivery works; an expired OTP is often a slow-mail symptom. " +
+          "User: request a new code and enter it promptly.",
+        related: ["VEL-AUTH-RATE-LIMIT-429"],
+      },
+      {
+        code: "VEL-AUTH-RATE-LIMIT-429",
+        http: "429",
+        symptom: "\"Too many attempts. Please wait before retrying.\"",
+        rootCause: "The sliding-window limiter tripped for this identity or IP.",
+        resolution:
+          "Operator: check for a client retry loop before raising the limit. " +
+          "User: wait, then try once — repeated retries extend the window.",
+        related: ["VEL-AUTH-OTP-INVALID-400"],
+      },
+      {
+        code: "VEL-AUTH-DEVICE-MISMATCH-401",
+        http: "401",
+        symptom: "\"Session device check failed. Please log in again.\"",
+        rootCause:
+          "The refresh token was presented from a different device fingerprint than it was " +
+          "issued to — the control that makes a stolen refresh token unusable elsewhere.",
+        resolution:
+          "Operator: expected after a device or browser change, but repeated occurrences for " +
+          "one user from differing IPs are worth investigating as token theft. " +
+          "User: log in again.",
+        related: ["VEL-AUTH-CREDENTIALS-401"],
+      },
+      {
+        code: "VEL-AUTH-SSO-UNCONFIGURED-404",
+        http: "404",
+        symptom: "\"SSO provider not configured\".",
+        rootCause: "The provider is offered in the UI but its client id/secret or discovery URL is missing.",
+        resolution:
+          "Operator: complete the configuration, or stop offering the provider — an SSO " +
+          "button that always fails is worse than no button. User: use another sign-in method.",
+        related: ["VEL-AUTH-SSO-REQUIRED-400"],
+      },
+      {
+        code: "VEL-AUTH-EMAIL-TAKEN-409",
+        http: "409",
+        symptom: "\"That email is already in use by another account.\"",
+        rootCause: "Email is unique per account; another user already holds it.",
+        resolution:
+          "Operator: find the existing account before creating a duplicate — merging " +
+          "afterwards is far harder. User: use a different address or recover the account.",
+        related: ["VEL-AUTH-CREDENTIALS-401"],
+      },
+    ],
+  },
+
   documents: {
     label: "Documents",
     entries: [
@@ -52,6 +258,20 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
           "then restart case-service. For MinIO: verify endpoint, credentials, and that the bucket exists. " +
           "User: retry; if it persists, contact your administrator — the file was not saved.",
         related: ["VEL-SYS-STORAGE-PRECHECK", "VEL-SYS-BODY-413"],
+      },
+      {
+        code: "VEL-DOC-ENCRYPT-503",
+        http: "503",
+        symptom: "Upload or download of a valid document fails with a server error.",
+        rootCause:
+          "The HxVault envelope path could not produce a usable data key — the KEK is unset, " +
+          "OpenBao is sealed or unreachable, or the tenant's DEK has been shredded. Distinct " +
+          "from VEL-DOC-STORAGE-503, which is the filesystem failing rather than key material.",
+        resolution:
+          "Operator: check OpenBao is unsealed and reachable and the KEK is present. A shredded " +
+          "DEK is NOT recoverable — that is what shredding means, and those documents are gone. " +
+          "User: retry once; if it persists this needs an operator.",
+        related: ["VEL-DOC-STORAGE-503"],
       },
       {
         code: "VEL-DOC-UUID-422",
@@ -130,6 +350,62 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
   cases: {
     label: "Cases",
     entries: [
+      {
+        code: "VEL-CASE-AI-ACTION-400",
+        http: "400",
+        symptom: "400 on executing an `ai_action` step.",
+        rootCause: "The step config is incomplete or invalid — usually a missing `output_variable` or prompt. Caught before the model is called, so no tokens are spent on a step that cannot store its answer.",
+        resolution: "Operator: Fix the step config in Case Designer; the panel warns when approval is switched off. User: Report it to a designer.",
+      },
+      {
+        code: "VEL-CASE-GUARD-403",
+        http: "403",
+        symptom: "403 with the policy's own reason text.",
+        rootCause: "HxGuard's PDP refused the action. The reason is the policy decision, not a generic denial — case-level enforcement has been the default since v2.2.0.",
+        resolution: "Operator: Check the user's access groups and any case-level ReBAC tuples. If enforcement is unexpected, verify `VELARIS_CASE_HXGUARD_CASE_ENFORCEMENT`. User: Request access from a case manager.",
+      },
+      {
+        code: "VEL-CASE-PROCDEF-400",
+        http: "400",
+        symptom: "400 when starting a linked process.",
+        rootCause: "The case type points at an HxFusion definition that does not exist or is not `active`. Starting an inactive definition would produce an instance nobody can complete.",
+        resolution: "Operator: Activate the definition, or clear the link on the case type. User: Report it to a designer.",
+      },
+      {
+        code: "VEL-CASE-RULE-DISABLED-409",
+        http: "409",
+        symptom: "409 on rule execution.",
+        rootCause: "The rule exists but is disabled. Disabled rules are kept rather than deleted so their history stays readable.",
+        resolution: "Operator: Enable it in Case Designer if it should run. User: Ask a designer to enable the rule.",
+      },
+      {
+        code: "VEL-CASE-RULE-SCOPE-403",
+        http: "403",
+        symptom: "403 when applying a rule to a case.",
+        rootCause: "The rule is scoped to another case type. Scope is not advisory — applying it here would evaluate conditions against fields that may not exist.",
+        resolution: "Operator: Re-scope the rule, or create one for this case type. User: Pick a rule listed for this case type.",
+      },
+      {
+        code: "VEL-CASE-SUBPROCESS-500",
+        http: "500",
+        symptom: "500 with the underlying error.",
+        rootCause: "The parent case exists; the child process could not be created. Distinct from `VEL-CASE-PROCDEF-400`, which is a configuration problem rather than a runtime one.",
+        resolution: "Operator: Check engine reachability and the case-service log for the cause. User: Retry; if it persists this needs an operator.",
+      },
+      {
+        code: "VEL-CASE-TYPED-VAR-400",
+        http: "400",
+        symptom: "400 naming keys that must be written through the variables API.",
+        rootCause: "Case Variables v2 promoted these keys out of the free-form `data` blob. Writing them directly would bypass typing, validation and the projection.",
+        resolution: "Operator: None — the migration is intentional. User: Write through the variables API (`velaris.*` projection), not the raw data blob.",
+      },
+      {
+        code: "VEL-CASE-VAR-FILTER-400",
+        http: "400",
+        symptom: "400 quoting the filter received.",
+        rootCause: "A `var` filter must be `namespace.name:value`. A bare name is ambiguous once namespaces exist.",
+        resolution: "Operator: None. User: Qualify the filter with its namespace.",
+      },
       {
         code: "VEL-CASE-NOTFOUND-404",
         http: "404",
@@ -269,6 +545,20 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
     label: "Connectors (HxBridge)",
     entries: [
       {
+        code: "VEL-CONN-ROLE-403",
+        http: "403",
+        symptom: "403 on a connector write.",
+        rootCause: "Connector configuration holds outbound credentials, so it is restricted beyond ordinary case access.",
+        resolution: "Operator: Grant the `integration` role if appropriate. User: Ask an administrator.",
+      },
+      {
+        code: "VEL-CONN-UNKNOWN-TYPE-400",
+        http: "400",
+        symptom: "400 quoting the type.",
+        rootCause: "The type is not in the first-party allowlist. Connector types are a platform release, never configuration — an arbitrary type would mean arbitrary outbound code.",
+        resolution: "Operator: Use a supported type, or ship the connector as a marketplace package. User: None.",
+      },
+      {
         code: "VEL-CONN-NOTFOUND-404",
         http: "404",
         symptom: "404 'Connector not found' / 'Connector no longer exists' / 'DLQ item not found'.",
@@ -309,6 +599,48 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
   marketplace: {
     label: "Marketplace",
     entries: [
+      {
+        code: "VEL-MKT-ACCESS-403",
+        http: "403",
+        symptom: "403 on a marketplace operation.",
+        rootCause: "The caller does not own the workspace or lacks the marketplace role.",
+        resolution: "Operator: Grant the role, or transfer workspace ownership. User: Ask an administrator.",
+      },
+      {
+        code: "VEL-MKT-INSTALLED-409",
+        http: "409",
+        symptom: "409 on install.",
+        rootCause: "The package is already installed in this workspace. Installing twice is refused rather than silently upgrading — an upgrade is a separate, reviewable act.",
+        resolution: "Operator: Uninstall first, or use the update path. User: Use the installed copy.",
+      },
+      {
+        code: "VEL-MKT-NOTFOUND-404",
+        http: "404",
+        symptom: "404 naming the entity.",
+        rootCause: "One code across marketplace entities — the entity is in `detail` and the fix is the same.",
+        resolution: "Operator: Confirm the id and the caller's tenant. User: Reload the marketplace listing.",
+      },
+      {
+        code: "VEL-MKT-OFFICIAL-400",
+        http: "400",
+        symptom: "400 on source deletion.",
+        rootCause: "Official Velaris sources are pinned. Removing one would let a lower-trust source shadow official packages — the trust tier is derived from source origin.",
+        resolution: "Operator: None — this is the trust model working. User: None.",
+      },
+      {
+        code: "VEL-MKT-STATE-400",
+        http: "400",
+        symptom: "400 on a release-request transition.",
+        rootCause: "The workspace is not `submitted`. Release transitions are ordered so a package cannot be approved before it is reviewed.",
+        resolution: "Operator: Move the workspace through the review flow in order. User: Wait for review.",
+      },
+      {
+        code: "VEL-MKT-VERIFY-502",
+        http: "502",
+        symptom: "502 on install or update, naming the check that failed.",
+        rootCause: "A digest, conformance or drift check could not be completed — usually the source is unreachable or the bundle changed since it was reviewed. **The update is not applied**; refusing is the safe direction.",
+        resolution: "Operator: Check source reachability, then re-run. A genuine digest change means the publisher re-cut the release and it needs re-review. User: Retry later.",
+      },
       {
         code: "VEL-MKT-WSSTATE-400",
         http: "400",
@@ -358,6 +690,34 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
     label: "HxMigrate",
     entries: [
       {
+        code: "VEL-MIGRATE-CREATOR-AUTH-400",
+        http: "400",
+        symptom: "400 on a Creator-mode run.",
+        rootCause: "`creator_mode` or `creator_auth_type` is invalid, or no auth token is available.",
+        resolution: "Operator: Set the Creator env vars, or switch to file-upload mode. User: Use file upload.",
+      },
+      {
+        code: "VEL-MIGRATE-NOTFOUND-404",
+        http: "404",
+        symptom: "404 naming the run.",
+        rootCause: "The run id does not exist or belongs to another tenant.",
+        resolution: "Operator: Confirm the run id. User: Reload the migration history.",
+      },
+      {
+        code: "VEL-MIGRATE-RUN-STATE-400",
+        http: "400",
+        symptom: "400 quoting the current status.",
+        rootCause: "Applying a run that has not finished importing would write a partial case type.",
+        resolution: "Operator: Wait for completion, or inspect why it stalled. User: Wait for the run to finish.",
+      },
+      {
+        code: "VEL-MIGRATE-TOO-LARGE-413",
+        http: "413",
+        symptom: "413 stating the 100 MB limit.",
+        rootCause: "HxMigrate has its own higher body cap; this exceeds even that. The cap bounds zip-bomb exposure during extraction.",
+        resolution: "Operator: Split the export, or raise `max_migrate_upload_bytes` weighing the extraction risk. User: Export fewer processes at a time.",
+      },
+      {
         code: "VEL-MIGRATE-TOOBIG-413",
         http: "413",
         symptom: "413 'File too large. Maximum upload size is 100 MB.'",
@@ -391,7 +751,7 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
         http: "400",
         symptom: "400 'No valid auth token available for Creator…' / 'Invalid creator_auth_type'.",
         rootCause: "Creator mode lacks a usable auth token or got an invalid auth type.",
-        resolution: "Operator: set HELIX_SERVICE_TOKEN or ensure the user is logged in; use a valid creator auth type.",
+        resolution: "Operator: set VELARIS_SERVICE_TOKEN or ensure the user is logged in; use a valid creator auth type.",
       },
     ],
   },
@@ -435,6 +795,18 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
     label: "System",
     entries: [
       {
+        code: "VEL-SYS-STORAGE-PRECHECK-000",
+        http: "000",
+        symptom: "Startup warning (or silent) — storage path is not writable.",
+        rootCause:
+          "A proposed boot-time check that the configured document storage path exists and is " +
+          "writable, so the failure surfaces at startup rather than on a user's first upload.",
+        resolution:
+          "Operator: create the directory with correct ownership, or repoint " +
+          "VELARIS_CASE_STORAGE_LOCAL_PATH at an install-local path.",
+        related: ["VEL-DOC-STORAGE-503"],
+      },
+      {
         code: "VEL-SYS-BODY-413",
         http: "413",
         symptom: "413 'Request body too large. Limit is N MB.'",
@@ -471,6 +843,18 @@ export function allErrors(): FlatErrorEntry[] {
     }
   }
   return out;
+}
+
+/**
+ * Is this code documented here?
+ *
+ * Used before offering a "what does this mean" link: a link to an entry that
+ * does not exist promises an explanation and then fails to give one, which is
+ * worse than showing the bare code.
+ */
+export function hasEntry(code: string): boolean {
+  const c = code.trim().toLowerCase();
+  return allErrors().some(e => e.code.toLowerCase() === c);
 }
 
 /** Case-insensitive search across code, symptom, root cause, resolution, and component label. */

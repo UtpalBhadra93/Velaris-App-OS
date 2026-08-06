@@ -585,6 +585,14 @@ function statusColor(s: string) {
 
 /* ── Retention ─────────────────────────────────────────────────── */
 
+// Only what `compliance/retention.py` can actually execute. `anonymize` was
+// briefly removed here when it had no implementation — an option that always
+// fails is worse than an absent one — and restored once age-based
+// anonymisation was built. It is valid for `resolved_cases` only; the backend
+// refuses it elsewhere, since a row with no identity has nothing to strip.
+//
+// A policy stored with an action outside this list still renders, marked
+// unsupported, so the list can change without stranding an existing row.
 const ACTION_OPTIONS = ["archive", "delete", "anonymize"];
 
 function RetentionTab() {
@@ -642,8 +650,18 @@ function RetentionTab() {
       <div style={{ padding: "var(--space-sm) var(--space-md)", marginBottom: "var(--space-lg)",
         background: "var(--accent-dim)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)",
         fontSize: 12, color: "var(--text-secondary)" }}>
-        Retention policies define when old data should be <strong>archived</strong>, <strong>deleted</strong>, or <strong>anonymized</strong>.
-        Enable a policy to activate it. Retention period and action can be edited at any time on the card.
+        Retention policies decide what happens to old data. <strong>delete</strong> removes it after the
+        period below; <strong>archive</strong> does the same on a longer clock — there is no separate archive
+        store, so both ultimately delete. <strong>anonymize</strong> is different: it <em>keeps</em> the case
+        and strips the identity from it, so closed cases still train the risk model while holding no personal
+        data. It applies to resolved cases only. Each policy keeps its own period, and the number shown here
+        is the number that runs.
+        <br /><br />
+        A policy does nothing until it is enabled, and runs are started deliberately from
+        <code> POST /enterprise/retention-policies/run?confirm=true</code> — never on a schedule.
+        Preview first: <code>GET /enterprise/retention-policies/preview</code> counts what would be removed
+        without touching anything. <strong>There is no undo.</strong> Open cases are never deleted whatever
+        their age, and the sealed audit chain is excluded entirely.
       </div>
 
       {policies.map((p: any) => {
@@ -704,6 +722,12 @@ function RetentionTab() {
                         cursor: p.enabled ? "pointer" : "not-allowed", opacity: p.enabled ? 1 : 0.6 }}
                     >
                       {ACTION_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                      {/* A row saved under an older build may hold an action the
+                          backend no longer executes. Show it, marked, rather than
+                          silently rewriting the admin's stored choice. */}
+                      {!ACTION_OPTIONS.includes(e.action) && (
+                        <option value={e.action}>{e.action} (unsupported)</option>
+                      )}
                     </select>
                   </div>
                   {p.enabled && isDirty && (

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 import structlog
 
-from helix_ir.models.process import (
+from velaris_ir.models.process import (
     BPMNProcess,
     BoundaryEvent,
     StartEvent,

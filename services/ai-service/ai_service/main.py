@@ -1,6 +1,6 @@
 """FastAPI entry point for ai-service."""
 from fastapi import FastAPI
-from helix_sdk.config.brand import BRAND_NAME
+from velaris_sdk.config.brand import BRAND_NAME
 
 app = FastAPI(title=f"{BRAND_NAME} ai-service", version="0.1.0")
 

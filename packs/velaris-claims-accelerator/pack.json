@@ -1,0 +1,13 @@
+{
+  "id": "velaris/claims-accelerator",
+  "name": "Insurance Claims Accelerator",
+  "vertical": "claims",
+  "version": "1.0.0",
+  "bundle_schema_version": "1",
+  "summary": "A working first-notice-of-loss to settlement process: intake, triage, assessment, approval and payment stages with the forms, validation rules and SLA targets a claims team actually needs on day one.",
+  "author": "Velaris",
+  "sample_data": {
+    "count": 25,
+    "note": "Opt-in at provision time. Creates synthetic claims marked synthetic:true in metadata so they can be found and removed."
+  }
+}

@@ -3,7 +3,7 @@
 Each template is a string with {placeholder} substitutions.
 Keeps generator code readable by separating content from logic.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

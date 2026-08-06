@@ -8,7 +8,7 @@ canonical user UUID and reject unknown users with 400; the listing carries
 username/display_name; unshare resolves the same way (with a raw-value
 fallback for legacy tuples).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

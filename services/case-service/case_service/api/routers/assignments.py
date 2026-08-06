@@ -2,7 +2,7 @@
 
 Handles claiming, releasing, reassigning, and completing work items.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

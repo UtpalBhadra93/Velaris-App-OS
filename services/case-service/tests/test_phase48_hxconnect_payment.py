@@ -323,6 +323,31 @@ async def test_webhook_succeeded_updates_payment_status(
     assert pr.status == "succeeded"
     assert pr.completed_at is not None
 
+    # HxLedger (§8.4): the books must record the money, through the real
+    # webhook path — a producer that only works when called directly from a
+    # test is not a producer. Nothing posted here until 2026-08-04, which is
+    # why `/ledger/reconcile` reported every capture as a discrepancy.
+    from sqlalchemy import select as _select
+
+    from case_service.compliance import ledger, ledger_posting
+    from case_service.db.models import LedgerAccountModel, LedgerEntryModel
+
+    cash_entries = (await session.execute(
+        _select(LedgerEntryModel)
+        .join(LedgerAccountModel, LedgerAccountModel.id == LedgerEntryModel.account_id)
+        .where(
+            LedgerAccountModel.code == ledger_posting.CASH_CODE,
+            LedgerEntryModel.source_id == pr.id,
+        )
+    )).scalars().all()
+
+    assert len(cash_entries) == 1, "the capture did not reach the ledger"
+    assert cash_entries[0].direction == ledger.DEBIT
+    assert cash_entries[0].amount_cents == 1500
+
+    rec = await ledger.reconcile_payments(session, tenant_id="t1")
+    assert rec["reconciled"] is True
+
 
 @pytest.mark.asyncio
 async def test_webhook_failed_updates_status(

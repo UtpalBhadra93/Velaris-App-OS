@@ -49,7 +49,7 @@ def test_get_backend_returns_mysql():
 
 
 def test_postgres_satisfies_protocol_structurally():
-    # The DatabaseBackend Protocol lives in helix_sdk.protocols (a stub package not
+    # The DatabaseBackend Protocol lives in velaris_sdk.protocols (a stub package not
     # imported at runtime); assert structural conformance — every contract method exists.
     b = PostgresBackend()
     for method in (
@@ -89,7 +89,7 @@ def test_sync_url_uses_psycopg2_driver():
 
 def test_component_defaults_applied():
     url = PostgresBackend().async_url(_cfg(db_host="", db_port=None, db_name="", db_user=""))
-    assert url == "postgresql+asyncpg://helix@localhost:5432/helix"
+    assert url == "postgresql+asyncpg://velaris@localhost:5432/velaris"
 
 
 def test_password_is_url_encoded():

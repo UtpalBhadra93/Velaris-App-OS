@@ -39,8 +39,8 @@
 
 set -uo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
 
 # ── Colour helpers ────────────────────────────────────────────────
 red()    { echo -e "\033[0;31m$*\033[0m"; }
@@ -93,7 +93,7 @@ echo "║  This will permanently delete all Velaris data           ║"
 echo "║  including the database, uploaded files, and secrets.    ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
-yellow "  Project directory : $HELIX_DIR"
+yellow "  Project directory : $VELARIS_DIR"
 $PURGE      && yellow "  Mode              : PURGE (images + uv will also be removed)"
 $DELETE_DIR && yellow "  Mode              : DELETE DIR (project folder will be removed)"
 echo ""
@@ -141,24 +141,32 @@ step "Step 2 — Removing Docker containers and volumes..."
 
 echo ""
 yellow "  ⚠  This deletes ALL Velaris data:"
-yellow "     • Main database     (helix-db)"
+yellow "     • Main database     (velaris-db)"
 yellow "     • Temporal database (temporal-db)"
 yellow "     • Valkey cache      (cache-data)"
 yellow "     • Redpanda events   (events-data)"
 yellow "     • OpenBao secrets   (openbao-data)"
 yellow "     • Ollama models     (ollama-data)  ← may be several GB"
-yellow "     • MinIO documents   (helix-minio-data)"
-yellow "     • Prometheus data   (helix-prometheus-data)"
-yellow "     • Mailpit emails    (helix-mailpit-data)"
+yellow "     • MinIO documents   (velaris-minio-data)"
+yellow "     • Prometheus data   (velaris-prometheus-data)"
+yellow "     • Mailpit emails    (velaris-mailpit-data)"
 echo ""
 
 if confirm "Delete all Docker containers and volumes?"; then
   if [ -f "$COMPOSE_FILE" ]; then
-    # Load .env so compose can resolve variable references
-    if [ -f "$HELIX_DIR/.env" ]; then
-      set -o allexport; source "$HELIX_DIR/.env" 2>/dev/null || true; set +o allexport
+    # Load .env so compose can resolve variable references.
+    # --env-file as well as sourcing: sourcing breaks on values with spaces or
+    # quoting, and compose refuses to run at all when a `${VAR:?...}` secret is
+    # unresolved — even for `down`. Conditional because uninstall must still work
+    # on a half-finished install where .env was never rendered; compose errors
+    # out on an --env-file that does not exist, and the by-name volume removal
+    # below is the fallback for that case.
+    ENV_ARGS=()
+    if [ -f "$VELARIS_DIR/.env" ]; then
+      set -o allexport; source "$VELARIS_DIR/.env" 2>/dev/null || true; set +o allexport
+      ENV_ARGS=(--env-file "$VELARIS_DIR/.env")
     fi
-    docker compose -f "$COMPOSE_FILE" down --volumes --remove-orphans 2>/dev/null \
+    docker compose -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" down --volumes --remove-orphans 2>/dev/null \
       && green "  ✓ Docker containers and volumes removed" \
       || yellow "  ⚠ docker compose down had warnings (containers may already be stopped)"
   else
@@ -168,13 +176,13 @@ if confirm "Delete all Docker containers and volumes?"; then
   # Explicitly remove named volumes in case compose missed any
   VOLUMES=(
     temporal-db
-    helix-db
+    velaris-db
     cache-data
     events-data
     ollama-data
-    helix-minio-data
-    helix-prometheus-data
-    helix-mailpit-data
+    velaris-minio-data
+    velaris-prometheus-data
+    velaris-mailpit-data
     openbao-data
   )
   for vol in "${VOLUMES[@]}"; do
@@ -230,9 +238,51 @@ if $PURGE; then
   else
     yellow "  Skipped — Docker images kept."
   fi
+
+  # ── Build cache ────────────────────────────────────────────────
+  # Always safe: build cache holds no containers, images or volumes.
+  docker builder prune -af >/dev/null 2>&1 \
+    && green "  ✓ Docker build cache cleared" || true
+
+  # ── Docker daemon config Velaris installed (Step 2b of setup) ──
+  # Only offered, never assumed: by uninstall time the operator may be
+  # running other workloads that now depend on this data-root.
+  if [ -f /etc/docker/daemon.json ] && grep -q '"builder"' /etc/docker/daemon.json 2>/dev/null; then
+    VDS_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
+    echo ""
+    yellow "  Velaris configured Docker's storage during setup:"
+    dim   "    data-root  : $VDS_ROOT"
+    dim   "    daemon.json: /etc/docker/daemon.json (build-cache cap)"
+    if [ "$VDS_ROOT" != "/var/lib/docker" ]; then
+      yellow "  Reverting moves Docker back to /var/lib/docker — ANY other"
+      yellow "  containers on this host would lose their images and volumes."
+    fi
+    if confirm "Revert Docker daemon config to defaults?"; then
+      LATEST_BAK="$(ls -1t /etc/docker/daemon.json.bak.* 2>/dev/null | head -1)"
+      if [ -n "$LATEST_BAK" ]; then
+        sudo cp -a "$LATEST_BAK" /etc/docker/daemon.json \
+          && green "  ✓ Restored pre-Velaris daemon.json ($LATEST_BAK)"
+      else
+        sudo rm -f /etc/docker/daemon.json \
+          && green "  ✓ Removed /etc/docker/daemon.json (Velaris created it)"
+      fi
+      sudo systemctl restart docker 2>/dev/null \
+        && green "  ✓ Docker restarted on default storage" \
+        || yellow "  ⚠ Restart Docker by hand to apply"
+      # The moved tree is left on disk deliberately — deleting a data-root
+      # that may still hold non-Velaris volumes is not this script's call.
+      if [ "$VDS_ROOT" != "/var/lib/docker" ] && [ -d "$VDS_ROOT" ]; then
+        yellow "  Old Docker data left at: $VDS_ROOT"
+        dim   "    Remove it once you are sure nothing else needs it:"
+        dim   "      sudo rm -rf $VDS_ROOT"
+      fi
+    else
+      yellow "  Skipped — Docker daemon config kept."
+    fi
+  fi
 else
   step "Step 3 — Docker images"
-  dim "  Skipped (use --purge to also remove Docker images)"
+  dim "  Skipped (use --purge to also remove Docker images, build cache and daemon config)"
 fi
 
 # ══════════════════════════════════════════════════════════════════
@@ -240,7 +290,7 @@ fi
 # ══════════════════════════════════════════════════════════════════
 step "Step 4 — Removing Python virtualenv..."
 
-VENV_DIR="$HELIX_DIR/.venv"
+VENV_DIR="$VELARIS_DIR/.venv"
 if [ -d "$VENV_DIR" ]; then
   VENV_SIZE=$(du -sh "$VENV_DIR" 2>/dev/null | cut -f1)
   if confirm "Remove .venv/ (${VENV_SIZE})?"; then
@@ -258,7 +308,7 @@ fi
 # ══════════════════════════════════════════════════════════════════
 step "Step 5 — Removing Studio node_modules..."
 
-NODE_DIR="$HELIX_DIR/studio/node_modules"
+NODE_DIR="$VELARIS_DIR/studio/node_modules"
 if [ -d "$NODE_DIR" ]; then
   NODE_SIZE=$(du -sh "$NODE_DIR" 2>/dev/null | cut -f1)
   if confirm "Remove studio/node_modules/ (${NODE_SIZE})?"; then
@@ -277,7 +327,7 @@ fi
 step "Step 6 — Removing local document storage..."
 
 # Read path from .env if available, fall back to default
-STORAGE_PATH=$(grep "^HELIX_CASE_STORAGE_LOCAL_PATH=" "$HELIX_DIR/.env" 2>/dev/null \
+STORAGE_PATH=$(grep "^VELARIS_CASE_STORAGE_LOCAL_PATH=" "$VELARIS_DIR/.env" 2>/dev/null \
   | cut -d= -f2 | tr -d '"' | tr -d "'") || true
 STORAGE_PATH="${STORAGE_PATH:-/var/lib/velaris}"
 
@@ -306,15 +356,15 @@ step "Step 7 — Removing credential and marker files..."
 echo ""
 yellow "  ⚠  The following files contain secrets (passwords, JWT keys, licence key):"
 CREDENTIAL_FILES=(
-  "$HELIX_DIR/.env"
-  "$HELIX_DIR/.env.pre-openbao"
-  "$HELIX_DIR/.velaris-key"
-  "$HELIX_DIR/.velaris-setup-complete"
+  "$VELARIS_DIR/.env"
+  "$VELARIS_DIR/.env.pre-openbao"
+  "$VELARIS_DIR/.velaris-key"
+  "$VELARIS_DIR/.velaris-setup-complete"
   # OpenBao (Group K) generated secrets — NOT the committed server.hcl/agent.hcl
-  "$HELIX_DIR/deploy/openbao/.bao-init.json"
-  "$HELIX_DIR/deploy/openbao/agent/role_id"
-  "$HELIX_DIR/deploy/openbao/agent/secret_id"
-  "$HELIX_DIR/deploy/openbao/enabled"
+  "$VELARIS_DIR/deploy/openbao/.bao-init.json"
+  "$VELARIS_DIR/deploy/openbao/agent/role_id"
+  "$VELARIS_DIR/deploy/openbao/agent/secret_id"
+  "$VELARIS_DIR/deploy/openbao/enabled"
 )
 for f in "${CREDENTIAL_FILES[@]}"; do
   [ -f "$f" ] && dim "    • $f"
@@ -330,8 +380,8 @@ if confirm "Delete credential and marker files?"; then
     fi
   done
   # OpenBao agent renders short-lived secrets into agent/out/ — remove the whole dir
-  if [ -d "$HELIX_DIR/deploy/openbao/agent/out" ]; then
-    rm -rf "$HELIX_DIR/deploy/openbao/agent/out"
+  if [ -d "$VELARIS_DIR/deploy/openbao/agent/out" ]; then
+    rm -rf "$VELARIS_DIR/deploy/openbao/agent/out"
     green "  ✓ Removed: deploy/openbao/agent/out/"
   fi
 else
@@ -399,7 +449,7 @@ if $DELETE_DIR; then
   step "Step 10 — Deleting project directory (--delete-dir)..."
   echo ""
   red "  ⚠  THIS WILL DELETE THE ENTIRE PROJECT DIRECTORY:"
-  red "     $HELIX_DIR"
+  red "     $VELARIS_DIR"
   red "     All source code, migrations, scripts, and config will be lost."
   echo ""
 
@@ -407,8 +457,8 @@ if $DELETE_DIR; then
     # Can't delete our own parent while running from it — copy script to /tmp first
     SELF="$(basename "${BASH_SOURCE[0]}")"
     cd /tmp
-    rm -rf "$HELIX_DIR"
-    green "  ✓ Project directory deleted: $HELIX_DIR"
+    rm -rf "$VELARIS_DIR"
+    green "  ✓ Project directory deleted: $VELARIS_DIR"
   else
     yellow "  Skipped — project directory kept"
   fi

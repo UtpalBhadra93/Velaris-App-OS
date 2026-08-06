@@ -18,7 +18,7 @@ merged set can include kinds HxReplay cannot counterfactually replay, so the
 honest comparison is live-metrics-then vs live-metrics-now, never a
 pseudo-replay.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

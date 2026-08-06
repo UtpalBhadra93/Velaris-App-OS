@@ -13,7 +13,7 @@ never by a separate on/off switch. The Python code ships in-image (the trust
 model forbids loading in-process code from a package); install simply mounts
 these routes per tenant via the install record.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

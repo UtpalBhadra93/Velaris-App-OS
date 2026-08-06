@@ -9,7 +9,7 @@ Security (key invariant 4): the HMAC signature is verified against the
 integration's shared secret BEFORE the payload is deserialized — a malformed or
 unsigned request never reaches the mapping/order code.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

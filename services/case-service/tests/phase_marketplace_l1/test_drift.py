@@ -11,7 +11,7 @@ touched), re-install with a changed descriptor triggers drift instead of a
 second connector, and the update-approve hook (fail-closed 502 when the new
 bundle can't be verified; drift result in the response).
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

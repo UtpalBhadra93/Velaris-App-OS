@@ -6,12 +6,12 @@ requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = ["velaris-sdk"]
 
-[project.entry-points."helix.git"]
-local = "helix_git_local:LocalBackend"
+[project.entry-points."velaris.git"]
+local = "velaris_git_local:LocalBackend"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["helix_git_local"]
+packages = ["velaris_git_local"]

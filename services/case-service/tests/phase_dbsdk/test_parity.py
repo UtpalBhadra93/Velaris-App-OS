@@ -3,12 +3,13 @@
 These run on the default (SQLite) harness — no DB needed, they compare generated
 artifacts against committed files — so they are always-on CI guards against the
 recurring "I changed the Postgres side and forgot the MySQL side" drift that has
-bitten this project repeatedly (helix_settings missing from the baseline, a unique
+bitten this project repeatedly (velaris_settings missing from the baseline, a unique
 constraint present in the model but not the shipped DDL, a feature added to one
 manifest but not the other).
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -17,20 +18,49 @@ from pathlib import Path
 # services/case-service/tests/phase_dbsdk/test_parity.py → repo root is parents[4]
 _ROOT = Path(__file__).resolve().parents[4]
 
+#: SHA-256 of the frozen MySQL baseline, cut 2026-08-06 at PostgreSQL 154.
+#: Changing this constant is how you declare a deliberate re-cut; see
+#: `test_mysql_baseline_is_frozen` for what else that entails.
+_FROZEN_BASELINE_SHA256 = (
+    "61153aa32f9d015dc55d725aeccde837cb914f3afebbfedca1e86a39700c6476"
+)
 
-def test_mysql_baseline_in_sync_with_orm_models():
-    """migrations/mysql/0001_baseline.sql must equal what the generator emits from the
-    current ORM metadata. Fails if a model/table/index/constraint was added or changed
-    without regenerating the baseline — i.e. the table would silently be missing on a
-    fresh MySQL install (the helix_settings class of bug)."""
-    script = _ROOT / "scripts" / "gen_mysql_baseline.py"
-    assert script.exists(), f"baseline generator not found at {script}"
-    r = subprocess.run([sys.executable, str(script), "--check"],
-                       capture_output=True, text=True)
-    assert r.returncode == 0, (
-        "MySQL baseline has drifted from the ORM models — regenerate with "
-        "`python scripts/gen_mysql_baseline.py` and review the diff.\n"
-        f"stdout: {r.stdout}\nstderr: {r.stderr}"
+
+def test_mysql_baseline_is_frozen():
+    """The baseline must NOT track the ORM models.
+
+    This test asserted the opposite until 2026-08-06 — that the baseline always
+    equalled current metadata — and that assertion is what made MySQL installs
+    unupgradable. `start-velaris.sh` records applied filenames in
+    `schema_migrations`, so on an existing install the baseline is already
+    recorded and a regenerated one is **silently skipped**: the change reaches
+    nobody, with no error to notice. Only a new numbered file reaches an install
+    that already exists.
+
+    So drift between the baseline and the models is now **expected** — it is
+    exactly the set of changes carried by the numbered migrations beside it.
+    What is pinned instead is the baseline's content, by hash: regenerating it
+    is a deliberate release-engineering act (re-cut at a major version, delete
+    the migrations it subsumes, rename to the new high-water mark), and it must
+    never happen as a side effect of a model change.
+
+    That baseline + migrations still equal the ORM models is proven where it can
+    actually be proven — `ci-mysql.yml` / `ci-mariadb.yml` apply the whole track
+    to a real server and diff the result against the metadata. A file comparison
+    cannot establish it.
+    """
+    baseline = _ROOT / "migrations" / "mysql" / "000_baseline_pg154.sql"
+    assert baseline.exists(), f"frozen baseline missing at {baseline}"
+
+    digest = hashlib.sha256(baseline.read_bytes()).hexdigest()
+    assert digest == _FROZEN_BASELINE_SHA256, (
+        "the frozen MySQL baseline changed.\n"
+        "If a model change did this, that is the bug: add a numbered migration "
+        "(sharing its PostgreSQL sibling's number) instead — regenerating the "
+        "baseline delivers nothing to any existing install.\n"
+        "If you re-cut the baseline deliberately, delete the numbered files it "
+        "now subsumes, rename it to the new PG high-water mark, and update "
+        f"_FROZEN_BASELINE_SHA256 to:\n  {digest}"
     )
 
 

@@ -12,6 +12,6 @@ and writes ONLY to ``replay_runs`` / ``replay_results``.
 
 Design: docs/Future/Done/hxreplay-counterfactual-replay.md
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """

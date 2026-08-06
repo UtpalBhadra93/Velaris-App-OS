@@ -13,7 +13,7 @@ The riskiest draft kind, so the gate is the narrowest:
     ``POST /auth/register``) and runs under the caller's token.
   * No fallback: identity is never guessed. AI down → honest UserDraftError.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

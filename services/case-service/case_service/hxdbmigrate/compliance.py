@@ -4,7 +4,7 @@ Maps each column's semantic category (and name hints) to a sensitivity class and
 recommended pre-migration handling. The output is the precursor to the Compliance
 Migration Certificate. Uses only classifications + masked examples — never raw values.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

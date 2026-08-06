@@ -1,6 +1,6 @@
 """Test Suite (#27) Phase B — built-in Component + Security suites execute green.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -20,7 +20,55 @@ from .threader import (
 log = logging.getLogger(__name__)
 
 
+class ConsentRefused(Exception):
+    """No recipient of a consent-gated send has a lawful basis.
+
+    Raised rather than returning an empty result so a caller cannot mistake
+    "refused on consent grounds" for "sent successfully to nobody".
+    """
+
+    def __init__(self, purpose: str, dropped: list[str]) -> None:
+        self.purpose = purpose
+        self.dropped = dropped
+        super().__init__(
+            f"no recipient has a lawful basis for {purpose!r} "
+            f"({len(dropped)} address(es) dropped)"
+        )
+
+
 class EmailService:
+    async def _consent_filter(
+        self, session: AsyncSession, addresses: list[str], purpose: str,
+        *, tenant_id: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """Split recipients into (allowed, dropped) for a gated purpose.
+
+        **Fails closed, per address.** `has_consent` already returns False for
+        an unknown subject or an unrecognised purpose — the absence of a
+        recorded basis is not permission — and an *error* during the check is
+        treated the same way. A consent gate that opens when the ledger is
+        unreachable is not a gate.
+        """
+        from case_service.compliance import consent as consent_svc
+
+        allowed: list[str] = []
+        dropped: list[str] = []
+        for addr in addresses:
+            try:
+                ok = await consent_svc.has_consent(
+                    session, addr, purpose, tenant_id=tenant_id,
+                )
+            except Exception:
+                # Deliberately broad: any failure to establish lawfulness means
+                # we have not established it.
+                log.exception(
+                    "consent check failed for %s/%s — refusing this recipient",
+                    addr, purpose,
+                )
+                ok = False
+            (allowed if ok else dropped).append(addr)
+        return allowed, dropped
+
     async def send(
         self, session: AsyncSession, *,
         case_id: Optional[uuid.UUID], account,
@@ -33,8 +81,64 @@ class EmailService:
         in_reply_to: Optional[str] = None,
         references: list[str] | None = None,
         dry_run: bool = False,
+        purpose: str | None = None,
+        tenant_id: str | None = None,
     ):
+        """Send an email, enforcing purpose limitation for gated purposes.
+
+        `purpose` defaults to `case_processing`, which is **never gated**: case
+        correspondence is lawful under contract or legal obligation, and making
+        it depend on a consent record would stop the platform doing the job it
+        was engaged to do. Only purposes in `consent.GATED_PURPOSES` — today
+        `marketing` alone — are filtered.
+
+        Gating happens **before** the message row is written, so a refused
+        recipient leaves no queued artefact claiming a send that must not
+        happen, and the surviving row's `to_addresses` is the truthful record
+        of who was actually written to.
+        """
+        from case_service.compliance import consent as consent_svc
         from case_service.db.models import EmailMessageModel, EmailTemplateModel
+
+        purpose = purpose or consent_svc.CASE_PROCESSING
+        cc_addresses = cc_addresses or []
+
+        if purpose in consent_svc.GATED_PURPOSES:
+            to_addresses, dropped_to = await self._consent_filter(
+                session, to_addresses, purpose, tenant_id=tenant_id,
+            )
+            cc_addresses, dropped_cc = await self._consent_filter(
+                session, cc_addresses, purpose, tenant_id=tenant_id,
+            )
+            dropped = dropped_to + dropped_cc
+            if dropped:
+                # The provable part. Without this, "we stopped marketing to
+                # them" is an assertion; with it, it is a record.
+                from case_service.enterprise.security_events import log_security_event
+
+                await log_security_event(
+                    session,
+                    event_type="consent.send_filtered",
+                    severity="info",
+                    resource_type="email",
+                    resource_id=str(case_id) if case_id else None,
+                    action=f"send:{purpose}",
+                    outcome="blocked" if not to_addresses else "partial",
+                    details={
+                        "purpose": purpose,
+                        "dropped": dropped,
+                        "dropped_count": len(dropped),
+                        "delivered_count": len(to_addresses) + len(cc_addresses),
+                    },
+                )
+                log.info(
+                    "consent gate: dropped %d recipient(s) for purpose %r",
+                    len(dropped), purpose,
+                )
+            if not to_addresses:
+                # A cc-only send is not a send: with every `to` dropped there
+                # is no lawful primary recipient left to address.
+                raise ConsentRefused(purpose, dropped)
 
         if template_id:
             tmpl = await session.get(EmailTemplateModel, template_id)

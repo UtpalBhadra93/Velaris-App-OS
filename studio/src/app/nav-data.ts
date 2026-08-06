@@ -324,6 +324,13 @@ export const NAV_DATA: NavEntry[] = [
     roles: ["security", "admin"],
   },
   {
+    path: "/hxstatus",
+    label: "HxStatus",
+    description: "Public status page | Uptime | SLA reporting | Component health | Incident visibility",
+    section: "Security",
+    roles: ["security", "admin", "designer"],
+  },
+  {
     path: "/hxstream",
     label: "HxStream",
     description: "Live event stream | Case events | Audit log | Real-time activity | Event replay | Event filter",
@@ -393,7 +400,7 @@ export const NAV_DATA: NavEntry[] = [
   {
     path: "/enterprise",
     label: "Enterprise",
-    description: "Feature flags | Enterprise settings | Platform configuration | Global policies | Licence management",
+    description: "Feature flags | Enterprise settings | Security events | GDPR requests | Retention policies",
     section: "Admin",
     roles: ["admin"],
   },

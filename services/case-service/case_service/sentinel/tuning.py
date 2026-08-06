@@ -9,7 +9,7 @@ Anti-gaming (inherited from P3b): scores are weighted by the reviewer's
 reliability, disputed scores are excluded, and a min-reviews floor is required —
 so one miscalibrated or rubber-stamping reviewer cannot move a rule.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -17,7 +17,34 @@ from __future__ import annotations
 from typing import Any
 
 MANIFEST_VERSION = 1                  # what this platform WRITES
-SUPPORTED_MANIFEST_VERSIONS = {1}     # what this platform can INTERPRET
+SUPPORTED_MANIFEST_VERSIONS = {1, 2}  # what this platform can INTERPRET
+
+#: v2 relations a package may declare. Deliberately the subset HxGuard's ReBAC
+#: backend actually evaluates — a manifest cannot invent a relation the PDP
+#: would silently never satisfy.
+VALID_V2_RELATIONS = {"assignee", "editor", "viewer"}
+
+#: v2 object types a package may declare permissions over.
+VALID_V2_OBJECT_TYPES = {"case", "case_type", "form", "report"}
+
+#: v2 subject types — who the relation is granted to.
+VALID_V2_SUBJECT_TYPES = {"user", "access_group", "package"}
+
+#: How a v1 RBAC role maps onto a v2 relation. This is the §6.3 translation
+#: layer: v1 is frozen, so v1 packages are read THROUGH this rather than being
+#: rewritten, and a v1 package keeps installing forever.
+V1_ROLE_TO_V2_RELATION = {
+    "admin":       "editor",
+    "manager":     "editor",
+    "case_worker": "assignee",
+    "designer":    "editor",
+    "viewer":      "viewer",
+    "auditor":     "viewer",
+}
+
+#: Anything not in the map is read as the least privilege v2 can express.
+#: Guessing upward on an unknown role would silently widen a package's reach.
+V1_UNKNOWN_ROLE_RELATION = "viewer"
 
 
 class ManifestVersionError(Exception):
@@ -44,3 +71,91 @@ def check_manifest_version(manifest: dict[str, Any]) -> int:
             "Upgrade the platform or republish the package in a supported format."
         )
     return raw
+
+
+def validate_v2_permissions(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    """Validate a v2 manifest's declarative permission block.
+
+    v2 expresses permissions as **relationship tuples** rather than RBAC role
+    names — the format ReBAC needs and the one v1 could not express. Each entry
+    is ``{relation, object_type, subject_type}``; concrete subject ids are
+    bound at install, never baked into a published package.
+
+    Rejects unknown relations, object types and subject types rather than
+    ignoring them. A permission the PDP will never evaluate is worse than a
+    rejected one: the package appears to have been granted something it has
+    not, and nobody finds out until it silently fails.
+    """
+    raw = manifest.get("permissions", [])
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        raise ManifestVersionError("manifest_version 2 'permissions' must be a list")
+
+    out: list[dict[str, str]] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ManifestVersionError(f"permissions[{i}] must be an object")
+        relation = str(entry.get("relation") or "")
+        object_type = str(entry.get("object_type") or "")
+        subject_type = str(entry.get("subject_type") or "user")
+
+        if relation not in VALID_V2_RELATIONS:
+            raise ManifestVersionError(
+                f"permissions[{i}].relation {relation!r} is not one of "
+                f"{sorted(VALID_V2_RELATIONS)}")
+        if object_type not in VALID_V2_OBJECT_TYPES:
+            raise ManifestVersionError(
+                f"permissions[{i}].object_type {object_type!r} is not one of "
+                f"{sorted(VALID_V2_OBJECT_TYPES)}")
+        if subject_type not in VALID_V2_SUBJECT_TYPES:
+            raise ManifestVersionError(
+                f"permissions[{i}].subject_type {subject_type!r} is not one of "
+                f"{sorted(VALID_V2_SUBJECT_TYPES)}")
+
+        out.append({
+            "relation": relation,
+            "object_type": object_type,
+            "subject_type": subject_type,
+        })
+    return out
+
+
+def translate_v1_permissions(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    """Read a v1 manifest's RBAC declarations as v2 tuples (§6.3).
+
+    v1 is frozen, so nothing rewrites the package: this reads it through the
+    translation instead, which is what keeps every existing package installable
+    after v2 exists. An unknown role degrades to `viewer` — guessing upward
+    would silently widen a package's reach on a name nobody recognised.
+    """
+    roles = manifest.get("required_roles") or manifest.get("roles") or []
+    if isinstance(roles, str):
+        roles = [roles]
+    if not isinstance(roles, list):
+        return []
+
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, str]] = []
+    for role in roles:
+        relation = V1_ROLE_TO_V2_RELATION.get(
+            str(role).strip().lower(), V1_UNKNOWN_ROLE_RELATION,
+        )
+        key = (relation, "case", "user")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"relation": relation, "object_type": "case", "subject_type": "user"})
+    return out
+
+
+def effective_permissions(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    """Permissions as v2 tuples, whatever version the manifest declares.
+
+    The single place the rest of the platform should ask, so no caller has to
+    branch on manifest version to find out what a package may do.
+    """
+    version = check_manifest_version(manifest)
+    if version >= 2:
+        return validate_v2_permissions(manifest)
+    return translate_v1_permissions(manifest)

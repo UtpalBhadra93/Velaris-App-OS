@@ -1,5 +1,5 @@
 """
-Tests for helix_ir.models.process
+Tests for velaris_ir.models.process
 =================================
 
 These tests verify the IR data structures — the shared vocabulary that
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from helix_ir.models.process import (
+from velaris_ir.models.process import (
     BPMNProcess,
     BoundaryEvent,
     EndEvent,

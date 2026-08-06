@@ -94,7 +94,7 @@ _ABUSE_PATTERNS = [
 # ── Protected tables — DML writes to these are blocked regardless of role ─────
 _PROTECTED_WRITE_TABLES = {
     "db_manager_query_log",   # audit log must stay append-only
-    "helix_users",            # user credentials and MFA secrets
+    "velaris_users",            # user credentials and MFA secrets
     "connector_configs",      # encrypted API keys
     "encryption_keys",        # AES key material
     "portal_customers",       # customer PII and OTP data
@@ -148,8 +148,8 @@ _HIDDEN_TABLES: set[str] = {
 # Admins cannot read these — prevents self-serving audit trail or release manipulation.
 _SUPERADMIN_ONLY_TABLES: set[str] = {
     # Auth & credentials
-    "helix_users", "auth_otp", "revoked_sessions", "revoked_token",
-    "sso_providers", "helix_settings", "system_config",
+    "velaris_users", "auth_otp", "revoked_sessions", "revoked_token",
+    "sso_providers", "velaris_settings", "system_config",
     # Security audit — immutable, superadmin eyes only
     "security_events", "security_incidents", "security_rules", "shield_events",
     "db_manager_query_log",   # admins must not read/clear their own query audit
@@ -584,13 +584,13 @@ async def _disable_account(
     user: AuthenticatedUser,
     reason: str,
 ) -> None:
-    """Suspend the account: sets is_active=False in both helix_users AND user_directory.
+    """Suspend the account: sets is_active=False in both velaris_users AND user_directory.
 
     Both tables must be updated so that:
-    - Auth middleware blocks the login (helix_users.is_active)
+    - Auth middleware blocks the login (velaris_users.is_active)
     - User Directory shows the user as Inactive and the Reinstate button appears
     When an admin reinstates via User Directory PATCH, _sync_auth_active() in
-    user_directory.py mirrors is_active=True back into helix_users automatically.
+    user_directory.py mirrors is_active=True back into velaris_users automatically.
     """
     from case_service.db.models import HelixUserModel, UserDirectoryModel
 

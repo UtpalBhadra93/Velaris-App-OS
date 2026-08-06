@@ -11,7 +11,7 @@ current (trusted) config shape only — never raw case content, never user
 free-text. AI output is data: schema-strict extraction, unknown keys dropped,
 no fallback (a guessed optimization is a wrong optimization).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -6,6 +6,8 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@shared/components";
 import { PlatformRolloutPlans } from "@shared/components/PlatformRolloutPlans";
 import { useAuth } from "@/auth";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 const API = "/api/v1/deploy";
 
@@ -1258,6 +1260,9 @@ function PackagesTab() {
   const [creating, setCreating]   = useState(false);
   const [form, setForm]           = useState({ name: "", version: "", description: "" });
   const [err, setErr]             = useState<string | null>(null);
+  // The body is parsed for `detail` anyway; this keeps the stable error
+  // code that sits beside it rather than discarding it on the same line.
+  const [errObj, setErrObj] = useState<unknown>(null);
 
   const load = useCallback(async () => {
     const r = await fetch(`${APPS_API}/packages`, { headers: authHdr() });
@@ -1280,7 +1285,10 @@ function PackagesTab() {
         headers: { ...authHdr(), "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      if (!r.ok) { setErr((await r.json()).detail || "Error"); return; }
+      if (!r.ok) {
+        const _b = await r.json().catch(() => ({}));
+        setErr(_b?.detail || "Error"); setErrObj(codedFrom(_b) ?? null); return;
+      }
       setForm({ name: "", version: "", description: "" });
       setCreating(false);
       await load();
@@ -1325,7 +1333,11 @@ function PackagesTab() {
             <input style={pkgInputStyle} value={form.version} onChange={e => setForm(f => ({ ...f, version: e.target.value }))} required placeholder="1.0.0" />
             <span style={S.label}>Description (optional)</span>
             <input style={pkgInputStyle} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Release notes…" />
-            {err && <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 8 }}>{err}</div>}
+            {err && (
+              <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 8 }}>
+                {err}<ErrorCodeLink error={errObj} componentKey="hxdeploy" />
+              </div>
+            )}
             <Button disabled={loading}>{loading ? "Packaging…" : "Package Now"}</Button>
           </form>
         )}

@@ -5,7 +5,7 @@ Determines the current tenant from:
   2. Authenticated user's default tenant
   3. Falls back to 'default' tenant
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

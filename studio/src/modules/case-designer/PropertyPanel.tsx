@@ -226,6 +226,8 @@ function StepPropertyEditor({
               "crm_sync", "invoice_generate",
               "sms_send", "slack_notify",
               "doc_extract", "doc_store",
+              // AI as a workflow participant (#33) — proposes, human decides
+              "ai_action",
             ]}
             labels={[
               "👤 User Task", "✋ Manual Task", "✅ Approval",
@@ -235,6 +237,7 @@ function StepPropertyEditor({
               "☁️ CRM Sync", "🧾 Invoice Generate",
               "📱 SMS Send", "💬 Slack Notify",
               "🔍 Doc Extract (AI)", "📂 Doc Store",
+              "🤖 AI Action (proposes — human decides)",
             ]} />
         </Field>
         <Field label="BPMN Element ID">
@@ -335,6 +338,12 @@ function StepPropertyEditor({
         <ApprovalSection
           config={(local as any).approval_config ?? {}}
           onChange={cfg => update({ approval_config: cfg } as any)}
+        />
+      )}
+      {local.step_type === "ai_action" && (
+        <AIActionSection
+          config={(local as any).ai_action_config ?? {}}
+          onChange={cfg => update({ ai_action_config: cfg } as any)}
         />
       )}
 
@@ -471,6 +480,73 @@ function SubprocessSection({
 }
 
 /* ── Script Task Config ───────────────────────────────────────────── */
+
+function AIActionSection({
+  config, onChange,
+}: {
+  config: {
+    prompt?: string;
+    output_variable?: string;
+    require_human_approval?: boolean;
+    namespace?: string;
+  };
+  onChange: (cfg: any) => void;
+}) {
+  const up = (partial: any) => onChange({ ...config, ...partial });
+  const requiresApproval = config.require_human_approval !== false;
+
+  return (
+    <Section title="AI Action — model proposes, a human decides">
+      <Field label="Prompt — what to ask the model">
+        <textarea
+          value={config.prompt ?? ""}
+          onChange={e => up({ prompt: e.target.value })}
+          rows={4}
+          placeholder={"Summarise the claim and suggest a settlement band."}
+          style={{ width: "100%", padding: "6px 8px", fontSize: 11, fontFamily: "monospace", background: "var(--bg-input)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)", resize: "vertical" as const, boxSizing: "border-box" as const }}
+        />
+      </Field>
+      <Field label="Output variable — where an accepted answer is written">
+        <input
+          value={config.output_variable ?? ""}
+          onChange={e => up({ output_variable: e.target.value })}
+          placeholder="settlement_band"
+          style={{ width: "100%", padding: "6px 8px", fontSize: 11, background: "var(--bg-input)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)", boxSizing: "border-box" as const }}
+        />
+      </Field>
+      <Field label="Namespace">
+        <input
+          value={config.namespace ?? "ai"}
+          onChange={e => up({ namespace: e.target.value })}
+          placeholder="ai"
+          style={{ width: "100%", padding: "6px 8px", fontSize: 11, background: "var(--bg-input)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)", boxSizing: "border-box" as const }}
+        />
+      </Field>
+      <Field label="Human approval">
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-primary)" }}>
+          <input
+            type="checkbox"
+            checked={requiresApproval}
+            onChange={e => up({ require_human_approval: e.target.checked })}
+          />
+          Require a human to accept, edit or reject the model's answer
+        </label>
+      </Field>
+      {!requiresApproval && (
+        <div style={{ fontSize: 10, color: "var(--color-warning, #b45309)", marginTop: 4, lineHeight: 1.5 }}>
+          ⚠ The model will write to <code>{config.namespace ?? "ai"}.{config.output_variable || "…"}</code> unattended.
+          A proposal row is still recorded, so the write is never invisible — but nobody reviews it first.
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.5 }}>
+        Writes are grant-checked: an admin must grant <code>ai_action</code> write on the target
+        namespace, or the step fails closed. Secret and PII values are masked before the case
+        context reaches the model.
+      </div>
+    </Section>
+  );
+}
+
 
 function ScriptTaskSection({
   config, onChange,

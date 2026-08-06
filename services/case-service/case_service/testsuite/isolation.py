@@ -4,7 +4,7 @@ Mutating suites run ONLY inside disposable `hxtest-<runid>` tenants the runner
 provisions and force-tears-down (even on failure). Tokens are minted from the
 same settings the app decodes with, scoped to the ephemeral tenant.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

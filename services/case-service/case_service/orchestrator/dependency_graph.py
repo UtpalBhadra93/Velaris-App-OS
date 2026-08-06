@@ -3,7 +3,7 @@
 Analyzes relationships between artifacts and produces a topological
 ordering so dependencies can be migrated before their dependents.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

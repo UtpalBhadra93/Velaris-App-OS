@@ -9,7 +9,7 @@ resolves the case first and 404s when the caller may not see it, so this
 surface cannot be used to probe for case existence. Labelling is gated more
 narrowly than reading — a wrong label poisons everything trained on it.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

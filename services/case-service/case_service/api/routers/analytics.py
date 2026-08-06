@@ -3,7 +3,7 @@
 Aggregate queries for case metrics, SLA compliance, resolution
 times, and bottleneck identification.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -636,6 +636,18 @@ async def export_saved_report(
     result = (await nl_query(r.query_def.get("question", ""), session)
               if r.query_type == "nl"
               else await run_structured(r.query_def, session))
+
+    # HxPrivacy (§8.10): a saved report is downloaded and shared onward, so
+    # confirmed personal data is masked on the way out. The series is rebuilt
+    # rather than mutated — `result` may be reused by the caller.
+    from case_service.config import get_settings as _gs
+
+    if _gs().pii_redact_exports:
+        from case_service.core import pii_redaction as _pii
+
+        _paths = await _pii.confirmed_field_paths(session)
+        result = {**result, "series": _pii.redact_rows(result.get("series", []), _paths)}
+
     fname = r.name.replace(" ", "_")
     if format == "csv":
         return Response(to_csv(result.get("series", [])), media_type="text/csv",

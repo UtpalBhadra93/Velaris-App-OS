@@ -6,7 +6,7 @@ GET  /api/v1/testsuite/runs/{id}   run detail + per-test results
 GET  /api/v1/testsuite/runs/{id}/stream   SSE live results
 GET  /api/v1/testsuite/suites      registered/built-in suites
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

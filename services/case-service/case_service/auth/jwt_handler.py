@@ -3,14 +3,14 @@
 Supports:
 - HS256 mode: symmetric shared secret (dev / legacy).  Prints a startup warning.
 - RS256 mode: asymmetric RSA key pair (recommended for production).
-              Set HELIX_CASE_AUTH_RSA_PRIVATE_KEY + HELIX_CASE_AUTH_RSA_PUBLIC_KEY.
+              Set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY + VELARIS_CASE_AUTH_RSA_PUBLIC_KEY.
 - OIDC mode:  validates RS256 tokens from Keycloak / Auth0 / etc.
 
 RS256 is the default when RSA keys are configured.  The signing private key lives
 only in the auth service; every other service holds only the public key and
 therefore cannot mint tokens — unlike the shared-secret HS256 model.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -85,8 +85,8 @@ def generate_rsa_keypair(key_size: int = 2048) -> tuple[str, str]:
 
     print("# ── RSA key pair generated ──────────────────────────────────────────")
     print("# Add both to your .env file (replace literal newlines with \\n):")
-    print(f"HELIX_CASE_AUTH_RSA_PRIVATE_KEY={repr(private_pem)}")
-    print(f"HELIX_CASE_AUTH_RSA_PUBLIC_KEY={repr(public_pem)}")
+    print(f"VELARIS_CASE_AUTH_RSA_PRIVATE_KEY={repr(private_pem)}")
+    print(f"VELARIS_CASE_AUTH_RSA_PUBLIC_KEY={repr(public_pem)}")
     return private_pem, public_pem
 
 
@@ -120,7 +120,7 @@ def create_dev_token(
 
     import os
     from uuid import uuid4
-    email_domain = os.getenv("HELIX_AUTH_EMAIL_DOMAIN", "local")
+    email_domain = os.getenv("VELARIS_AUTH_EMAIL_DOMAIN", "local")
     now = int(time.time())
 
     # SECURITY FIX: roles default is [] (fail closed), never ["admin"].
@@ -136,8 +136,8 @@ def create_dev_token(
         "realm_access": {"roles": effective_roles},
         "iat": now,
         "exp": exp,
-        "iss": "helix",
-        "aud": "helix-api",
+        "iss": "velaris",
+        "aud": "velaris-api",
         "jti": jti or str(uuid4()),
     }
 
@@ -147,7 +147,7 @@ def create_dev_token(
     # HS256 fallback — only acceptable in local dev.
     logger.warning(
         "Signing JWT with HS256 shared secret. "
-        "Set HELIX_CASE_AUTH_RSA_PRIVATE_KEY + HELIX_CASE_AUTH_RSA_PUBLIC_KEY "
+        "Set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY + VELARIS_CASE_AUTH_RSA_PUBLIC_KEY "
         "to enable RS256 before deploying to production."
     )
     return jwt.encode(payload, secret, algorithm="HS256")
@@ -158,8 +158,8 @@ def create_dev_token(
 def decode_jwt_token(
     token: str,
     secret: str,
-    issuer: str = "helix",
-    audience: str = "helix-api",
+    issuer: str = "velaris",
+    audience: str = "velaris-api",
     public_key: str = "",
 ) -> dict[str, Any]:
     """Decode and validate a JWT token.

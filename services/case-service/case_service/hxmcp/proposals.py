@@ -5,7 +5,7 @@ of executing. A human then confirms it — execution re-checks authorization as
 the CONFIRMER (who is accountable) and the row's status gates it to exactly
 once (pending -> executed). Proposals expire.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

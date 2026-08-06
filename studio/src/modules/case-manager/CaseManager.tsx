@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import AIProposals from "./AIProposals";
+import CaseEventStream from "./CaseEventStream";
 import { useApi } from "@shared/hooks";
 import {
   listCases,
   listCaseShares,
   shareCase,
   unshareCase,
-  getCase,
-  getCaseType,
+  getCaseDetail,
   createCase,
   changeCaseStatus,
   changeCasePriority,
@@ -14,14 +15,11 @@ import {
   closeCase,
   reopenCase,
   cancelCase,
-  getCaseHistory,
-  getCaseSLA,
   getCaseChildren,
   listCaseTypes,
   transitionStage,
   completeStep,
   listStepCompletions,
-  getMyTask,
   unlockStep,
   getForm,
   listMeetProviders,
@@ -52,6 +50,7 @@ import {
   type KycCheck,
   apiFetch,
 } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 import type { MyTaskResult, CaseSession, MeetProvider } from "@shared/api/client";
 import FormRenderer from "@modules/form-builder/FormRenderer";
 import {
@@ -105,7 +104,7 @@ export default function CaseManager() {
   const dragStartX = useRef(0);
   const dragStartW = useRef(0);
 
-  const { data, loading, error, refetch } = useApi(
+  const { data, loading, error, errorObj, refetch } = useApi(
     () => listCases({ status: statusFilter || undefined, priority: priorityFilter || undefined, vars: varFilter ? [varFilter] : undefined, page, page_size: PAGE_SIZE })
       .then(r => { setVarFilterError(null); return r; })
       .catch(e => { if (varFilter) setVarFilterError(e?.message || "Invalid variable filter"); throw e; }),
@@ -186,7 +185,10 @@ export default function CaseManager() {
 
         {error && (
           <Card style={{ borderColor: "var(--status-failed)" }}>
-            <p style={{ color: "var(--status-failed)", fontSize: 13 }}>Failed to load cases: {error}</p>
+            <p style={{ color: "var(--status-failed)", fontSize: 13 }}>
+              Failed to load cases: {error}
+              <ErrorCodeLink error={errorObj} componentKey="cases" />
+            </p>
             <Button variant="secondary" size="sm" onClick={refetch} style={{ marginTop: "var(--space-sm)" }}>Retry</Button>
           </Card>
         )}
@@ -312,12 +314,18 @@ type ConfirmState = { label: string; action: () => Promise<any> } | null;
 function CaseDetailPanel({
   caseId, width, onClose, onUpdate,
 }: { caseId: string; width: number; onClose: () => void; onUpdate: () => void }) {
-  const { data: caseData, refetch } = useApi(() => getCase(caseId), [caseId]);
-  const { data: history } = useApi(() => getCaseHistory(caseId), [caseId]);
-  const { data: slaData } = useApi(() => getCaseSLA(caseId), [caseId]);
-  const { data: caseTypeData } = useApi(() => getCaseType(caseData?.case_type_id ?? ""), [caseData?.case_type_id]);
-  const { data: myTask, refetch: refetchMyTask } = useApi(() => getMyTask(caseId), [caseId]);
-  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk">("stages");
+  // One request instead of five. The old shape had a genuine waterfall — the
+  // case type could not be fetched until the case returned its case_type_id.
+  const { data: detail, refetch } = useApi(() => getCaseDetail(caseId), [caseId]);
+  const caseData     = detail?.case ?? null;
+  const history      = detail?.history ?? null;
+  const slaData      = detail?.slas ?? null;
+  const caseTypeData = detail?.case_type ?? null;
+  const myTask       = detail?.my_task ?? null;
+  // The task pane refetches after a claim/complete; re-reading the whole
+  // aggregate is one request and keeps every pane consistent with it.
+  const refetchMyTask = refetch;
+  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "events">("stages");
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -447,8 +455,8 @@ function CaseDetailPanel({
       <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)", flexShrink: 0, overflowX: "auto" }}>
         {([
           myTask ? "my-task" : null,
-          "stages", "details", "timeline", "sla", "risk", "sharing", "sessions", "messages", "ask",
-        ].filter(Boolean) as Array<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk">).map((t) => (
+          "stages", "details", "timeline", "sla", "risk", "ai", "events", "sharing", "sessions", "messages", "ask",
+        ].filter(Boolean) as Array<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "events">).map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{
             flex: 1, padding: "10px 8px", fontSize: 11, fontWeight: 500, fontFamily: "var(--font-mono)",
             textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
@@ -506,6 +514,8 @@ function CaseDetailPanel({
         {tab === "ask" && <AskTab caseId={caseId} />}
         {tab === "risk" && <RiskTab caseId={caseId} onResolved={() => { refetch(); onUpdate(); }} />}
         {tab === "messages" && <MessagesTab caseId={caseId} />}
+        {tab === "ai" && <AIProposals caseId={caseId} />}
+        {tab === "events" && <CaseEventStream caseId={caseId} />}
       </div>
     </div>
   );

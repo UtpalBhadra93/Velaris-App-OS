@@ -9,7 +9,7 @@ write-once (orders are immutable from outside after creation, key invariant 2).
 This is the user-less creation path (no JWT): the order's tenant comes from the
 service token, mirroring HxFusion's tenant-derivation rule in cases.create_case.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

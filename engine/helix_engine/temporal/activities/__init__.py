@@ -110,7 +110,7 @@ async def execute_service_task(input_data: dict[str, Any]) -> dict[str, Any]:
         or inp.implementation.startswith("helix://")
     ):
         from helix_engine.plugins.http_resolver import HttpTaskResolver
-        from helix_ir.models.process import ServiceTask
+        from velaris_ir.models.process import ServiceTask
 
         # Reconstruct a minimal ServiceTask for the resolver
         task = ServiceTask(
@@ -152,13 +152,13 @@ def _get_service_registry() -> dict[str, str]:
     Maps helix service names to base URLs.  In production this would
     come from service discovery or helix.yaml configuration.
 
-    Override with HELIX_SERVICE_REGISTRY env var (JSON) or extend this function.
+    Override with VELARIS_SERVICE_REGISTRY env var (JSON) or extend this function.
     """
     import json
     import os
 
     # Check env var first
-    registry_json = os.environ.get("HELIX_SERVICE_REGISTRY")
+    registry_json = os.environ.get("VELARIS_SERVICE_REGISTRY")
     if registry_json:
         try:
             return json.loads(registry_json)
@@ -308,7 +308,7 @@ async def execute_business_rule_task(input_data: dict[str, Any]) -> dict[str, An
     """Execute a business rule task (evaluate a stored business rule).
 
     Calls POST {CASE_SERVICE_URL}/api/v1/rules/{decision_ref}/evaluate with the
-    current workflow variables as context.  Requires HELIX_SERVICE_TOKEN (a valid
+    current workflow variables as context.  Requires VELARIS_SERVICE_TOKEN (a valid
     JWT minted against the same AUTH_SECRET as case-service) and CASE_SERVICE_URL
     (default http://localhost:8200).
 
@@ -318,7 +318,7 @@ async def execute_business_rule_task(input_data: dict[str, Any]) -> dict[str, An
     To wire this up:
       1. Generate a long-lived service JWT on case-service startup using
          ``create_dev_token(user_id="helix-engine", roles=["superadmin"])``
-         and expose it as HELIX_SERVICE_TOKEN in the engine's environment.
+         and expose it as VELARIS_SERVICE_TOKEN in the engine's environment.
       2. Set CASE_SERVICE_URL if case-service is not on localhost:8200.
     """
     import os
@@ -335,10 +335,10 @@ async def execute_business_rule_task(input_data: dict[str, Any]) -> dict[str, An
     if not inp.decision_ref:
         return ActivityOutput(variables=inp.variables, resolved_by="passthrough").to_dict()
 
-    service_token = os.environ.get("HELIX_SERVICE_TOKEN", "")
+    service_token = os.environ.get("VELARIS_SERVICE_TOKEN", "")
     if not service_token:
         activity.logger.warning(
-            "HELIX_SERVICE_TOKEN not set — business rule task '%s' running as passthrough",
+            "VELARIS_SERVICE_TOKEN not set — business rule task '%s' running as passthrough",
             inp.task_name,
         )
         return ActivityOutput(variables=inp.variables, resolved_by="passthrough").to_dict()

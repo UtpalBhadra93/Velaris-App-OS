@@ -4,7 +4,7 @@ Adds no mining capability. Reads bottlenecks / high-share slow variants /
 conformance drift for one case type and emits bounded *optimization candidates*
 for the proposer. Purely deterministic — no AI here.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

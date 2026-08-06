@@ -9,7 +9,7 @@ checks that ran, per-tenant review threshold, assistive framing
 (review_recommended, never a verdict), the meet.recording.view read gate and
 the audit event.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -7,6 +7,8 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { useBranchMode, useCurrentUserGroups } from "@shared/hooks";
 import { BranchModeBanner, ReviewerPicker } from "@shared/components";
 import { createBranch } from "@shared/api/client";
+import { codedFrom } from "@shared/api/client";
+import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 
 const API = "/api/v1/hxbridge";
 
@@ -65,6 +67,9 @@ function ConnectorsTab() {
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The body is parsed for `detail` anyway; this keeps the stable error
+  // code that sits beside it rather than discarding it on the same line.
+  const [errObj, setErrObj] = useState<unknown>(null);
   const [rotateMsg, setRotateMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // Branch mode: editable config JSON (credentials NEVER included)
   const [branchConfigStr, setBranchConfigStr] = useState("{}");
@@ -135,10 +140,13 @@ function ConnectorsTab() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: form.name, connector_type: form.connector_type, description: form.description, config, credentials, variable_namespace: form.variable_namespace.trim() || null }),
       });
-      if (!r.ok) { setErr((await r.json()).detail || "Error"); return; }
+      if (!r.ok) {
+        const _b = await r.json().catch(() => ({}));
+        setErr(_b?.detail || "Error"); setErrObj(codedFrom(_b) ?? null); return;
+      }
       setCreating(false); setForm({ name: "", connector_type: "http", description: "", config: "{}", credentials: "{}", variable_namespace: "" });
       await load();
-    } catch (ex: any) { setErr(ex.message); }
+    } catch (ex: any) { setErr(ex.message); setErrObj(ex); }
     finally { setLoading(false); }
   }
 
@@ -262,7 +270,11 @@ function ConnectorsTab() {
             {selectedType && (
               <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>{selectedType.description}</div>
             )}
-            {err && <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 6 }}>{err}</div>}
+            {err && (
+              <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 6 }}>
+                {err}<ErrorCodeLink error={errObj} componentKey="hxbridge" />
+              </div>
+            )}
             <button type="submit" disabled={loading} style={{ ...S.btn, ...S.btnPrimary, width: "100%" }}>{loading ? "Creating…" : "Create"}</button>
           </form>
         )}

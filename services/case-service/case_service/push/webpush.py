@@ -34,7 +34,7 @@ class WebPushChannel:
     def __init__(self) -> None:
         self._private_key = os.getenv("VAPID_PRIVATE_KEY")
         self._public_key = os.getenv("VAPID_PUBLIC_KEY")
-        self._subject = os.getenv("VAPID_SUBJECT", "mailto:admin@helix.local")
+        self._subject = os.getenv("VAPID_SUBJECT", "mailto:admin@velaris.local")
 
     @property
     def available(self) -> bool:

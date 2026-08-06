@@ -87,8 +87,8 @@ _INJECTION_SIGNALS: list[tuple[str, re.Pattern]] = [
     ("prompt_override",  re.compile(r"ignore\s+(previous|prior|all|above)\s+instructions?", re.I)),
     ("prompt_override",  re.compile(r"forget\s+(everything|all)\s+you", re.I)),
     ("prompt_override",  re.compile(r"override\s+(your\s+)?(instructions?|prompt|rules?)", re.I)),
-    ("role_hijack",      re.compile(r"you\s+are\s+now\s+(?!hxnexus|a\s+helix|an?\s+ai)", re.I)),
-    ("role_hijack",      re.compile(r"pretend\s+(you\s+are|to\s+be)\s+(?!hxnexus|a\s+helix)", re.I)),
+    ("role_hijack",      re.compile(r"you\s+are\s+now\s+(?!hxnexus|a\s+helix|a\s+velaris|an?\s+ai)", re.I)),
+    ("role_hijack",      re.compile(r"pretend\s+(you\s+are|to\s+be)\s+(?!hxnexus|a\s+helix|a\s+velaris)", re.I)),
     ("jailbreak_mode",   re.compile(r"\b(dan|jailbreak|developer\s+mode|god\s+mode|unrestricted\s+mode)\b", re.I)),
     ("system_injection", re.compile(r"(^|\n)\s*system\s*:\s+", re.I)),
     ("system_injection", re.compile(r"<\|system\|>|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[SYS\]", re.I)),
@@ -166,7 +166,7 @@ def validate_prompt_size(prompt: str, system: str = "") -> None:
     protected, not just the chat edge. The ceiling is generous (composed
     prompts are large); it exists to stop a 500-page-PDF-style budget blowout,
     not to constrain legitimate use. Configurable via
-    ``HELIX_CASE_AI_MAX_PROMPT_CHARS``.
+    ``VELARIS_CASE_AI_MAX_PROMPT_CHARS``.
     """
     from case_service.config import get_settings
     limit = get_settings().ai_max_prompt_chars

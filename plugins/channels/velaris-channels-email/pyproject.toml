@@ -6,12 +6,12 @@ requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 dependencies = ["velaris-sdk"]
 
-[project.entry-points."helix.channel"]
-email = "helix_channels_email:EmailBackend"
+[project.entry-points."velaris.channel"]
+email = "velaris_channels_email:EmailBackend"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["helix_channels_email"]
+packages = ["velaris_channels_email"]

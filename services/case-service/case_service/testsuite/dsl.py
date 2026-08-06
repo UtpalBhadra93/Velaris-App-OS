@@ -4,7 +4,7 @@ CLOSED by design (decision D4): a fixed action set, `{{var}}` interpolation, and
 structured assertions only — never `eval`. This is what lets publisher-supplied
 app-bundled tests (Phase F) run safely in a tenant environment.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

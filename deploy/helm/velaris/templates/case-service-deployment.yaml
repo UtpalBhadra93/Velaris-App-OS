@@ -21,9 +21,9 @@ spec:
           ports:
             - containerPort: {{ .Values.caseService.port }}
           env:
-            - name: HELIX_CASE_DATABASE_URL
+            - name: VELARIS_CASE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
-            - name: HELIX_CASE_REDIS_URL
+            - name: VELARIS_CASE_REDIS_URL
               value: {{ include "helix.redisUrl" . | quote }}
             {{- range $k, $v := .Values.caseService.env }}
             - name: {{ $k }}

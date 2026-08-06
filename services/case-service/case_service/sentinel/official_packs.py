@@ -10,7 +10,7 @@ These are ordinary manifests: the same format an external/community pack uses,
 run through the same install + safe-expression validation. "Official" only means
 "bundled + curated", it grants no extra capability.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

@@ -942,7 +942,7 @@ function FormKeyPicker({ value, forms, onChange }: {
   );
 }
 
-const HELIX_SERVICE_PRESETS = [
+const VELARIS_SERVICE_PRESETS = [
   { label: "HxNexus — AI inference", value: "helix://hxnexus/infer" },
   { label: "HxNexus — Credit score", value: "helix://hxnexus/credit-score" },
   { label: "HxNexus — Classify document", value: "helix://hxnexus/classify" },
@@ -969,9 +969,9 @@ function ServiceTaskPanel({ implementation, onChange }: { implementation: string
         style={inputStyle} />
       {showPresets && (
         <div style={{ border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", marginTop: 4, overflow: "hidden", maxHeight: 220, overflowY: "auto" }}>
-          {HELIX_SERVICE_PRESETS.map((p, i) => (
+          {VELARIS_SERVICE_PRESETS.map((p, i) => (
             <div key={i} onClick={() => { onChange(p.value); setShowPresets(false); }}
-              style={{ padding: "6px 10px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", borderBottom: i < HELIX_SERVICE_PRESETS.length - 1 ? "1px solid var(--border-subtle)" : "none" }}
+              style={{ padding: "6px 10px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", borderBottom: i < VELARIS_SERVICE_PRESETS.length - 1 ? "1px solid var(--border-subtle)" : "none" }}
               onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-card-hover)")}
               onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
             >

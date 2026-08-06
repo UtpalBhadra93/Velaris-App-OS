@@ -8,7 +8,7 @@ session is actually recording — so instruction and response both land in the
 sealed recording — and the observed result is recorded by the WORKER. The AI
 never auto-passes anything.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

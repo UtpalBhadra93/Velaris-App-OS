@@ -434,6 +434,15 @@ async def extract(
     backend=None,
 ) -> dict[str, Any]:
     """Propose values for the catalogue's fields. Writes nothing."""
+    # HxConsent gate for `ai_processing`. The transcript is already in hand by
+    # the time this runs, so the gate binds the *model* step — sending case
+    # content to an inference backend — not the recording, which HxMeet governs
+    # at the participant row. `voice_processing` is deliberately not gated: the
+    # subject there is the speaker, and diarisation gives no identity to check.
+    from case_service.compliance import consent as consent_svc
+
+    await consent_svc.require_case_purpose(session, case, consent_svc.AI_PROCESSING)
+
     backend, external_consented = await resolve_backend(
         session, case.tenant_id, feature_label="Voice form-fill", backend=backend)
     external_capable = bool(getattr(backend, "is_external", False))

@@ -54,6 +54,13 @@ dev = [
     "httpx>=0.28.0",
     "aiosqlite>=0.20.0",
 ]
+# Durable event log (§2.1) — the outbox fan-out onto Redpanda/Kafka. Optional
+# because the bus is OFF by default: the outbox is already durable on disk, so
+# this adds distribution, not safety. `event_bus.py` imports it lazily, so a
+# deployment without the wheel simply never starts the relay.
+events = [
+    "aiokafka>=0.10.0",
+]
 # DB SDK — per-backend drivers, installed only for the chosen backend (BYO model).
 # PostgreSQL (asyncpg) is a core dependency since it is the default backend.
 mysql = [

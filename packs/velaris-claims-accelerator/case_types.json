@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ct-claims-0001",
+    "name": "Insurance Claim",
+    "version": "1.0",
+    "description": "First notice of loss through to settlement or decline. Five stages with an assessment gate before any payment is authorised.",
+    "icon": "shield",
+    "color": "#8b5cf6",
+    "tags": ["claims", "insurance", "accelerator-pack"],
+    "default_priority": "medium",
+    "portal_enabled": true,
+    "definition_json": {
+      "stages": [
+        { "id": "intake",     "name": "Intake",     "transitions": ["triage", "declined"] },
+        { "id": "triage",     "name": "Triage",     "transitions": ["assessment", "declined"] },
+        { "id": "assessment", "name": "Assessment", "transitions": ["approval", "declined"] },
+        { "id": "approval",   "name": "Approval",   "transitions": ["settled", "declined"] },
+        { "id": "settled",    "name": "Settled",    "terminal": true, "transitions": [] },
+        { "id": "declined",   "name": "Declined",   "terminal": true, "transitions": [] }
+      ]
+    }
+  }
+]

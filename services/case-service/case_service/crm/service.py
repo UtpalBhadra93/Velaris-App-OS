@@ -217,3 +217,92 @@ async def list_invoices(session: AsyncSession, case_id: uuid.UUID) -> list[Invoi
         select(InvoiceRecordModel).where(InvoiceRecordModel.case_id == case_id)
         .order_by(InvoiceRecordModel.created_at.desc())
     )).scalars().all())
+
+
+#: Statuses that can still change in Xero. Anything else is terminal and is
+#: never re-fetched — polling a paid invoice forever costs API calls to learn
+#: nothing.
+_OPEN_INVOICE_STATUSES = frozenset({"draft", "submitted", "authorised", "authorized"})
+
+#: Don't re-poll the same invoice more often than this. A case page can be
+#: opened repeatedly in a minute, and Xero's rate limit is per-org.
+_INVOICE_POLL_MIN_SECONDS = 300
+
+#: Last poll time per invoice, in process memory.
+#:
+#: `invoice_records` has no `updated_at` column, and adding one for a display
+#: throttle would be a migration in service of a courtesy. The throttle exists
+#: only to avoid hammering Xero's per-org rate limit when someone reopens a
+#: case page — it is not correctness. A per-worker cache therefore costs at
+#: most one extra call per worker per window, and resets on restart, which is
+#: an acceptable trade for not touching the schema.
+_last_polled: dict[str, float] = {}
+
+
+async def refresh_invoice_statuses(
+    session: AsyncSession,
+    rows: list[InvoiceRecordModel],
+    *,
+    tenant_id: str,
+) -> list[InvoiceRecordModel]:
+    """Poll Xero for the current status of still-open invoices.
+
+    **Xero is the system of record for invoicing.** Velaris raises the invoice
+    and keeps the id, number and URL so the case can link to it — but once
+    raised, whether it is paid, voided or overdue is Xero's answer, not ours.
+    Until this existed, `invoice_records.status` only ever became `draft` or
+    `failed`: nothing ever asked again, so a paid invoice showed as a draft
+    forever.
+
+    **Poll-on-read, deliberately.** Case progression does not wait for payment —
+    the `invoice_generate` step completes when Xero returns an id — so a stale
+    status is a display defect, not a stuck workflow. That makes refreshing
+    when someone actually looks the right trade: no scheduler, no webhook
+    endpoint, no signature scheme, and the only cost is on a page view.
+    (If progression ever *should* wait for payment, this is the wrong
+    mechanism — it would make the case depend on a human opening the page.)
+
+    **Never raises.** Xero being unreachable must not blank the invoice panel;
+    the caller still gets the rows it already had, with whatever status was
+    last known.
+    """
+    import time as _time
+
+    now_mono = _time.monotonic()
+    stale = [
+        r for r in rows
+        if r.invoice_id
+        and (r.status or "").lower() in _OPEN_INVOICE_STATUSES
+        and now_mono - _last_polled.get(str(r.id), 0.0) >= _INVOICE_POLL_MIN_SECONDS
+    ]
+    if not stale:
+        return rows
+
+    try:
+        reg, creds = await _get_connector(session, "xero", None, tenant_id)
+        from case_service.hxbridge.connectors.xero_connector import XeroConnector
+
+        connector = XeroConnector(config=reg.config or {}, credentials=creds)
+    except Exception as exc:
+        logger.debug("invoice refresh skipped — no usable Xero connector: %s", exc)
+        return rows
+
+    for rec in stale:
+        try:
+            result = await connector.execute(
+                {"operation": "get_invoice", "invoice_id": rec.invoice_id}
+            )
+        except Exception as exc:
+            # One unreachable invoice must not stop the rest being refreshed.
+            logger.warning("Xero get_invoice failed for %s: %s", rec.invoice_id, exc)
+            continue
+
+        remote = (result.get("status") or "").lower()
+        if remote and remote != (rec.status or "").lower():
+            rec.status = remote
+        # Stamped even when unchanged, so the interval actually throttles —
+        # otherwise an invoice that never changes is re-polled on every view.
+        _last_polled[str(rec.id)] = now_mono
+
+    return rows
+

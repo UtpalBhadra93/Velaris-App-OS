@@ -14,7 +14,9 @@ from case_service.db.models import (
     EmailAccountModel, EmailTemplateModel, EmailMessageModel, CaseInstanceModel,
 )
 from case_service.db.session import get_session
+from case_service.core.error_codes import CONSENT_REFUSED_403, coded
 from case_service.mail import EmailService
+from case_service.mail.service import ConsentRefused
 from case_service.mail.templates import render_template, TemplateError
 
 router = APIRouter(prefix="/email", tags=["email"])
@@ -67,6 +69,10 @@ class SendIn(BaseModel):
     in_reply_to: Optional[str] = None
     references: list[str] = []
     dry_run: bool = False
+    #: Lawful purpose for this send. Defaults to `case_processing` — never
+    #: gated. A gated purpose (today `marketing`) filters recipients against
+    #: the HxConsent ledger and refuses when none has a lawful basis.
+    purpose: Optional[str] = None
 
 
 class TemplateRenderIn(BaseModel):
@@ -307,7 +313,18 @@ async def send_email(
             template_id=body.template_id,
             subject=body.subject, body_text=body.body_text, body_html=body.body_html,
             ctx=body.ctx, in_reply_to=body.in_reply_to, references=body.references,
-            dry_run=body.dry_run,
+            dry_run=body.dry_run, purpose=body.purpose,
+            tenant_id=str(user.tenant_id) if getattr(user, "tenant_id", None) else None,
+        )
+    except ConsentRefused as e:
+        # 403, not 400: the request is well-formed and the caller is
+        # authenticated — the platform is refusing to process on legal grounds.
+        # The dropped addresses come back so an operator can see who and why
+        # without going to the audit log first.
+        raise coded(
+            403, CONSENT_REFUSED_403,
+            f"Refused: no recipient has a lawful basis for {e.purpose!r}. "
+            f"{len(e.dropped)} address(es) were dropped.",
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

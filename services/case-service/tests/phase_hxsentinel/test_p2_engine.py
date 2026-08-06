@@ -12,7 +12,7 @@ The engine is driven directly (no client sub-request) so these tests don't add
 the flush->client-call StaticPool shape to the suite; endpoint tests commit
 their setup BEFORE any client call.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

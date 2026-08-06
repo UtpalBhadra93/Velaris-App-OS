@@ -75,7 +75,7 @@ async def _assert_case_access(
     """
     case = await session.get(CaseInstanceModel, case_id)
     if not case:
-        raise HTTPException(404, "Case not found")
+        raise coded(404, LLM_NOTFOUND_404, "Case not found")
 
     # Admins and managers have platform-wide case access
     if user.is_admin or user.has_role("manager"):
@@ -94,7 +94,7 @@ async def _assert_case_access(
     )).scalar_one_or_none()
 
     if assignment is None:
-        raise HTTPException(403, "You are not assigned to this case.")
+        raise coded(403, LLM_NOT_ASSIGNED_403, "You are not assigned to this case.")
 
     return case
 
@@ -119,6 +119,34 @@ class IndexRequest(BaseModel):
 
 
 # ─── Status (real async liveness check) ──────────────────────────────
+
+@router.get("/llmops/metrics")
+async def llmops_metrics(
+    group_by: str = "model",
+    hours: int | None = None,
+    session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(require_role("admin")),
+):
+    """Per-call AI metrics — cost, volume, latency, error rate (#32, §5.4).
+
+    Grouped by `model`, `provider`, `purpose` or `route`; `hours` limits the
+    window. Token counts are estimated from character length — no backend here
+    reports provider usage — so the response says so rather than presenting a
+    guess as an invoice.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from case_service.hxnexus import llmops
+
+    since = (
+        datetime.now(timezone.utc) - timedelta(hours=hours)
+        if hours and hours > 0 else None
+    )
+    try:
+        return await llmops.metrics(session, since=since, group_by=group_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @router.get("/status")
 async def hxnexus_status(_: AuthenticatedUser = Depends(get_current_user)):
@@ -300,7 +328,7 @@ async def case_ask(
 
     case = await session.get(CaseInstanceModel, case_id)
     if case is None or not await same_tenant(session, case.tenant_id, current_user.tenant_id):
-        raise HTTPException(404, "Case not found")
+        raise coded(404, LLM_NOTFOUND_404, "Case not found")
     await hxguard.require_case(session, current_user, "cases.ask", case_id)
 
     # Transcript feed rides the same gate as viewing the recording.
@@ -314,6 +342,15 @@ async def case_ask(
         result = await ask_case(session, case=case, question=body.question,
                                 user=current_user,
                                 can_view_transcripts=can_view_transcripts)
+    except ProcessingRefused as e:
+        # 403, not 400: the request is well-formed and the caller authorised.
+        # The platform is refusing on legal grounds, which is a different thing
+        # from the caller having got something wrong.
+        raise coded(
+            403, CONSENT_REFUSED_403,
+            f"Refused: the subject of this case has no lawful basis for "
+            f"{e.purpose!r} ({e.reason}).",
+        )
     except PermissionError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
@@ -414,7 +451,7 @@ async def get_messages(
 ):
     conv = await session.get(CopilotConversationModel, conversation_id)
     if not conv or conv.user_id != current_user.user_id:
-        raise HTTPException(404, "Conversation not found")
+        raise coded(404, LLM_NOTFOUND_404, "Conversation not found")
     msgs = (await session.execute(
         select(CopilotMessageModel)
         .where(CopilotMessageModel.conversation_id == conversation_id)
@@ -432,7 +469,7 @@ async def get_transcript(
     """Download a plain-text transcript of the conversation."""
     conv = await session.get(CopilotConversationModel, conversation_id)
     if not conv or conv.user_id != current_user.user_id:
-        raise HTTPException(404, "Conversation not found")
+        raise coded(404, LLM_NOTFOUND_404, "Conversation not found")
 
     msgs = (await session.execute(
         select(CopilotMessageModel)
@@ -467,7 +504,7 @@ async def summarize_conversation(
     """Use HxNexus to generate a structured summary of the conversation."""
     conv = await session.get(CopilotConversationModel, conversation_id)
     if not conv or conv.user_id != current_user.user_id:
-        raise HTTPException(404, "Conversation not found")
+        raise coded(404, LLM_NOTFOUND_404, "Conversation not found")
 
     msgs = (await session.execute(
         select(CopilotMessageModel)
@@ -513,7 +550,7 @@ async def delete_conversation(
 ):
     conv = await session.get(CopilotConversationModel, conversation_id)
     if not conv or conv.user_id != current_user.user_id:
-        raise HTTPException(404, "Conversation not found")
+        raise coded(404, LLM_NOTFOUND_404, "Conversation not found")
     await session.delete(conv)
     await session.commit()
 
@@ -523,6 +560,13 @@ async def delete_conversation(
 from case_service.hxnexus.polyglot import translate, analyze, compare
 from case_service.hxnexus.autodoc import get_business_guide, get_dev_guide
 from case_service.db.models import BpmConceptModel
+from case_service.core.error_codes import (
+    CONSENT_REFUSED_403,
+    LLM_NOTFOUND_404,
+    LLM_NOT_ASSIGNED_403,
+    coded,
+)
+from case_service.compliance.consent import ProcessingRefused
 
 
 class TranslateRequest(BaseModel):

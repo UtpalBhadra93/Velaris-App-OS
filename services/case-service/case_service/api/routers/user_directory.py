@@ -205,7 +205,7 @@ async def sync_from_db(
         ("device_tokens",           "user_id"),
         ("operator_access_groups",  "operator_id"),
         ("case_assignments",        "user_id"),
-        ("helix_users",             "username"),
+        ("velaris_users",             "username"),
     ]
 
     discovered: set[str] = set()

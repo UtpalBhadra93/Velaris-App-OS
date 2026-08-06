@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Verify superadmin exists in helix_users.
+Verify superadmin exists in velaris_users.
 Called by start-velaris.sh as a belt-and-suspenders DB check.
 
 Exit 0 = superadmin found (or DB unavailable — don't block startup).
@@ -22,7 +22,7 @@ DATABASE_URL = os.environ.get(
 
 # The superadmin count query — identical on both dialects (MySQL treats TRUE as 1,
 # and is_superadmin / is_active are booleans → tinyint(1) there).
-_QUERY = "SELECT COUNT(*) FROM helix_users WHERE is_superadmin = TRUE AND is_active = TRUE"
+_QUERY = "SELECT COUNT(*) FROM velaris_users WHERE is_superadmin = TRUE AND is_active = TRUE"
 
 
 async def _count_postgres(parsed) -> int:

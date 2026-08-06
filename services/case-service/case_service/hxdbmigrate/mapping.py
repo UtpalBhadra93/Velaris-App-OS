@@ -4,7 +4,7 @@ Deterministic mapping from a source column's ``data_type`` to the recommended Po
 target type, flagging conversions that need a human decision (e.g. MySQL TINYINT(1) that is
 really a boolean, ENUM/SET with no direct PG equivalent, timezone handling).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

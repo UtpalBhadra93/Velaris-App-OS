@@ -8,7 +8,7 @@ face_match skip ladder (opt-in off > unconsented participants > model missing
 > no frames > no verified ID), the scored path with a mocked embedder, and
 the compare-and-discard invariant: no embedding is ever stored, only scores.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

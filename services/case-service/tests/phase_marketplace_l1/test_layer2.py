@@ -11,7 +11,7 @@ revocation stops the container instantly, image-digest drift is ALWAYS held
 (new code, both tiers — never additive), drift approval swaps the digest and
 restarts, and `registry_of` semantics.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

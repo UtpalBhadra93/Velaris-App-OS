@@ -23,6 +23,7 @@ from case_service.db.models import (
     PaymentRequestModel,
     PaymentWebhookEventModel,
 )
+from case_service.compliance import ledger_posting
 from case_service.hxbridge.encryption import decrypt_credentials
 from case_service.hxbridge.connectors.stripe_connector import StripeConnector
 
@@ -188,6 +189,15 @@ async def handle_stripe_webhook(
         except Exception as exc:
             logger.warning("Post-payment step completion failed (non-fatal): %s", exc)
 
+        # HxLedger (§8.4): money arrived, so the books must say so. Nested so a
+        # ledger problem cannot roll back the payment status written above —
+        # a failed post surfaces in /ledger/reconcile, which is what it is for.
+        try:
+            async with session.begin_nested():
+                await ledger_posting.post_capture(session, pr)
+        except Exception as exc:
+            logger.warning("Ledger capture posting failed (non-fatal): %s", exc)
+
     elif event_type in ("payment_intent.payment_failed", "checkout.session.expired") and pr:
         pr.status     = "failed"
         evt.processed = True
@@ -200,6 +210,17 @@ async def handle_stripe_webhook(
     elif event_type == "charge.refunded" and pr:
         pr.status     = "refunded"
         evt.processed = True
+
+        # A refund is its own transaction, not a reversal of the capture —
+        # both events really happened. Without it the refunded amount stays on
+        # the books while dropping out of the captured set, and reconciliation
+        # reports a discrepancy that is not one.
+        try:
+            async with session.begin_nested():
+                await ledger_posting.post_refund(session, pr)
+        except Exception as exc:
+            logger.warning("Ledger refund posting failed (non-fatal): %s", exc)
+
         await _emit_hxstream(pr.case_id, "payment_refunded", {
             "payment_request_id": str(pr.id),
             "step_id":            pr.step_id,

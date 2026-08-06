@@ -8,7 +8,7 @@ duplicate while a proposal is already pending.
 The LOCAL LLM call (`tuning._local_llm_json`) is patched — these tests never
 touch Ollama, matching the codebase's "[] when AI is unavailable" pattern.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

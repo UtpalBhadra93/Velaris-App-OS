@@ -4,8 +4,8 @@
 # prints key material.
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INIT_FILE="$HELIX_DIR/deploy/openbao/.bao-init.json"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INIT_FILE="$VELARIS_DIR/deploy/openbao/.bao-init.json"
 
 HEALTH=$(curl -s -m 3 -o /dev/null -w '%{http_code}' \
   "http://127.0.0.1:8350/v1/sys/health?sealedcode=472&uninitcode=471" || echo "000")
@@ -20,5 +20,5 @@ UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' "$INIT_FILE" 2>/dev/null || echo "")
 { [ -n "$UNSEAL_KEY" ] && [ "$UNSEAL_KEY" != "null" ]; } \
   || { echo "✗ keyfile unreadable or malformed"; exit 1; }
 
-"$HELIX_DIR/scripts/bao.sh" operator unseal "$UNSEAL_KEY" >/dev/null
+"$VELARIS_DIR/scripts/bao.sh" operator unseal "$UNSEAL_KEY" >/dev/null
 echo "✓ OpenBao unsealed"

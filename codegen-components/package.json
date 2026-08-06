@@ -1,5 +1,5 @@
 {
-  "name": "@helix/components",
+  "name": "@velaris/components",
   "version": "0.1.0",
   "private": true,
   "main": "src/index.ts"

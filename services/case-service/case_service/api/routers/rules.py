@@ -2,7 +2,7 @@
 
 CRUD for rule definitions and evaluation endpoints.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.api.schemas.rules import (
@@ -157,6 +158,139 @@ async def lint_expression_rules(
         "summary": summary,
         "total": len(findings),
         "findings": findings,
+    }
+
+
+@router.get("/lint/report")
+async def rule_migration_report(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Per-case-type migration report (roadmap #28, §7.4).
+
+    `/rules/lint` answers "which rules need work"; this answers "which case
+    types can move". They are different questions, and only the second one
+    tells you whether WASM can become the default for new rules — that switch
+    is per case type, and a single unmigrated rule blocks the case type it
+    belongs to.
+
+    Scope resolution matters here: a **global** rule applies to every case
+    type, so one bad global rule blocks all of them, and a **stage**-scoped
+    rule is attributed to the case type owning that stage. A report that only
+    counted `scope="case_type"` rules would under-report and read as ready
+    when it is not.
+    """
+    from sqlalchemy import or_
+
+    from case_service.core.safe_expression import (
+        Classification, classify_expression,
+    )
+    from case_service.db.models import CaseTypeModel, CaseTypeStageModel
+
+    # Migrating rules is a designer/admin act; the report is the work list for
+    # it, not general-audience information.
+    if not (user.is_admin or user.has_role("admin") or user.has_role("designer")):
+        raise HTTPException(403, "Rule migration report requires designer or admin")
+
+    # stage -> case type, so stage-scoped rules land on the right type.
+    # Keyed on BOTH the row UUID and the business `stage_id` string: no rule
+    # consumer currently resolves `scope="stage"`, so which identifier a rule
+    # stores is not fixed by any existing code path. Accepting both is the
+    # honest choice — missing a stage rule would report a case type as ready
+    # when it is not, which is the one error this report must not make.
+    stage_owner: dict[str, str] = {}
+    for row_id, stage_key, ct_id in (await session.execute(
+        select(
+            CaseTypeStageModel.id,
+            CaseTypeStageModel.stage_id,
+            CaseTypeStageModel.case_type_id,
+        )
+    )).all():
+        stage_owner[str(row_id)] = str(ct_id)
+        if stage_key:
+            stage_owner[str(stage_key)] = str(ct_id)
+
+    # Tenant-scoped, and role-gated below. This report enumerates case-type
+    # NAMES and rule NAMES — an unscoped version would let any authenticated
+    # user in one tenant read the process inventory of every other.
+    ct_q = select(CaseTypeModel.id, CaseTypeModel.name, CaseTypeModel.version)
+    if user.tenant_id and not user.is_admin:
+        # Global case types (tenant_id NULL) are shared, so they stay visible.
+        ct_q = ct_q.where(
+            or_(
+                CaseTypeModel.tenant_id.is_(None),
+                CaseTypeModel.tenant_id == user.tenant_id,
+            )
+        )
+    case_types = (await session.execute(ct_q)).all()
+
+    def _blank() -> dict:
+        return {"summary": {c.value: 0 for c in Classification}, "blocking": []}
+
+    per_type: dict[str, dict] = {str(ct.id): _blank() for ct in case_types}
+    globals_bucket = _blank()
+    orphans = _blank()          # stage/case_type rules pointing at nothing
+
+    for rule_type in _EXPRESSION_RULE_TYPES:
+        items, _ = await repo.list_rules(
+            session, rule_type=rule_type, offset=0, limit=10_000,
+        )
+        for rule in items:
+            expression = (rule.definition_json or {}).get("expression", "")
+            classification, reason = classify_expression(expression)
+
+            if rule.scope == "global":
+                targets = [globals_bucket]
+            else:
+                target_id = rule.scope_target_id
+                if rule.scope == "stage":
+                    target_id = stage_owner.get(str(target_id))
+                bucket = per_type.get(str(target_id)) if target_id else None
+                targets = [bucket if bucket is not None else orphans]
+
+            for bucket in targets:
+                bucket["summary"][classification.value] += 1
+                if classification is not Classification.CONFORMING:
+                    bucket["blocking"].append({
+                        "rule_id": str(rule.id),
+                        "name": rule.name,
+                        "scope": rule.scope,
+                        "classification": classification.value,
+                        "reason": reason,
+                    })
+
+    # A global rule that is not CONFORMING blocks every case type — fold that
+    # in rather than leaving the caller to join two lists correctly.
+    global_blockers = globals_bucket["blocking"]
+
+    report = []
+    for ct in case_types:
+        entry = per_type[str(ct.id)]
+        blocking = entry["blocking"] + global_blockers
+        report.append({
+            "case_type_id": str(ct.id),
+            "case_type_name": ct.name,
+            "version": ct.version,
+            "summary": entry["summary"],
+            "ready_for_wasm_default": not blocking,
+            "blocking_rules": blocking,
+        })
+
+    report.sort(key=lambda r: (r["ready_for_wasm_default"], r["case_type_name"]))
+
+    return {
+        "case_types": report,
+        "ready_count": sum(1 for r in report if r["ready_for_wasm_default"]),
+        "total_case_types": len(report),
+        "global_rules": {
+            "summary": globals_bucket["summary"],
+            "blocking_rules": global_blockers,
+        },
+        "unattributed_rules": {
+            "summary": orphans["summary"],
+            "blocking_rules": orphans["blocking"],
+            "note": "Rules whose scope_target_id matches no live case type or stage.",
+        },
     }
 
 

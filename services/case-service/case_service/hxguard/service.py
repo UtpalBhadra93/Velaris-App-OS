@@ -351,7 +351,7 @@ async def require_case(
     action: str,
     case_id,
 ) -> None:
-    """Case-level ReBAC check honoring HELIX_CASE_HXGUARD_CASE_ENFORCEMENT.
+    """Case-level ReBAC check honoring VELARIS_CASE_HXGUARD_CASE_ENFORCEMENT.
 
     off     → skipped entirely
     shadow  → evaluated; would-be denials audited (mode=shadow), request passes

@@ -1,6 +1,6 @@
 """HxNexus Operator (MCP) P1 — protocol, tool registry, and authz tests.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

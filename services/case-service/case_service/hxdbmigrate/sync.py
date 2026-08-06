@@ -17,7 +17,7 @@ new infrastructure (no Debezium/Kafka — signed-off decision 2026-07-05):
 A single-column primary key is REQUIRED for sync (the link identity). Tables
 without one still work with P4's one-shot batch migrate; sync refuses honestly.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

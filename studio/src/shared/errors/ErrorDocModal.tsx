@@ -18,18 +18,28 @@ interface Props {
   componentKey?:  string;
   /** Fallback label when the key isn't in the catalog (e.g. the page's nav label). */
   componentLabel?: string;
+  /**
+   * Open pre-filtered to one code, e.g. `VEL-DOC-STORAGE-503`.
+   *
+   * This is what makes the code the backend already returns useful: a user who
+   * hit the error lands on its entry instead of being handed a string and a
+   * search box.
+   */
+  initialCode?: string;
 }
 
-export default function ErrorDocModal({ open, onClose, componentKey, componentLabel }: Props) {
+export default function ErrorDocModal({ open, onClose, componentKey, componentLabel, initialCode }: Props) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
-      setQuery("");
+      // A code takes precedence over the component's own list — the user got
+      // here from a specific failure, not from browsing.
+      setQuery(initialCode ?? "");
       setTimeout(() => inputRef.current?.focus(), 60);
     }
-  }, [open]);
+  }, [open, initialCode]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };

@@ -54,7 +54,7 @@ def _validate_base_url(url: str) -> str:
         raise ValueError("Link-local address not allowed")
     extra_hosts = {
         h.strip().lower()
-        for h in os.getenv("HELIX_INTERNAL_HOSTS", "").split(",")
+        for h in os.getenv("VELARIS_INTERNAL_HOSTS", "").split(",")
         if h.strip()
     }
     if hostname not in (_ALLOWED_HOSTS | extra_hosts):
@@ -103,7 +103,7 @@ class Creator:
         self.dry_run = dry_run
         self._token  = auth_token   # SEC-6: never logged
         self._base   = _validate_base_url(
-            base_url or os.getenv("HELIX_CASE_SERVICE_URL", "http://localhost:8200")
+            base_url or os.getenv("VELARIS_CASE_SERVICE_URL", "http://localhost:8200")
         )
         self._imported_by_user_id = imported_by_user_id
         self._imported_by_email   = imported_by_email

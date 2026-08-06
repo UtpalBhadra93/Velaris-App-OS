@@ -7,7 +7,7 @@ enum · id · boolean · numeric · free_text · text. Read-only.
 SECURITY: raw sampled values are used only transiently, in memory. Nothing here persists a
 real value — callers store the derived category, ratios, and MASKED examples only.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

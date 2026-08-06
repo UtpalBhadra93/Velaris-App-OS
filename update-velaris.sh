@@ -14,12 +14,12 @@
 
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
-DB_CONTAINER="docker-compose-helix-db-1"
-DB_USER="helix"
-DB_NAME="helix"
-BACKUP_DIR="$HELIX_DIR/.backups"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
+DB_CONTAINER="docker-compose-velaris-db-1"
+DB_USER="velaris"
+DB_NAME="velaris"
+BACKUP_DIR="$VELARIS_DIR/.backups"
 
 # ── UPDATE SOURCE CONFIG — read from velaris.yaml ───────────────
 # To switch from GitHub to your own server, edit velaris.yaml:
@@ -27,7 +27,7 @@ BACKUP_DIR="$HELIX_DIR/.backups"
 #   updates.server_url: "https://updates.velaris.io/latest"
 _read_yaml() {
   local key="$1" default="${2:-}"
-  grep -E "^\s+${key}:" "$HELIX_DIR/velaris.yaml" 2>/dev/null \
+  grep -E "^\s+${key}:" "$VELARIS_DIR/velaris.yaml" 2>/dev/null \
     | head -1 \
     | sed -E "s/.*${key}:[[:space:]]*[\"']?([^\"'#]+)[\"']?.*/\1/" \
     | xargs \
@@ -42,7 +42,7 @@ UPDATE_WINDOW=$(_read_yaml "update_window" "")
 MANIFEST_BRANCH=$(_read_yaml "manifest_branch" "main")
 
 # ── Backend guard ────────────────────────────────────────────────
-# This updater assumes the bundled Postgres topology: it starts the `helix-db`
+# This updater assumes the bundled Postgres topology: it starts the `velaris-db`
 # container and runs migrations via `docker exec … psql` against migrations/postgresql/.
 # MySQL/MariaDB installs are bring-your-own external DBs (different client, consolidated
 # baseline — no incremental upgrade track), so a Postgres-only run here would execute
@@ -60,7 +60,7 @@ fi
 # PUO Phase 1: UI-approved update request written by Studio (platform_updates.py)
 # Phase 2: requests may carry scheduled_for (next after-hours slot from the
 # /admin business calendar) — the agent waits for that exact moment.
-UPDATE_REQUEST_FILE="$HELIX_DIR/.update-request"
+UPDATE_REQUEST_FILE="$VELARIS_DIR/.update-request"
 REQUEST_MODE=""
 REQUEST_SCHEDULED_FOR=""
 REQUEST_ACTION=""
@@ -73,7 +73,7 @@ if [[ -f "$UPDATE_REQUEST_FILE" ]]; then
 fi
 
 # Service port for the post-update health gate (default 8200)
-SERVICE_PORT=$(grep -E "^HELIX_CASE_SERVICE_PORT=" "$HELIX_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
+SERVICE_PORT=$(grep -E "^VELARIS_CASE_SERVICE_PORT=" "$VELARIS_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
 SERVICE_PORT="${SERVICE_PORT:-8200}"
 
 # ─────────────────────────────────────────────────────────────────
@@ -87,10 +87,10 @@ step()   { echo ""; bold "▶ $*"; }
 # ── Version beacon — fleet visibility for ops ────────────────────
 # previous_version is the rollback target — carry it across beacon writes
 # so an hourly "current" status never erases it.
-PREVIOUS_VERSION=$(python3 -c "import json; print(json.load(open('$HELIX_DIR/.update-status')).get('previous_version') or '')" 2>/dev/null || echo "")
+PREVIOUS_VERSION=$(python3 -c "import json; print(json.load(open('$VELARIS_DIR/.update-status')).get('previous_version') or '')" 2>/dev/null || echo "")
 _write_status() {
   # args: result message
-  cat > "$HELIX_DIR/.update-status" <<EOF
+  cat > "$VELARIS_DIR/.update-status" <<EOF
 {"version": "${CURRENT_VERSION:-unknown}", "previous_version": "${PREVIOUS_VERSION}", "channel": "$UPDATE_CHANNEL", "result": "$1", "message": "$2", "timestamp": "$(date -Iseconds)"}
 EOF
 }
@@ -125,8 +125,8 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 User=$USER
-WorkingDirectory=$HELIX_DIR
-ExecStart=$HELIX_DIR/update-velaris.sh --auto
+WorkingDirectory=$VELARIS_DIR
+ExecStart=$VELARIS_DIR/update-velaris.sh --auto
 EOF
       sudo tee /etc/systemd/system/velaris-update.timer > /dev/null <<EOF
 [Unit]
@@ -188,7 +188,7 @@ echo "╚═══════════════════════�
 
 # ── Step 1: Read current version ─────────────────────────────────
 step "Step 1/7 — Reading current version..."
-CURRENT_VERSION=$(grep 'version:' "$HELIX_DIR/velaris.yaml" | head -1 | sed 's/.*version: *"\([^"]*\)".*/\1/')
+CURRENT_VERSION=$(grep 'version:' "$VELARIS_DIR/velaris.yaml" | head -1 | sed 's/.*version: *"\([^"]*\)".*/\1/')
 echo "  Installed: v$CURRENT_VERSION"
 
 # ── Step 2: Fetch target version ─────────────────────────────────
@@ -218,7 +218,7 @@ fetch_manifest() {
   local url; url=$(_manifest_url)
   curl -sf --max-time 10 "$url" -o "$MANIFEST_FILE" 2>/dev/null || return 1
 
-  local pubkey="$HELIX_DIR/deploy/release-signing.pub"
+  local pubkey="$VELARIS_DIR/deploy/release-signing.pub"
   if [[ -f "$pubkey" ]]; then
     if ! command -v cosign >/dev/null 2>&1; then
       red "  ✗ release-signing.pub configured but cosign is not installed — refusing unverified manifest"
@@ -354,9 +354,38 @@ else
   exit 1
 fi
 
+# ── Record the backup in HxDR (§8.9) ──────────────────────────────
+# This script is the one place that reliably knows a good backup exists, and
+# until it said so `GET /dr/posture` reported `no_backup` for every region
+# while backups were in fact being taken.
+#
+# Runs BEFORE the code pull in Step 4 deliberately — the old tree is still
+# intact here, so the CLI is guaranteed importable.
+#
+# Never fatal, and `set -e` is suspended for it: a bookkeeping row must not
+# turn a successful backup into a failed update. The CLI exits 0 on its own
+# failures too; `|| true` covers the interpreter not being there at all.
+#
+# Runs from $VELARIS_DIR, not from services/case-service: `env_file: ".env"` is
+# resolved against the working directory, and the .env lives at the root. This
+# mirrors how start-velaris.sh launches the service (root + --app-dir).
+if [[ -x "$VELARIS_DIR/.venv/bin/python" ]]; then
+  set +e
+  (cd "$VELARIS_DIR" && \
+   PYTHONPATH="$VELARIS_DIR/services/case-service" \
+   "$VELARIS_DIR/.venv/bin/python" -m case_service.compliance.dr_cli \
+     --location "$BACKUP_FILE" \
+     --scope database \
+     --status succeeded \
+     --recorded-by "update-velaris.sh v${CURRENT_VERSION}") || true
+  set -e
+else
+  yellow "  ! DR: .venv not found — backup taken but not recorded in /dr/posture"
+fi
+
 # ── Step 4: Pull latest code ──────────────────────────────────────
 step "Step 4/7 — Pulling latest code..."
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 
 # Protect per-host OpenBao runtime secrets (unseal keys, root token, AppRole)
 # from the update. They live in the tree but are generated per-server; while any
@@ -390,7 +419,7 @@ elif [[ "$UPDATE_SOURCE" == "server" ]]; then
   # Own server: download and extract tarball
   TARBALL_URL="${UPDATE_SERVER_URL%/latest}/download/v${LATEST_VERSION}.tar.gz"
   curl -sf --max-time 120 -o /tmp/velaris-update.tar.gz "$TARBALL_URL"
-  tar -xzf /tmp/velaris-update.tar.gz -C "$HELIX_DIR" --strip-components=1
+  tar -xzf /tmp/velaris-update.tar.gz -C "$VELARIS_DIR" --strip-components=1
   rm -f /tmp/velaris-update.tar.gz
 fi
 
@@ -430,8 +459,8 @@ if command -v uv >/dev/null 2>&1; then
 else
   yellow "  ⚠ uv not found — skipping Python dependency sync"
 fi
-if [ -d "$HELIX_DIR/studio" ]; then
-  if ( cd "$HELIX_DIR/studio" && { npm install --prefer-offline >/tmp/velaris-npm-install.log 2>&1 \
+if [ -d "$VELARIS_DIR/studio" ]; then
+  if ( cd "$VELARIS_DIR/studio" && { npm install --prefer-offline >/tmp/velaris-npm-install.log 2>&1 \
          || npm install >/tmp/velaris-npm-install.log 2>&1; } \
        && rm -rf node_modules/.vite ); then
     green "  ✓ Studio npm dependencies installed"
@@ -443,8 +472,39 @@ fi
 
 # ── Step 5: Pull new Docker images ───────────────────────────────
 step "Step 5/7 — Pulling new Docker images..."
-docker compose -f "$COMPOSE_FILE" pull
+# --env-file is REQUIRED: compose interpolates the whole file for every
+# subcommand, and two services declare secrets with `${VAR:?...}`. Without it
+# this aborts with "required variable VELARIS_MINIO_PASSWORD is missing" on any
+# host that lacks a stray .env beside the compose file — i.e. every real server.
+docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" pull
 green "  ✓ Images updated"
+
+# ── Step 5b: Reclaim superseded layers + keep the cache cap in place ──
+# Every update supersedes image layers and (where a service builds) leaves the
+# previous build cache behind. Docker expires neither on its own, so an install
+# that is updated often grows without bound — this is where that is paid back.
+step "Step 5b — Reclaiming Docker disk..."
+# shellcheck source=scripts/docker-storage.sh
+[ -f "$VELARIS_DIR/scripts/docker-storage.sh" ] && . "$VELARIS_DIR/scripts/docker-storage.sh"
+
+if type vds_write_daemon_json >/dev/null 2>&1; then
+  # Self-heal: an install predating the cap, or one whose daemon.json was
+  # replaced, gets it back here rather than only on a fresh setup.
+  if vds_write_daemon_json "" "$(vds_current_root)"; then
+    vds_restart_docker && green "  ✓ Build-cache cap applied" \
+      || yellow "  ⚠ Docker restart failed — cap applies on the next restart"
+  fi
+  vds_prune_cache 5GB
+else
+  # Helper absent (older tree): fall back to the one safe reclaim.
+  docker builder prune -f >/dev/null 2>&1 || true
+  green "  ✓ Build cache trimmed"
+fi
+
+# Dangling IMAGES only — layers no tag and no container references. Volumes are
+# deliberately NOT pruned: an unreferenced volume here can still be real data.
+docker image prune -f >/dev/null 2>&1 || true
+green "  ✓ Superseded image layers removed"
 
 # ── Step 6: Run migrations ────────────────────────────────────────
 if [[ "$REQUEST_ACTION" == "rollback" ]]; then
@@ -452,8 +512,8 @@ if [[ "$REQUEST_ACTION" == "rollback" ]]; then
 else
 step "Step 6/7 — Running database migrations..."
 
-# Ensure DB is up before migrating
-docker compose -f "$COMPOSE_FILE" up -d helix-db
+# Ensure DB is up before migrating (--env-file required — see Step 5)
+docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" up -d velaris-db
 for i in $(seq 1 20); do
   docker exec "$DB_CONTAINER" pg_isready -U "$DB_USER" -q 2>/dev/null && break
   [ "$i" -eq 20 ] && { red "  ✗ PostgreSQL not ready"; exit 1; }
@@ -469,7 +529,7 @@ SQL
 
 APPLIED=0; SKIPPED=0
 
-for migration_file in $(find "$HELIX_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
+for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
   filename="$(basename "$migration_file")"
   EXISTS=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
     -c "SELECT 1 FROM schema_migrations WHERE filename='$filename';" 2>/dev/null || echo "")
@@ -502,8 +562,8 @@ fi
 #   - commented lines arrive commented (documentation of the new knob)
 step "Step 6b — Syncing .env with new variables..."
 
-ENV_FILE="$HELIX_DIR/.env"
-EXAMPLE_FILE="$HELIX_DIR/.env.example"
+ENV_FILE="$VELARIS_DIR/.env"
+EXAMPLE_FILE="$VELARIS_DIR/.env.example"
 ENV_ADDED=0
 
 if [[ -f "$ENV_FILE" && -f "$EXAMPLE_FILE" ]]; then
@@ -536,8 +596,8 @@ if [[ -f "$ENV_FILE" && -f "$EXAMPLE_FILE" ]]; then
       echo "    generated ${key}"
     fi
   }
-  _gen_if_empty HELIX_CASE_AUTH_SECRET        "$(openssl rand -hex 32)"
-  _gen_if_empty HELIX_CASE_STORAGE_MASTER_KEY "$(openssl rand -hex 32)"
+  _gen_if_empty VELARIS_CASE_AUTH_SECRET        "$(openssl rand -hex 32)"
+  _gen_if_empty VELARIS_CASE_STORAGE_MASTER_KEY "$(openssl rand -hex 32)"
   _gen_if_empty VELARIS_DB_PASSWORD           "$(openssl rand -hex 16)"
   _gen_if_empty VELARIS_ADMIN_PASSWORD        "$(openssl rand -hex 16)"
   _gen_if_empty VELARIS_SEARCH_PASSWORD       "$(openssl rand -hex 16)"
@@ -555,10 +615,10 @@ fi
 step "Step 7/7 — Restarting services..."
 
 # Stamp new version into velaris.yaml
-sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$LATEST_VERSION\"/" "$HELIX_DIR/velaris.yaml"
+sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$LATEST_VERSION\"/" "$VELARIS_DIR/velaris.yaml"
 
 # Restart via the standard startup script (handles all service health checks)
-bash "$HELIX_DIR/start-velaris.sh"
+bash "$VELARIS_DIR/start-velaris.sh"
 
 # ── Health gate: never report success on a broken env ─────────────
 step "Post-update health check..."

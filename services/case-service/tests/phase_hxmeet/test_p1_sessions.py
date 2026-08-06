@@ -6,7 +6,7 @@ precedence (explicit → tenant default → only-enabled), 404 anti-oracle on
 unknown cases/sessions, 501 on the not-yet-built embedded driver, and 502
 surfacing of provider failures.
 
-Copyright (c) 2024-2026 HELIX Contributors
+Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

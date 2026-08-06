@@ -21,7 +21,7 @@ spec:
           ports:
             - containerPort: {{ .Values.engine.port }}
           env:
-            - name: HELIX_ENGINE_DATABASE_URL
+            - name: VELARIS_ENGINE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
           resources:
             {{- toYaml .Values.engine.resources | nindent 12 }}

@@ -1,7 +1,7 @@
 """First-party database backends — multi-dialect support (DB SDK Phase 0).
 
 SECURITY: backends are FIRST-PARTY ONLY and chosen from `ALLOWED_BACKENDS`, a baked-in
-fail-closed allowlist. This deliberately does NOT use `helix_sdk.plugin.PluginRegistry`
+fail-closed allowlist. This deliberately does NOT use `velaris_sdk.plugin.PluginRegistry`
 (entry_points auto-discovery) — a DB backend gets credentials and runs SQL at top
 privilege, so it must never be loadable from an arbitrary installed package. A code-level
 dict is more tamper-resistant than a data file (nothing to read, nothing to swap on disk).
@@ -11,7 +11,7 @@ Phase 0 ships PostgreSQL only and is behaviour-preserving: `resolve_async_url` r
 existing `settings.database_url` verbatim when set (trusted operator / OpenBao config). The
 component-built URL path and a scheme/driver pin arrive with the second dialect (Phase 1).
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
@@ -24,10 +24,10 @@ from case_service.db.backends.postgres import PostgresBackend
 
 if TYPE_CHECKING:
     # `DatabaseBackend` is a structural (Protocol) contract. It is imported for typing
-    # ONLY — never at runtime — so the service does not load the helix_sdk.protocols
+    # ONLY — never at runtime — so the service does not load the velaris_sdk.protocols
     # package (an unrelated stub whose __init__ is currently broken). Backends conform
     # structurally; no runtime dependency on the SDK is created here.
-    from helix_sdk.protocols.database import DatabaseBackend
+    from velaris_sdk.protocols.database import DatabaseBackend
 
 # Baked-in allowlist. The ONLY backends Velaris may run on. Adding a dialect is a
 # platform-release change here — never a runtime / package operation.

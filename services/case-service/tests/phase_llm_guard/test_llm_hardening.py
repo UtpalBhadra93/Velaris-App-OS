@@ -5,7 +5,7 @@ limits, prompt-injection signalling, and output scrubbing apply to ALL AI
 callers (chat, generate_json, blueprints, autodoc, decision points, polyglot),
 not just the chat edge. These are pure unit tests with a fake backend.
 
-Copyright (c) 2024-2025 HELIX Contributors
+Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations

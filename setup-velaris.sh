@@ -7,6 +7,12 @@
 #          ./setup-velaris.sh --verbose   # stream all build output
 #          ./setup-velaris.sh --with-key  # prompt for a product key during setup
 #
+#          ./setup-velaris.sh --docker-data-root /home/velaris/docker-data
+#          ./setup-velaris.sh --docker-data-root default   # keep /var/lib/docker
+#            Where Docker stores images/volumes. Step 2b offers this
+#            interactively; the flag (or VELARIS_DOCKER_DATA_ROOT) answers it
+#            up front for unattended installs.
+#
 #  Build output is captured to /tmp/velaris-setup.log (previous run kept as
 #  .log.prev) and the terminal shows a progress bar. On failure the tail of
 #  that log is printed automatically.
@@ -14,7 +20,7 @@
 
 set -euo pipefail
 
-HELIX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ERRORS=0
 
 # uv lives in ~/.local/bin. It is added to .bashrc during install, but that
@@ -30,6 +36,8 @@ esac
 # --db-host/-port/-name/-user/-password   MySQL (BYO) connection details
 # --non-interactive               never prompt; use flags + defaults only
 DB_BACKEND_ARG=""; DB_HOST_ARG=""; DB_PORT_ARG=""; DB_NAME_ARG=""; DB_USER_ARG=""; DB_PASSWORD_ARG=""; NONINTERACTIVE=0
+# --docker-data-root <path|default>  answer Step 2b without prompting
+DOCKER_DATA_ROOT_ARG="${VELARIS_DOCKER_DATA_ROOT:-}"
 # The parse loop below consumes $@, so keep a copy: it is needed for the
 # docker-group re-exec and for the --with-key check near the end.
 ORIG_ARGS=("$@")
@@ -48,6 +56,8 @@ while [ $# -gt 0 ]; do
     --db-password)     DB_PASSWORD_ARG="${2:-}"; shift 2 ;;
     --db-password=*)   DB_PASSWORD_ARG="${1#*=}"; shift ;;
     --non-interactive) NONINTERACTIVE=1; shift ;;
+    --docker-data-root)   DOCKER_DATA_ROOT_ARG="${2:-}"; shift 2 ;;
+    --docker-data-root=*) DOCKER_DATA_ROOT_ARG="${1#*=}"; shift ;;
     *) shift ;;
   esac
 done
@@ -134,6 +144,11 @@ on_error() {
     tail -25 "$SETUP_LOG" | sed 's/^/  /'
     yellow "  ────────────────────────────────────────────────────"
     echo   "  Full log: $SETUP_LOG   ·   re-run with --verbose to watch live"
+    # Only captured commands reach the log. If the step that failed was not one
+    # of them, the tail above belongs to an EARLIER step — say so rather than
+    # letting it look like the cause.
+    yellow "  (If the lines above look unrelated, the failing command was not a"
+    yellow "   captured build step — check the line number and re-run --verbose.)"
   fi
 }
 trap 'on_error $LINENO' ERR
@@ -174,6 +189,9 @@ require_cmd fuser psmisc "fuser (psmisc)"
 require_cmd node nodejs "Node.js"
 require_cmd npm npm "npm"
 require_cmd pg_isready postgresql-client "postgresql-client"
+# Step 2b moves Docker's storage with rsync -aHAX. Priority:standard, so it is
+# present on a normal Ubuntu install but NOT on minimal/cloud images.
+require_cmd rsync rsync "rsync"
 
 # ask "question" → 0 = yes. --non-interactive and a missing tty both answer yes,
 # so an unattended install still completes instead of stalling on a prompt.
@@ -326,11 +344,11 @@ fi
 # ── Step 1b: Generate infrastructure credentials ──────────────────
 step "Generating infrastructure credentials..."
 
-ENV_FILE="$HELIX_DIR/.env"
+ENV_FILE="$VELARIS_DIR/.env"
 
 # Create .env from .env.example if it doesn't exist yet
 if [ ! -f "$ENV_FILE" ]; then
-  cp "$HELIX_DIR/.env.example" "$ENV_FILE"
+  cp "$VELARIS_DIR/.env.example" "$ENV_FILE"
   ok "Created .env from .env.example"
 fi
 
@@ -340,13 +358,13 @@ fi
 # (HxDBMigrate), never a setup re-run. "Already configured" = .env DATABASE_URL has
 # been customized away from the placeholder (the same signal the URL block uses).
 _yaml_get() {
-  grep -E "^\s*${1}:" "$HELIX_DIR/velaris.yaml" 2>/dev/null \
+  grep -E "^\s*${1}:" "$VELARIS_DIR/velaris.yaml" 2>/dev/null \
     | head -1 | sed -E "s/.*${1}:[[:space:]]*[\"']?([^\"'#]+)[\"']?.*/\1/" | xargs || true
 }
 DB_CONFIGURED=0
-if grep -q "^HELIX_CASE_DATABASE_URL=" "$ENV_FILE" 2>/dev/null \
-   && ! grep -qE "^HELIX_CASE_DATABASE_URL=\s*$" "$ENV_FILE" 2>/dev/null \
-   && ! grep -q   "^HELIX_CASE_DATABASE_URL=.*REPLACE" "$ENV_FILE" 2>/dev/null; then
+if grep -q "^VELARIS_CASE_DATABASE_URL=" "$ENV_FILE" 2>/dev/null \
+   && ! grep -qE "^VELARIS_CASE_DATABASE_URL=\s*$" "$ENV_FILE" 2>/dev/null \
+   && ! grep -q   "^VELARIS_CASE_DATABASE_URL=.*REPLACE" "$ENV_FILE" 2>/dev/null; then
   DB_CONFIGURED=1
 fi
 
@@ -418,7 +436,7 @@ _write_if_missing() {
 
 # Treat the publicly-known dev default as unset so a real secret is generated
 # (older .env files created from .env.example may carry it as a non-empty value)
-sed -i "s|^HELIX_CASE_AUTH_SECRET=helix-dev-secret-change-in-production$|HELIX_CASE_AUTH_SECRET=|" "$ENV_FILE"
+sed -i "s|^VELARIS_CASE_AUTH_SECRET=velaris-dev-secret-change-in-production$|VELARIS_CASE_AUTH_SECRET=|" "$ENV_FILE"
 
 # PostgreSQL (bundled): generate a random DB password. MySQL (BYO): store the
 # operator-provided password verbatim — both the runner's mysql client and the app
@@ -432,19 +450,19 @@ else
 fi
 _write_if_missing VELARIS_MINIO_PASSWORD         "$(openssl rand -hex 24)"
 _write_if_missing VELARIS_ADMIN_PASSWORD         "$(openssl rand -hex 16)"
-_write_if_missing HELIX_CASE_AUTH_SECRET         "$(openssl rand -hex 32)"
-_write_if_missing HELIX_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
+_write_if_missing VELARIS_CASE_AUTH_SECRET         "$(openssl rand -hex 32)"
+_write_if_missing VELARIS_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
 # HxVault (#19) master KEK that wraps per-tenant DEKs — 32 bytes hex. When unset,
 # the app derives a dev KEK from auth_secret (with a startup warning); production
 # should use a dedicated key so crypto-shredding is independent of auth_secret.
 _write_if_missing VELARIS_CASE_KEK               "$(openssl rand -hex 32)"
-_write_if_missing HELIX_CASE_STORAGE_BACKEND     "minio"
+_write_if_missing VELARIS_CASE_STORAGE_BACKEND     "minio"
 
 # Generate RSA-2048 key pair for JWT RS256 signing (idempotent — skipped if already set).
 # The private key stays on this host only; the public key is used by all services to verify.
 # Stored as double-quoted single-line values; python-dotenv expands \n back to real newlines.
-if ! grep -q "^HELIX_CASE_AUTH_RSA_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null || \
-   grep -q "^HELIX_CASE_AUTH_RSA_PRIVATE_KEY=$" "$ENV_FILE" 2>/dev/null; then
+if ! grep -q "^VELARIS_CASE_AUTH_RSA_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null || \
+   grep -q "^VELARIS_CASE_AUTH_RSA_PRIVATE_KEY=$" "$ENV_FILE" 2>/dev/null; then
 
   echo -n "  Generating RSA-2048 key pair for JWT signing... "
   _TMP_DIR=$(mktemp -d)
@@ -457,15 +475,15 @@ if ! grep -q "^HELIX_CASE_AUTH_RSA_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null || \
   _PUB_LINE=$(awk '{printf "%s\\n", $0}' "$_TMP_DIR/jwt_public.pem")
 
   # Remove any empty placeholder lines first, then append
-  sed -i "/^HELIX_CASE_AUTH_RSA_PRIVATE_KEY=$/d" "$ENV_FILE"
-  sed -i "/^HELIX_CASE_AUTH_RSA_PUBLIC_KEY=$/d"  "$ENV_FILE"
-  echo "HELIX_CASE_AUTH_RSA_PRIVATE_KEY=\"${_PRIV_LINE}\"" >> "$ENV_FILE"
-  echo "HELIX_CASE_AUTH_RSA_PUBLIC_KEY=\"${_PUB_LINE}\""   >> "$ENV_FILE"
+  sed -i "/^VELARIS_CASE_AUTH_RSA_PRIVATE_KEY=$/d" "$ENV_FILE"
+  sed -i "/^VELARIS_CASE_AUTH_RSA_PUBLIC_KEY=$/d"  "$ENV_FILE"
+  echo "VELARIS_CASE_AUTH_RSA_PRIVATE_KEY=\"${_PRIV_LINE}\"" >> "$ENV_FILE"
+  echo "VELARIS_CASE_AUTH_RSA_PUBLIC_KEY=\"${_PUB_LINE}\""   >> "$ENV_FILE"
 
   rm -rf "$_TMP_DIR"
   green "✓ RSA key pair generated and written to .env"
 else
-  ok "HELIX_CASE_AUTH_RSA_PRIVATE_KEY already set — keeping existing key pair"
+  ok "VELARIS_CASE_AUTH_RSA_PRIVATE_KEY already set — keeping existing key pair"
 fi
 
 # Update DATABASE_URL in .env to use the generated password.
@@ -474,7 +492,7 @@ fi
 # server (e.g. a managed/remote Postgres host).
 DB_PASS=$(grep "^VELARIS_DB_PASSWORD=" "$ENV_FILE" | cut -d= -f2)
 if [ "$DB_CONFIGURED" = "1" ]; then
-  ok "HELIX_CASE_DATABASE_URL already customized — keeping existing value"
+  ok "VELARIS_CASE_DATABASE_URL already customized — keeping existing value"
 elif [ "$DB_FAMILY" = "mysql" ]; then
   # MySQL (BYO): write TYPED connection components (not a raw URL). The backend
   # builds the async URL and URL-encodes the credentials — so a password with
@@ -482,19 +500,19 @@ elif [ "$DB_FAMILY" = "mysql" ]; then
   # the security spine: no raw URL passthrough; password only in VELARIS_DB_PASSWORD.
   # An explicit empty DATABASE_URL overrides the Postgres default so the components
   # are used. Also record the backend + components in velaris.yaml for the runner.
-  sed -i "/^HELIX_CASE_DATABASE_URL=/d;/^HELIX_CASE_DB_HOST=/d;/^HELIX_CASE_DB_PORT=/d;/^HELIX_CASE_DB_NAME=/d;/^HELIX_CASE_DB_USER=/d" "$ENV_FILE"
+  sed -i "/^VELARIS_CASE_DATABASE_URL=/d;/^VELARIS_CASE_DB_HOST=/d;/^VELARIS_CASE_DB_PORT=/d;/^VELARIS_CASE_DB_NAME=/d;/^VELARIS_CASE_DB_USER=/d" "$ENV_FILE"
   {
-    echo "HELIX_CASE_DATABASE_URL="
-    echo "HELIX_CASE_DB_HOST=${SEL_DB_HOST}"
-    echo "HELIX_CASE_DB_PORT=${SEL_DB_PORT}"
-    echo "HELIX_CASE_DB_NAME=${SEL_DB_NAME}"
-    echo "HELIX_CASE_DB_USER=${SEL_DB_USER}"
+    echo "VELARIS_CASE_DATABASE_URL="
+    echo "VELARIS_CASE_DB_HOST=${SEL_DB_HOST}"
+    echo "VELARIS_CASE_DB_PORT=${SEL_DB_PORT}"
+    echo "VELARIS_CASE_DB_NAME=${SEL_DB_NAME}"
+    echo "VELARIS_CASE_DB_USER=${SEL_DB_USER}"
   } >> "$ENV_FILE"
   ok "Database connection set ($SEL_BACKEND, typed components)"
   # Edit velaris.yaml reliably (password is NEVER written here — only host/port/name/user).
   # The persisted `database:` is the REAL backend ($SEL_BACKEND = mysql | mariadb), not the
   # family — the runtime picks MysqlBackend vs MariadbBackend from it.
-  python3 - "$HELIX_DIR/velaris.yaml" "$SEL_BACKEND" "$SEL_DB_HOST" "$SEL_DB_PORT" "$SEL_DB_NAME" "$SEL_DB_USER" <<'PY'
+  python3 - "$VELARIS_DIR/velaris.yaml" "$SEL_BACKEND" "$SEL_DB_HOST" "$SEL_DB_PORT" "$SEL_DB_NAME" "$SEL_DB_USER" <<'PY'
 import re, sys
 path, backend, host, port, name, user = sys.argv[1:7]
 lines = open(path).read().splitlines()
@@ -516,15 +534,15 @@ open(path, "w").write("\n".join(out) + "\n")
 PY
   ok "velaris.yaml updated (database: $SEL_BACKEND + connection components)"
 else
-  sed -i "/^HELIX_CASE_DATABASE_URL=/d" "$ENV_FILE"
-  echo "HELIX_CASE_DATABASE_URL=postgresql+asyncpg://helix:${DB_PASS}@localhost:5432/helix" >> "$ENV_FILE"
+  sed -i "/^VELARIS_CASE_DATABASE_URL=/d" "$ENV_FILE"
+  echo "VELARIS_CASE_DATABASE_URL=postgresql+asyncpg://velaris:${DB_PASS}@localhost:5432/velaris" >> "$ENV_FILE"
   ok "DATABASE_URL set with generated password"
 fi
 
 # Document storage lives inside the install dir (no root, no /var/lib perms needed).
 # Provision the folder and point .env at it — but never clobber an operator's own
-# path (either the new VELARIS_CASE_ var or a legacy HELIX_CASE_ one).
-STORAGE_DIR="$HELIX_DIR/data/documents"
+# path (either the new VELARIS_CASE_ var or a legacy VELARIS_CASE_ one).
+STORAGE_DIR="$VELARIS_DIR/data/documents"
 mkdir -p "$STORAGE_DIR"
 if grep -qE "^(VELARIS|HELIX)_CASE_STORAGE_LOCAL_PATH=" "$ENV_FILE"; then
   ok "Document storage path already set in .env — keeping existing value"
@@ -550,28 +568,114 @@ else
   exit 0
 fi
 
+# ── Step 2b: Docker storage location + build-cache cap ────────────
+# Runs BEFORE the image pull (Step 5) on purpose: setting data-root now means
+# images land in the right place instead of being copied there afterwards.
+#
+# Two problems being fixed, both from Docker's defaults:
+#   · data-root defaults to /var/lib/docker on the ROOT filesystem. Where /home
+#     is a separate, larger partition that fills the small one first — and a
+#     full root filesystem takes the whole OS down, not just Velaris.
+#   · BuildKit never expires build cache. Left alone it grows without bound.
+step "Step 2b — Docker storage location and build-cache cap..."
+
+# shellcheck source=scripts/docker-storage.sh
+if [ -f "$VELARIS_DIR/scripts/docker-storage.sh" ]; then
+  . "$VELARIS_DIR/scripts/docker-storage.sh"
+else
+  warn "scripts/docker-storage.sh missing — skipping Docker storage setup."
+fi
+
+if ! type vds_apply >/dev/null 2>&1; then
+  :                                           # helper absent; warned above
+elif ! docker info &>/dev/null 2>&1; then
+  warn "Docker not accessible — skipping. Re-run setup to configure storage."
+else
+  VDS_CHOICE=""
+  _cur_root="$(vds_current_root)"
+  _home_root="$HOME/docker-data"
+
+  if [ -n "$DOCKER_DATA_ROOT_ARG" ]; then
+    case "$DOCKER_DATA_ROOT_ARG" in
+      default|DEFAULT|/var/lib/docker) VDS_CHOICE="" ;;
+      *)                               VDS_CHOICE="$DOCKER_DATA_ROOT_ARG" ;;
+    esac
+    echo "  Using --docker-data-root: ${VDS_CHOICE:-/var/lib/docker (default)}"
+
+  elif vds_same_fs / "$HOME"; then
+    # One filesystem: moving data-root is the same disk and same free space.
+    # Nothing to choose — just cap the cache.
+    echo "  / and $HOME are on one filesystem ($(vds_total_gb /)GB, $(vds_free_gb /)GB free)."
+    echo "  Moving Docker's data-root would not free anything, so keeping the default."
+    VDS_CHOICE=""
+
+  elif [ "$NONINTERACTIVE" = "1" ] || [ ! -t 0 ]; then
+    warn "Non-interactive — keeping Docker's default data-root ($_cur_root)."
+    VDS_CHOICE=""
+
+  else
+    echo "  Docker stores images, containers and volumes on disk."
+    echo "  Velaris pulls ~6 GB of images, and databases grow on top of that."
+    echo "  Choosing anything but the default moves BOTH Docker's data-root"
+    echo "  (containers, volumes, build cache) and containerd's root (image"
+    echo "  layers) — they are separate settings and only both together move"
+    echo "  everything off the root filesystem."
+    echo ""
+    printf "    1) %-32s %5sGB total, %5sGB free  %s\n" \
+      "/var/lib/docker" "$(vds_total_gb /)" "$(vds_free_gb /)" "← Docker default (root filesystem)"
+    printf "    2) %-32s %5sGB total, %5sGB free  %s\n" \
+      "$_home_root" "$(vds_total_gb "$HOME")" "$(vds_free_gb "$HOME")" "← separate filesystem"
+    echo "    3) custom path"
+    echo ""
+    # Recommend by free space: a full root filesystem wedges the OS itself.
+    _rec=1; [ "$(vds_free_gb "$HOME")" -gt "$(vds_free_gb /)" ] 2>/dev/null && _rec=2
+    read -rp "$(yellow "  ? Docker storage location [1-3, Enter = $_rec]: ")" _dchoice || _dchoice=""
+    case "${_dchoice:-$_rec}" in
+      1) VDS_CHOICE="" ;;
+      2) VDS_CHOICE="$_home_root" ;;
+      3) read -rp "  Absolute path: " VDS_CHOICE || VDS_CHOICE=""
+         case "$VDS_CHOICE" in
+           /*) ;;
+           *)  warn "Not an absolute path — keeping the default."; VDS_CHOICE="" ;;
+         esac ;;
+      *) warn "Unrecognised choice — keeping the default."; VDS_CHOICE="" ;;
+    esac
+  fi
+
+  # Moving data-root restarts Docker. Harmless here (nothing of ours is up
+  # yet), but on a re-run over a live install it would bounce the stack, so
+  # say so rather than surprising the operator.
+  if [ -n "$VDS_CHOICE" ] && [ "$VDS_CHOICE" != "$_cur_root" ] \
+     && [ -n "$(docker ps -q 2>/dev/null)" ]; then
+    warn "Containers are running — moving data-root will restart Docker."
+  fi
+
+  vds_apply "$VDS_CHOICE" || warn "Docker storage setup incomplete — see messages above."
+  ok "Docker storage configured (data-root: $(vds_current_root))"
+fi
+
 # ── Step 3: uv workspace sync ─────────────────────────────────────
 step "Step 3/9 — Syncing uv workspace..."
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 quiet "uv sync" uv sync --all-packages || uv sync --all-packages 2>&1 | tail -5
 ok "uv workspace synced"
 
 # ── Step 4: Studio npm install ────────────────────────────────────
 step "Step 4/9 — Installing Studio npm dependencies..."
-if [ -d "$HELIX_DIR/studio" ]; then
-  cd "$HELIX_DIR/studio"
+if [ -d "$VELARIS_DIR/studio" ]; then
+  cd "$VELARIS_DIR/studio"
   quiet "npm install" npm install --prefer-offline || npm install --prefer-offline 2>&1 | tail -5
   ok "Studio dependencies installed"
 else
   fail "studio/ directory not found"
 fi
-cd "$HELIX_DIR"
+cd "$VELARIS_DIR"
 
 # ── Step 5: Pull Docker images ────────────────────────────────────
 step "Step 5/9 — Pulling Docker images..."
-COMPOSE_FILE="$HELIX_DIR/deploy/docker-compose/docker-compose.yml"
+COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
 if docker info &>/dev/null 2>&1; then
-  docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" pull 2>&1 | grep -E "Pull|pull|already|Digest" || true
+  docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" pull 2>&1 | grep -E "Pull|pull|already|Digest" || true
   ok "Docker images up to date"
 else
   warn "Docker not accessible — skipping image pull."
@@ -583,9 +687,9 @@ fi
 # so this just brings up OpenBao, initialises it on a fresh install (or unseals
 # an existing one), then imports those .env secrets into the vault — OpenBao is
 # the source of truth from here on. Every failure is non-fatal (warn, continue).
-if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
+if [ -f "$VELARIS_DIR/deploy/openbao/enabled" ]; then
   step "Step 5b — Bootstrapping OpenBao secrets..."
-  INIT_FILE="$HELIX_DIR/deploy/openbao/.bao-init.json"
+  INIT_FILE="$VELARIS_DIR/deploy/openbao/.bao-init.json"
 
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d openbao 2>/dev/null \
     || warn "Could not start the OpenBao container"
@@ -601,14 +705,14 @@ if [ -f "$HELIX_DIR/deploy/openbao/enabled" ]; then
 
   if [ ! -f "$INIT_FILE" ] && [ "$BAO_HEALTH" = "471" ]; then
     # Fresh OpenBao — one-time init: writes the keyfile, unseals, enables KV + AppRole.
-    if "$HELIX_DIR/scripts/secrets-init.sh"; then ok "OpenBao initialised"; else warn "OpenBao init failed — continuing"; fi
+    if "$VELARIS_DIR/scripts/secrets-init.sh"; then ok "OpenBao initialised"; else warn "OpenBao init failed — continuing"; fi
   else
     # Already initialised — just make sure it's unsealed.
-    if "$HELIX_DIR/scripts/secrets-unseal.sh" >/dev/null 2>&1; then ok "OpenBao unsealed"; else warn "OpenBao still sealed — run ./scripts/secrets-unseal.sh"; fi
+    if "$VELARIS_DIR/scripts/secrets-unseal.sh" >/dev/null 2>&1; then ok "OpenBao unsealed"; else warn "OpenBao still sealed — run ./scripts/secrets-unseal.sh"; fi
   fi
 
   # Import the secrets from .env into OpenBao (source of truth going forward).
-  if "$HELIX_DIR/scripts/secrets-push.sh" --sync-env >/dev/null 2>&1; then
+  if "$VELARIS_DIR/scripts/secrets-push.sh" --sync-env >/dev/null 2>&1; then
     ok "Secrets synced from .env into OpenBao"
   else
     warn "secrets-push failed — run ./scripts/secrets-push.sh --sync-env once OpenBao is unsealed"
@@ -617,7 +721,7 @@ fi
 
 # ── Step 6: Check migrations ──────────────────────────────────────
 step "Step 6/9 — Checking migrations..."
-MIGRATION_COUNT=$(find "$HELIX_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | wc -l)
+MIGRATION_COUNT=$(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | wc -l)
 ok "Found $MIGRATION_COUNT migration files"
 
 # ── Step 7: Start database temporarily for setup ─────────────────
@@ -655,7 +759,7 @@ if [ "$DB_FAMILY" = "mysql" ]; then
   applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 );"
   APPLIED=0; SKIPPED=0
-  for migration_file in $(find "$HELIX_DIR/migrations/mysql" -maxdepth 1 -name "*.sql" | sort); do
+  for migration_file in $(find "$VELARIS_DIR/migrations/mysql" -maxdepth 1 -name "*.sql" | sort); do
     filename="$(basename "$migration_file")"
     EXISTS=$(mysql_client "$MY_NAME" -N -e "SELECT 1 FROM schema_migrations WHERE filename='$filename';" 2>/dev/null || echo "")
     if [ "$EXISTS" = "1" ]; then
@@ -672,15 +776,15 @@ if [ "$DB_FAMILY" = "mysql" ]; then
   green "  ✓ Migrations: $APPLIED applied, $SKIPPED skipped"
 else
 step "Step 7/9 — Starting database for setup..."
-DB_CONTAINER="docker-compose-helix-db-1"
-DB_USER="helix"
-DB_NAME="helix"
+DB_CONTAINER="docker-compose-velaris-db-1"
+DB_USER="velaris"
+DB_NAME="velaris"
 
 # Do NOT silence these — a failure here is the whole reason the next loop
 # times out, and hiding it leaves the operator with "not ready" and no cause.
 DB_UP_LOG=$(mktemp)
-if ! docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d helix-db > "$DB_UP_LOG" 2>&1; then
-  docker compose -f "$COMPOSE_FILE" --env-file "$HELIX_DIR/.env" up -d >> "$DB_UP_LOG" 2>&1 || true
+if ! docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" up -d velaris-db > "$DB_UP_LOG" 2>&1; then
+  docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" up -d >> "$DB_UP_LOG" 2>&1 || true
 fi
 
 echo "  Waiting for PostgreSQL..."
@@ -725,7 +829,7 @@ SQL
 
 APPLIED=0; SKIPPED=0
 
-for migration_file in $(find "$HELIX_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
+for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -name "*.sql" | sort); do
   filename="$(basename "$migration_file")"
   EXISTS=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
     -c "SELECT 1 FROM schema_migrations WHERE filename='$filename';" 2>/dev/null || echo "")
@@ -745,22 +849,129 @@ done
 green "  ✓ Migrations: $APPLIED applied, $SKIPPED skipped"
 fi
 
-# ── Step 8b: Ollama default models (best-effort) ──────────────────
+# ── Step 8b: AI provider ──────────────────────────────────────────
+# Ollama is the default on purpose: it runs on this box, costs nothing, and
+# needs no key, so an install that skips this step is still fully functional
+# AND still sovereign. Everything else sends prompt content to a third party.
+step "Step 8b — AI provider (Enter = keep local Ollama)..."
+
+_set_env() {                       # _set_env KEY VALUE — replace or append
+  local key="$1" value="$2"
+  sed -i "/^${key}=/d" "$ENV_FILE"
+  case "$value" in
+    *[[:space:]]*|*"#"*) printf '%s="%s"\n' "$key" "$value" >> "$ENV_FILE" ;;
+    *)                   printf '%s=%s\n'   "$key" "$value" >> "$ENV_FILE" ;;
+  esac
+}
+
+if [ "$NONINTERACTIVE" = "1" ] || [ ! -t 0 ]; then
+  warn "Non-interactive — leaving the AI provider as configured (default: ollama)."
+else
+  echo "  HxNexus, the NL builder, Scout AI and case Q&A all use this backend."
+  echo ""
+  echo "    1) ollama      local, free, no API key      ← default, nothing leaves this server"
+  echo "    2) anthropic   Claude (native SDK)"
+  echo "    3) openai      GPT-4o family"
+  echo "    4) groq        fastest inference (llama/mixtral)"
+  echo "    5) mistral     Mistral AI"
+  echo "    6) gemini      Google Gemini (OpenAI-compatible endpoint)"
+  echo "    7) together    Together AI (llama, qwen, …)"
+  echo "    8) fireworks   Fireworks AI"
+  echo "    9) perplexity  Perplexity AI"
+  echo "   10) deepseek    DeepSeek"
+  echo "   11) xai         xAI (Grok)"
+  echo "   12) cohere      Cohere"
+  echo "   13) custom      any OpenAI-compatible API (asks for a base URL)"
+  echo ""
+  read -rp "$(yellow "  ? Provider [1-13, Enter = 1 ollama]: ")" AI_CHOICE || AI_CHOICE=""
+
+  # Defaults are STARTING POINTS, not guarantees — provider model names change
+  # often, so each one is offered as an editable default rather than forced.
+  AI_NAME=""; AI_DEFAULT_MODEL=""
+  case "${AI_CHOICE:-1}" in
+    1|"")  AI_NAME="ollama" ;;
+    2)     AI_NAME="anthropic";  AI_DEFAULT_MODEL="claude-opus-5" ;;
+    3)     AI_NAME="openai";     AI_DEFAULT_MODEL="gpt-4o-mini" ;;
+    4)     AI_NAME="groq";       AI_DEFAULT_MODEL="llama-3.3-70b-versatile" ;;
+    5)     AI_NAME="mistral";    AI_DEFAULT_MODEL="mistral-large-latest" ;;
+    6)     AI_NAME="gemini";     AI_DEFAULT_MODEL="gemini-2.0-flash" ;;
+    7)     AI_NAME="together";   AI_DEFAULT_MODEL="meta-llama/Llama-3.3-70B-Instruct-Turbo" ;;
+    8)     AI_NAME="fireworks";  AI_DEFAULT_MODEL="accounts/fireworks/models/llama-v3p3-70b-instruct" ;;
+    9)     AI_NAME="perplexity"; AI_DEFAULT_MODEL="sonar" ;;
+    10)    AI_NAME="deepseek";   AI_DEFAULT_MODEL="deepseek-chat" ;;
+    11)    AI_NAME="xai";        AI_DEFAULT_MODEL="grok-2-latest" ;;
+    12)    AI_NAME="cohere";     AI_DEFAULT_MODEL="command-r-plus" ;;
+    13)    AI_NAME="custom" ;;
+    *)     warn "Unrecognised choice — keeping ollama."; AI_NAME="ollama" ;;
+  esac
+
+  if [ "$AI_NAME" = "ollama" ]; then
+    _set_env VELARIS_CASE_AI_PROVIDER "ollama"
+    ok "Using local Ollama — no API key needed, no prompt content leaves this server."
+  else
+    read -rsp "$(yellow "  ? ${AI_NAME} API key: ")" AI_KEY || AI_KEY=""; echo ""
+    if [ -z "$AI_KEY" ]; then
+      warn "No key entered — keeping ollama. Re-run this script to set a provider."
+      _set_env VELARIS_CASE_AI_PROVIDER "ollama"
+    else
+      if [ "$AI_NAME" = "custom" ]; then
+        read -rp "$(yellow "  ? Base URL (OpenAI-compatible, e.g. http://localhost:1234/v1): ")" AI_URL || AI_URL=""
+        read -rp "$(yellow "  ? Model name: ")" AI_MODEL_IN || AI_MODEL_IN=""
+        [ -n "$AI_URL" ] && _set_env VELARIS_CASE_AI_BASE_URL "$AI_URL"
+      else
+        read -rp "$(yellow "  ? Model [$AI_DEFAULT_MODEL]: ")" AI_MODEL_IN || AI_MODEL_IN=""
+        AI_MODEL_IN="${AI_MODEL_IN:-$AI_DEFAULT_MODEL}"
+      fi
+
+      _set_env VELARIS_CASE_AI_PROVIDER "$AI_NAME"
+      _set_env VELARIS_CASE_AI_API_KEY  "$AI_KEY"
+      [ -n "$AI_MODEL_IN" ] && _set_env VELARIS_CASE_AI_MODEL "$AI_MODEL_IN"
+      ok "AI provider set to ${AI_NAME}${AI_MODEL_IN:+ (${AI_MODEL_IN})}"
+      echo "    Model names change often — verify it against the provider's docs if calls fail."
+
+      # These two decide whether the key is ever actually used, and both have
+      # bitten operators who set a key and saw "offline". Surface them here.
+      echo ""
+      warn "Prompt content will now be sent to ${AI_NAME}. Two gates still apply:"
+      echo "    · VELARIS_CASE_AI_EGRESS_POLICY (default 'minimized' — completions go out,"
+      echo "      embeddings stay local). 'local_only' ignores this provider entirely."
+      echo "    · Case Q&A and voice form-fill additionally need the TENANT opted in"
+      echo "      (ai.case_qa, external_allowed) before any case content leaves the box."
+    fi
+  fi
+fi
+echo ""
+
+# ── Step 8c: Ollama default models (best-effort) ──────────────────
 # A fresh Ollama container ships with NO models; every AI feature (HxNexus
 # chat, case Q&A, session summaries) then fails soft with empty answers.
 # Pull the configured defaults now — non-fatal, skipped when offline.
-step "Step 8b — Pulling default Ollama models (best-effort)..."
+step "Step 8c — Pulling default Ollama models (best-effort)..."
+# Only meaningful when Ollama is the active backend — pulling multi-GB weights
+# for a box that talks to a hosted provider wastes bandwidth and disk.
+_ACTIVE_AI=$(grep -E "^VELARIS_CASE_AI_PROVIDER=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' | xargs || echo "ollama")
 OLLAMA_CONTAINER=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -i ollama | head -1 || true)
-if [ -n "$OLLAMA_CONTAINER" ]; then
-  AI_MODEL="${HELIX_CASE_AI_OLLAMA_MODEL:-llama3.2}"
-  EMBED_MODEL="${HELIX_CASE_AI_OLLAMA_EMBED_MODEL:-nomic-embed-text}"
-  for M in "$AI_MODEL" "$EMBED_MODEL"; do
-    if docker exec "$OLLAMA_CONTAINER" ollama pull "$M" >/dev/null 2>&1; then
-      green "  ✓ pulled $M"
-    else
-      warn "  Could not pull $M (offline?) — pull later: docker exec $OLLAMA_CONTAINER ollama pull $M"
-    fi
-  done
+if [ -n "$_ACTIVE_AI" ] && [ "$_ACTIVE_AI" != "ollama" ]; then
+  ok "Provider is '$_ACTIVE_AI' — skipping the local model download."
+elif [ -n "$OLLAMA_CONTAINER" ]; then
+  AI_MODEL="${VELARIS_CASE_AI_OLLAMA_MODEL:-llama3.2}"
+  EMBED_MODEL="${VELARIS_CASE_AI_OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+  echo "  Models: $AI_MODEL + $EMBED_MODEL (a few GB, one-off download)."
+  echo "  Declining is safe — AI features stay dark until the models exist, and"
+  echo "  you can pull them any time with the commands printed below."
+  if ask "Download the local AI models now?"; then
+    for M in "$AI_MODEL" "$EMBED_MODEL"; do
+      if docker exec "$OLLAMA_CONTAINER" ollama pull "$M" >/dev/null 2>&1; then
+        green "  ✓ pulled $M"
+      else
+        warn "  Could not pull $M (offline?) — pull later: docker exec $OLLAMA_CONTAINER ollama pull $M"
+      fi
+    done
+  else
+    warn "Skipped. Pull them later with:"
+    echo "    docker exec $OLLAMA_CONTAINER ollama pull $AI_MODEL"
+    echo "    docker exec $OLLAMA_CONTAINER ollama pull $EMBED_MODEL"
+  fi
 else
   warn "  Ollama container not running — models will be pulled on demand (or via start-velaris.sh hint)."
 fi
@@ -782,10 +993,10 @@ done
 # Skip if superadmin already exists
 if [ "$DB_FAMILY" = "mysql" ]; then
   SUPERADMIN_EXISTS=$(mysql_client "$MY_NAME" -N \
-    -e "SELECT COUNT(*) FROM helix_users WHERE is_superadmin = TRUE;" 2>/dev/null || echo "0")
+    -e "SELECT COUNT(*) FROM velaris_users WHERE is_superadmin = TRUE;" 2>/dev/null || echo "0")
 else
   SUPERADMIN_EXISTS=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
-    -c "SELECT COUNT(*) FROM helix_users WHERE is_superadmin = TRUE;" 2>/dev/null || echo "0")
+    -c "SELECT COUNT(*) FROM velaris_users WHERE is_superadmin = TRUE;" 2>/dev/null || echo "0")
 fi
 
 if [ "$SUPERADMIN_EXISTS" = "1" ]; then
@@ -797,21 +1008,21 @@ else
     quiet "uv pip install (mysql)" uv pip install bcrypt httpx pymysql cryptography --quiet
     VELARIS_DB_PASSWORD="$MY_PASS" \
     DATABASE_URL="mysql://${MY_USER}@${MY_HOST}:${MY_PORT}/${MY_NAME}" \
-    uv run python "$HELIX_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
+    uv run python "$VELARIS_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
   else
     # Install script dependencies
     quiet "uv pip install" uv pip install bcrypt httpx psycopg2-binary cryptography --quiet
 
     # Run the interactive Python setup
-    DATABASE_URL="postgresql://helix:${VELARIS_DB_PASSWORD:-helix}@localhost:5432/helix" \
-    uv run python "$HELIX_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
+    DATABASE_URL="postgresql://velaris:${VELARIS_DB_PASSWORD:-velaris}@localhost:5432/velaris" \
+    uv run python "$VELARIS_DIR/scripts/setup_superadmin.py" $SUPERADMIN_KEY_MODE
   fi
 fi
 
 # The marker means "setup ran to completion", NOT "licensed" — verify_key.py
 # treats a missing KEY as a warning and a missing MARKER as a hard error, so
 # writing it unconditionally here is what lets an unactivated box start.
-touch "$HELIX_DIR/.velaris-setup-complete"
+touch "$VELARIS_DIR/.velaris-setup-complete"
 
 # ── Done ─────────────────────────────────────────────────────────
 echo ""
@@ -833,7 +1044,7 @@ else
   # shell that launched it, so a reboot silently takes the site down.
   if [ ! -f /etc/systemd/system/velaris-case-service.service ] \
      && ask "Install systemd units so Velaris starts on boot?"; then
-    if sudo "$HELIX_DIR/deploy/systemd/install.sh"; then
+    if sudo "$VELARIS_DIR/deploy/systemd/install.sh"; then
       # install.sh only ENABLES the units (boot persistence). Start them here
       # too, otherwise the platform is "installed and enabled" but down until
       # the next reboot — and the operator reaches for start-velaris.sh, which
@@ -850,7 +1061,7 @@ else
     echo ""
   fi
 
-  if [ ! -f "$HELIX_DIR/.velaris-key" ]; then
+  if [ ! -f "$VELARIS_DIR/.velaris-key" ]; then
     yellow "  This install is not activated yet — that is expected on a fresh box."
     echo   "    1. ./start-velaris.sh          (the platform must be up first)"
     echo   "    2. register on your Velaris website to receive a product key"

@@ -1,5 +1,24 @@
 // HELIX P36 — Compliance Dashboard
+//
+// Five surfaces behind one `/api/v1/compliance` router: the original audit
+// chain + evidence packs, plus the §8 modules (HxConsent, HxPrivacy,
+// HxLedger, HxDR) which shipped API-only and had no screen at all.
 import React, { useEffect, useState } from "react";
+
+import ConsentPanel from "./ConsentPanel";
+import DRPanel from "./DRPanel";
+import LedgerPanel from "./LedgerPanel";
+import PrivacyPanel from "./PrivacyPanel";
+
+const TABS = [
+  { id: "audit",   label: "Audit & Evidence" },
+  { id: "consent", label: "Consent" },
+  { id: "privacy", label: "Privacy" },
+  { id: "ledger",  label: "Ledger" },
+  { id: "dr",      label: "Disaster Recovery" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
 
 type ChainStatus = {
   audit_rows: number;
@@ -54,6 +73,7 @@ export default function ComplianceDashboard() {
   const [err, setErr] = useState<string | null>(null);
   const [lineageCaseId, setLineageCaseId] = useState("");
   const [lineage, setLineage] = useState<any[] | null>(null);
+  const [tab, setTab] = useState<TabId>("audit");
 
   async function loadAll() {
     setErr(null);
@@ -66,7 +86,9 @@ export default function ComplianceDashboard() {
       setReports(rep);
     } catch (e: any) { setErr(e.message); }
   }
-  useEffect(() => { loadAll(); }, []);
+
+  // Only the audit tab's data is fetched on mount; each panel loads its own.
+  useEffect(() => { if (tab === "audit") loadAll(); }, [tab]);
 
   async function seal() {
     setBusy("seal"); setErr(null);
@@ -111,6 +133,30 @@ export default function ComplianceDashboard() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
+      <nav style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid #e3e3e8", flexWrap: "wrap" }}>
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "8px 14px", fontSize: 13, cursor: "pointer",
+              border: "none", background: "none",
+              borderBottom: tab === t.id ? "2px solid #4a6cf7" : "2px solid transparent",
+              color: tab === t.id ? "#4a6cf7" : "#666",
+              fontWeight: tab === t.id ? 600 : 400,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "consent" && <ConsentPanel />}
+      {tab === "privacy" && <PrivacyPanel />}
+      {tab === "ledger" && <LedgerPanel />}
+      {tab === "dr" && <DRPanel />}
+
+      {tab === "audit" && <>
       {err && <div style={{ color: "#c33", marginBottom: 12 }}>⚠ {err}</div>}
 
       {/* Audit chain status */}
@@ -240,6 +286,7 @@ export default function ComplianceDashboard() {
           </div>
         )}
       </section>
+      </>}
     </div>
   );
 }
