@@ -193,11 +193,32 @@ fi
 
 # ── Step 0: Free ports and clean old containers ──────────────────
 echo "▶ Preparing ports..."
-docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down 2>/dev/null || true
+# --remove-orphans is load-bearing. A plain `down` only touches services still
+# named in the compose file, so anything that gets renamed leaves its old
+# container running and holding its published port. That is exactly what the
+# 2026-08-07 helix-*→velaris-* rename did: docker-compose-helix-db-1 survived
+# the down and kept 127.0.0.1:5432, and the next `up` died with "port is
+# already allocated".
+docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down --remove-orphans 2>/dev/null || true
 sudo systemctl stop postgresql 2>/dev/null || true
-for port in 5432 8100 8201 5173; do
+
+# Host processes only — these ports belong to uvicorn/vite, not to Docker.
+for port in 8100 8201 5173; do
   fuser -k "${port}/tcp" 2>/dev/null || true
 done
+
+# 5432 is handled separately and never blind-killed. When Docker holds it the
+# listener is docker-proxy, and killing that does NOT release the daemon's port
+# reservation — it just strands it, so every later `up` fails with "port is
+# already allocated" until dockerd restarts. The `down` above is what frees a
+# container-held 5432; only a genuine host Postgres gets killed here.
+if fuser 5432/tcp &>/dev/null 2>&1; then
+  if docker ps --format '{{.Ports}}' 2>/dev/null | grep -q ':5432->'; then
+    yellow "  ⚠ Port 5432 is held by a running container — leaving it to compose"
+  else
+    fuser -k 5432/tcp 2>/dev/null || true
+  fi
+fi
 sleep 2
 green "  ✓ Ports ready"
 echo ""

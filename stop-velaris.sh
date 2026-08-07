@@ -69,7 +69,11 @@ if [ "${1:-}" = "--all" ]; then
   # with `${VAR:?...}`. Without it this aborts with "required variable
   # VELARIS_MINIO_PASSWORD is missing" on any host that lacks a stray .env beside
   # the compose file — which is every real server.
-  docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down
+  #
+  # --remove-orphans: a plain `down` skips containers whose service is no longer
+  # in the compose file, so a renamed service leaves its old container up and
+  # still holding its published port. A stop must actually leave nothing behind.
+  docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down --remove-orphans
   green "  ✓ Docker services stopped"
 fi
 
