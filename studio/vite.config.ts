@@ -149,6 +149,23 @@ export default defineConfig({
         target: "http://localhost:8200",
         changeOrigin: true,
       },
+      // Enterprise identity P2 — the Studio side of this is the token
+      // mint/revoke screen under /api/v1/scim/tokens; the /v2 half is called by
+      // the customer's IdP, not by the browser.
+      "/api/v1/scim":{
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
+      // Omnichannel — the Channel Inbox and the case Channels tab.
+      "/api/v1/channels":{
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
+      // RPA — the bot registry, job list and attended proposal diff.
+      "/api/v1/bots":{
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
       "/api/v1/admin":{
         target: "http://localhost:8200",
         changeOrigin: true,
@@ -396,6 +413,10 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/api/v1/risk": {   // HxSentinel (findings, rule config, verify-gate holds)
+        target: "http://localhost:8200",
+        changeOrigin: true,
+      },
+      "/api/v1/platform": {   // Platform update orchestrator (banner + rollout plans)
         target: "http://localhost:8200",
         changeOrigin: true,
       },

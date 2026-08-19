@@ -284,6 +284,15 @@ async def _execute_node(
             # Suspend and wait for human completion
             suspended = True
 
+        elif node.node_type == "botTask":
+            # **Enqueue and suspend — never block.** A bot job can take minutes;
+            # waiting for it here would stall every process on the worker, which
+            # is the single most consequential detail in this integration. Job
+            # completion resumes the instance, exactly as a userTask's human
+            # completion does.
+            error = await _enqueue_bot_task(instance, node, context)
+            suspended = error is None
+
         elif node.node_type in (
             "exclusiveGateway", "parallelGateway",
             "inclusiveGateway", "eventBasedGateway",
@@ -358,6 +367,45 @@ def _run_script_task(node: BpmnNode, context: dict) -> tuple[dict | None, str | 
         return result or None, None
     except Exception as exc:
         return None, f"Script error: {exc}"
+
+
+async def _enqueue_bot_task(instance, node, context) -> str | None:
+    """Queue the node's bot. Returns an error message, or None on success.
+
+    Input comes from the case-variable projection the same way a connector's
+    does, so a bot's `input_schema` is filled from case variables rather than
+    from a second, parallel binding.
+    """
+    from sqlalchemy import select
+
+    from case_service.bots import service as bot_service
+    from case_service.db.models import BotDefinitionModel
+    from case_service.db.session import get_session_factory
+
+    ext = node.extensions or {}
+    bot_name = str(ext.get("bot") or ext.get("botName") or "").strip()
+    if not bot_name:
+        return "botTask node names no bot (set the 'bot' extension property)."
+
+    async with get_session_factory()() as session:
+        bot = (await session.execute(
+            select(BotDefinitionModel).where(BotDefinitionModel.name == bot_name)
+        )).scalars().first()
+        if bot is None:
+            return f"No bot named {bot_name!r} is registered."
+        try:
+            await bot_service.enqueue(
+                session, bot=bot,
+                input_data=dict(context or {}),
+                trigger="workflow",
+                case_id=getattr(instance, "case_id", None),
+                process_instance_id=getattr(instance, "id", None),
+                node_id=node.id,
+            )
+        except bot_service.BotError as exc:
+            return str(exc)
+        await session.commit()
+    return None
 
 
 async def _spawn_child_case(instance: Any, node: BpmnNode, context: dict) -> None:

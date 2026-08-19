@@ -42,7 +42,12 @@ from case_service.intake.filters import apply_field_mapping, evaluate_filters
 logger = logging.getLogger(__name__)
 
 #: Triggers that accept a pushed inbound payload.
-ACCEPTED_TRIGGERS = ("webhook", "http")
+#:
+#: `channel` is here rather than telling customers to set `webhook` on an SMS
+#: case type: that lie would leak into filters, docs and the knowledge graph,
+#: and a designer reading "webhook" on a case type fed by text messages has
+#: been misinformed by us.
+ACCEPTED_TRIGGERS = ("webhook", "http", "channel")
 
 
 class IntakeError(Exception):

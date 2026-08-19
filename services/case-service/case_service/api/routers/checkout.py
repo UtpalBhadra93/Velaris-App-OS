@@ -35,7 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_admin
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.checkout import service as order_svc
 from case_service.checkout import tokens as token_svc
@@ -49,6 +49,8 @@ from case_service.db.session import get_session
 from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+from case_service.hxguard import service as hxguard
 
 router = APIRouter(prefix="/checkout", tags=["checkout"])
 
@@ -100,7 +102,7 @@ class TokenCreate(BaseModel):
 
 @router.get("/tokens")
 async def list_tokens(
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.tokens.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -132,7 +134,7 @@ async def list_tokens(
 @router.post("/tokens", status_code=201)
 async def create_token(
     body: TokenCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.tokens.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -158,7 +160,7 @@ async def create_token(
 @router.delete("/tokens/{token_id}")
 async def revoke_token(
     token_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.tokens.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -332,7 +334,7 @@ async def list_orders(
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.orders.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -357,7 +359,7 @@ async def list_orders(
 
 @router.get("/analytics/summary")
 async def analytics_summary(
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.analytics.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -487,7 +489,7 @@ def _integration_dict(i: CheckoutWebhookIntegrationModel) -> dict:
 
 @router.get("/integrations")
 async def list_integrations(
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.integrations.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -504,7 +506,7 @@ async def list_integrations(
 @router.post("/integrations", status_code=201)
 async def create_integration(
     body: IntegrationCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.integrations.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -526,7 +528,7 @@ async def create_integration(
 async def update_integration(
     integration_id: str,
     body: IntegrationUpdate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.integrations.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -549,7 +551,7 @@ async def update_integration(
 @router.delete("/integrations/{integration_id}")
 async def delete_integration(
     integration_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.integrations.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):

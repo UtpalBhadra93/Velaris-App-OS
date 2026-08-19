@@ -7,10 +7,11 @@ import { Button } from "@shared/components";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/hxmigrate";
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {

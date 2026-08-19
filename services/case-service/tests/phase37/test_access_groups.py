@@ -12,7 +12,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from case_service.main import app
-from case_service.auth.dependencies import get_current_user, require_role
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     PortalModel, AccessRoleModel, AccessGroupModel,
@@ -31,13 +31,18 @@ def _staff(uid: str = "staff-1") -> AuthenticatedUser:
 
 
 def _override_admin():
+    # Only `get_current_user` is overridden. The second line used to be
+    # `app.dependency_overrides[require_role("admin")] = ...`, which was a no-op
+    # even before Phase 4 retired `require_role`: the factory returns a NEW
+    # closure on every call, so the key registered here could never match the
+    # object the route was built with. Authorization in these tests has always
+    # been decided by the roles on the overridden user, which is what
+    # `hxguard.guard(...)` reads too.
     app.dependency_overrides[get_current_user] = lambda: _admin()
-    app.dependency_overrides[require_role("admin")] = lambda: _admin()
 
 
 def _override_staff():
     app.dependency_overrides[get_current_user] = lambda: _staff()
-    app.dependency_overrides.pop(require_role("admin"), None)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

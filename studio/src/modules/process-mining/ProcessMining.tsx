@@ -5,6 +5,7 @@ import {
   getPMVariants, getPMFlowGraph, listCaseTypes, listTenants,
 } from "@shared/api/client";
 import { Card, Spinner, Stat, EmptyState } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    Process Mining — advanced flow analytics & discovery
@@ -87,7 +88,7 @@ export default function ProcessMining() {
    The platform proposes and proves; only a human changes anything. ─────────────── */
 
 function _evolveHdr(): Record<string, string> {
-  const token = localStorage.getItem("helix_token");
+  const token = getAccessToken();
   return { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 

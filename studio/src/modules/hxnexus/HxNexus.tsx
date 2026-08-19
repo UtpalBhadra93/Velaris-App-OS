@@ -3,6 +3,7 @@ import LLMOpsPanel from "./LLMOpsPanel";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 import { VoiceInput, appendTranscript } from "@shared/components";
 import { useAuth } from "../../auth/AuthContext";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Tab = "chat" | "suggest" | "qa" | "translator" | "llmops";
 type DraftKind = "rule" | "case_type" | "form" | "sla" | "user" | "connector"
@@ -19,11 +20,21 @@ type DraftPayload = {
 type Message = { role: "user" | "assistant"; content: string; external_ai?: boolean;
                  draft?: DraftPayload };
 type Suggestion = { action: string; reason: string; priority: "high" | "medium" | "low" };
-type BackendStatus = { name: string; backend: string; available: boolean; capabilities: string[] };
+type ProviderFault = { provider: string; missing: string; detail: string };
+type BackendStatus = {
+  name: string;
+  backend: string;
+  available: boolean;
+  /** Null when healthy. Set when the configured provider was dropped for a
+   *  named reason and the local model is answering instead — the dot below
+   *  reads green in that case, because something genuinely is online. */
+  misconfigured?: ProviderFault | null;
+  capabilities: string[];
+};
 type Summary = { summary: string; key_points: string[]; action_items: string[] };
 
 function _nexusHeaders(extra?: Record<string, string>): Record<string, string> {
-  const token = localStorage.getItem("helix_token");
+  const token = getAccessToken();
   return {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -461,7 +472,7 @@ export default function HxNexus() {
       const form = new FormData();
       form.append("file", uploadFile);
       if (qaCaseId.trim()) form.append("case_id", qaCaseId.trim());
-      const token = localStorage.getItem("helix_token");
+      const token = getAccessToken();
       const r = await fetch("/api/v1/hxnexus/documents/upload", {
         method: "POST", body: form,
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -508,6 +519,27 @@ export default function HxNexus() {
         )}
         {statusError && <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--status-failed)", fontFamily: "var(--font-mono)" }}>{statusError}</span>}
       </div>
+
+      {/* The configured provider was dropped and the local model took over.
+          Worth its own row rather than a colour change on the dot above: the
+          platform is working, so nothing else on this page looks wrong. */}
+      {status?.misconfigured && (
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 8,
+          padding: "8px 12px", margin: "0 0 8px",
+          fontSize: 12, lineHeight: 1.5,
+          border: "1px solid var(--status-pending)", borderRadius: 6,
+          background: "var(--surface-2)", color: "var(--text)",
+        }}>
+          <span aria-hidden style={{ color: "var(--status-pending)" }}>▲</span>
+          <span>
+            <strong>AI provider not configured.</strong>{" "}
+            <code style={{ fontFamily: "var(--font-mono)" }}>{status.misconfigured.provider}</code> is
+            selected but <code style={{ fontFamily: "var(--font-mono)" }}>{status.misconfigured.missing}</code> is
+            not set, so the local model is answering instead. {status.misconfigured.detail}
+          </span>
+        </div>
+      )}
 
       {/* ── Chat tab ── */}
       {tab === "chat" && (

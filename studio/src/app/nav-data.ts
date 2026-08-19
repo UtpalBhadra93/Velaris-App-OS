@@ -219,6 +219,20 @@ export const NAV_DATA: NavEntry[] = [
     roles: ["admin"],
   },
   {
+    path: "/channels",
+    label: "Channel Inbox",
+    description: "Inbound SMS and WhatsApp | Two-way threads on the case record | STOP/opt-out honoured | WhatsApp 24-hour window",
+    section: "Operations",
+    roles: ["admin", "manager", "case_worker"],
+  },
+  {
+    path: "/bots",
+    label: "Bots",
+    description: "RPA bot registry and job queue | Approval by a second admin | Attended jobs propose, the operator commits",
+    section: "DevOps",
+    roles: ["admin", "developer"],
+  },
+  {
     path: "/risk-review",
     label: "Risk Review",
     description: "HxSentinel supervisor oversight | Per-reviewer score reliability | Outcome-agreement | Dispute rubber-stamped scores",

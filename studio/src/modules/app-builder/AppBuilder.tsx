@@ -217,7 +217,9 @@ function ConfigureTab({ config, setConfig, caseTypes }: { config: AppConfig; set
         </Field>
         <Field label="API URL (case-service)">
           <Input value={config.default_api_url} onChange={set("default_api_url")} placeholder="https://api.yourcompany.com" />
-          <Hint>Production URL. Dev: <code>http://10.0.2.2:8200</code> (Android emu) / <code>http://localhost:8200</code> (iOS sim)</Hint>
+          {apiUrlProblem(config.default_api_url)
+            ? <Warning>{apiUrlProblem(config.default_api_url)}</Warning>
+            : <Hint>Production URL. Dev: <code>http://10.0.2.2:8200</code> (Android emu) / <code>http://localhost:8200</code> (iOS sim)</Hint>}
         </Field>
         <Field label="Default Tenant">
           <Input value={config.default_tenant} onChange={set("default_tenant")} />
@@ -228,8 +230,8 @@ function ConfigureTab({ config, setConfig, caseTypes }: { config: AppConfig; set
       <Card style={{ gridColumn: "1 / -1" }}>
         <SectionTitle>Include Case Types</SectionTitle>
         <p style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: "var(--space-md)", lineHeight: 1.6 }}>
-          Leave all unchecked to include every case type. Check specific ones to limit the app to those workflows.
-          <strong style={{ color: "var(--text-primary)" }}> Note:</strong> Case type data (stages, steps, form fields) loads live from the API — no rebuild needed when you edit a case type's content.
+          Leave all unchecked to include every case type. Check specific ones and the generated app offers only those when creating a case.
+          <strong style={{ color: "var(--text-primary)" }}> Note:</strong> this narrows what the app shows, not what the user is allowed to see — the server still decides that. Case type data (stages, steps, form fields) loads live from the API, so no rebuild is needed when you edit a case type's content.
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6 }}>
           {caseTypes.map((ct: any) => (
@@ -586,6 +588,34 @@ function PreviewTab({ preview, loading }: { preview: any; loading: boolean }) {
       </div>
     </div>
   );
+}
+
+/* ── The generated app's own URL rule, applied before the build ──────
+ *
+ * The app refuses a plaintext URL to a public host at runtime, because that is
+ * where a bearer token would be sent in the clear. Saying so here means the
+ * designer finds out now rather than after an install.
+ */
+function apiUrlProblem(raw: string): string | null {
+  const url = (raw || "").trim();
+  if (!url) return null;
+  const match = /^(https?):\/\/([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(?::(\d{1,5}))?((?:\/[A-Za-z0-9._~-]+)*)\/?$(?![\s\S])/i.exec(url);
+  if (!match) return "The generated app will refuse this — it expects something like https://velaris.example.com";
+  const host = match[2].toLowerCase();
+  const isLocal =
+    ["localhost", "127.0.0.1", "[::1]"].includes(host) ||
+    /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
+    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host) ||
+    /\.local$/.test(host);
+  if (match[1].toLowerCase() === "http" && !isLocal) {
+    return "Plain http to a public host sends sign-in credentials in the clear. The generated app will refuse this URL — use https://";
+  }
+  return null;
+}
+
+function Warning({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 10, color: "var(--status-error, #c0392b)", marginTop: 4, lineHeight: 1.5 }}>{children}</div>;
 }
 
 /* ── Small primitives ───────────────────────────────────────────── */

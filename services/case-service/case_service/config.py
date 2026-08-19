@@ -183,6 +183,11 @@ class Settings(BaseSettings):
     # and transcripts to any authenticated user. A deployment mid-migration can
     # still opt back to shadow explicitly; silence must not mean "open".
     hxguard_case_enforcement: str = "enforce"
+    #: Phase 2 of privilege-based authorization: evaluate the privilege model
+    #: alongside every `require_role` gate and record disagreements. Observation
+    #: only — it never changes a decision. Off switches the comparison off
+    #: entirely (the gate is unaffected either way).
+    hxguard_privilege_shadow: bool = True
     # <<< HxGuard Phase B
 
     # >>> HxNexus Operator (MCP) P1
@@ -372,6 +377,28 @@ class Settings(BaseSettings):
     # INSTALL, which is where roadmap #15 put the refusal — never at first run.
     hxsandbox_enabled: bool = Field(
         default=False, validation_alias="VELARIS_CASE_HXSANDBOX_ENABLED"
+    )
+    # RPA bot runner. **Default off**: this loop starts containers on the host,
+    # so it is an opt-in per deployment rather than a platform default. While
+    # off, definitions and jobs can still be created and reviewed — they simply
+    # queue, which is visible, instead of failing somewhere obscure.
+    bot_runner_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_BOT_RUNNER_ENABLED"
+    )
+    # Where a bot container reaches us to POST its result. It sits on the
+    # internal `velaris-apps` network, so this is the address of the ONE
+    # container bridging that network — NOT a public URL, and not derived from
+    # the request.
+    #
+    # It must name a container ATTACHED to `velaris-apps`, because docker's
+    # embedded DNS only resolves those. `velaris-gateway` is `network_mode:
+    # host` and therefore has no record there: pointing at it made every job
+    # time out with "the bot did not return", which is what a container has to
+    # be started to notice. `velaris-broker-gw` is dual-homed by design and
+    # allowlists exactly the result and progress paths.
+    bot_result_base_url: str = Field(
+        default="http://velaris-broker-gw",
+        validation_alias="VELARIS_CASE_BOT_RESULT_BASE_URL",
     )
     # Max concurrent sandbox workspaces per developer (raise based on available RAM/CPU).
     marketplace_max_workspaces_per_user: int = 2

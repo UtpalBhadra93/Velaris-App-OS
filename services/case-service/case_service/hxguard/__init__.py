@@ -13,12 +13,14 @@ from .service import (
     invalidate_cache,
     require,
     require_case,
+    require_user,
     subject_from_user,
+    user_allows,
 )
 from . import tuples
 
 __all__ = [
     "Decision", "Subject", "check", "counters", "guard",
-    "invalidate_cache", "require", "require_case", "subject_from_user",
-    "tuples",
+    "invalidate_cache", "require", "require_case", "require_user",
+    "subject_from_user", "user_allows", "tuples",
 ]

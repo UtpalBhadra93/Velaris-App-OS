@@ -7,11 +7,12 @@
 // Copyright (c) 2024-2026 Velaris Contributors
 // SPDX-License-Identifier: BSL-1.1
 import React from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /** Always read the token through this — a hand-rolled header is how 21 modules
  *  ended up unauthenticated. */
 export function authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

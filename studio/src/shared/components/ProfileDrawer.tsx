@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { useAuth } from "@/auth";
 import { b64uToBuf, bufToB64u } from "@/auth/webauthn";
 import { BRAND } from "@/branding";
+import { getAccessToken, getDeviceId } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    ProfileDrawer — slide-over panel for the current user's profile.
@@ -71,7 +72,7 @@ const ROLE_META: Record<string, { label: string; color: string }> = {
 };
 
 function authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
@@ -225,7 +226,7 @@ export default function ProfileDrawer({ open, onClose }: Props) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail ?? "Revoke failed");
       setDevices(prev => prev.filter(x => x.id !== id));
-      const isThis = id === localStorage.getItem("helix_device_id");
+      const isThis = id === getDeviceId();
       setDevMsg({
         text: isThis
           ? "This device was signed out — your session will end shortly."
@@ -585,7 +586,7 @@ export default function ProfileDrawer({ open, onClose }: Props) {
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {devices.map(d => {
-                  const isThis = d.id === localStorage.getItem("helix_device_id");
+                  const isThis = d.id === getDeviceId();
                   return (
                     <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "var(--bg-elevated)", borderRadius: 8 }}>
                       <div style={{ minWidth: 0 }}>

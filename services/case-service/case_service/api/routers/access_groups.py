@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service.hxguard import lockout
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user, require_role
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
@@ -149,7 +151,7 @@ async def list_portals(
     tenant_id: Optional[str] = Query(None),
     portal_type: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.portals.read")),
 ):
     if _user.tenant_id and "superadmin" not in (_user.roles or []):
         tenant_id = _user.tenant_id
@@ -166,7 +168,7 @@ async def list_portals(
 async def create_portal(
     body: PortalIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.portals.write")),
 ):
     if body.portal_type not in _PORTAL_TYPES:
         raise HTTPException(400, f"portal_type must be one of {_PORTAL_TYPES}")
@@ -180,7 +182,7 @@ async def create_portal(
 async def get_portal(
     portal_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.portals.read")),
 ):
     p = (await session.execute(
         select(PortalModel).where(PortalModel.id == uuid.UUID(portal_id))
@@ -195,7 +197,7 @@ async def update_portal(
     portal_id: str,
     body: PortalIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.portals.write")),
 ):
     p = (await session.execute(
         select(PortalModel).where(PortalModel.id == uuid.UUID(portal_id))
@@ -212,7 +214,7 @@ async def update_portal(
 async def delete_portal(
     portal_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.portals.write")),
 ):
     p = (await session.execute(
         select(PortalModel).where(PortalModel.id == uuid.UUID(portal_id))
@@ -312,14 +314,59 @@ _PRIVILEGE_CATALOG = {
 }
 
 
+def _platform_catalog_resources() -> list[dict]:
+    """The platform half of the catalogue, GENERATED from the action registry.
+
+    Hand-listing it would guarantee drift: `_PRIVILEGE_CATALOG` above lists 16
+    legacy case-level resources and, before Phase 6, nothing else — so the
+    privilege editor could not name a single platform action, and the one data
+    path that reached them was unusable from any screen. Deriving it means a new
+    action is grantable the moment it is registered, with no second list to
+    remember.
+
+    Only resources that actually cross the namespace boundary are offered. An
+    action the boundary rejects would render as a checkbox that silently grants
+    nothing, which is worse than its absence.
+    """
+    from case_service.hxguard.actions import ACTIONS, resource_of, verb_of
+    from case_service.hxguard.privileges import _crosses_into_platform_namespace
+
+    by_resource: dict[str, dict[str, str]] = {}
+    for name, action in ACTIONS.items():
+        resource, verb = resource_of(name), verb_of(name)
+        if not _crosses_into_platform_namespace(
+                {"resource": resource, "actions": [verb]}):
+            continue
+        by_resource.setdefault(resource, {})[verb] = action.summary
+
+    return [
+        {
+            "id": resource,
+            "label": resource.replace(".", " › ").replace("_", " "),
+            "platform": True,
+            "actions": [{"id": v, "label": v, "description": verbs[v]}
+                        for v in sorted(verbs)],
+        }
+        for resource, verbs in sorted(by_resource.items())
+    ]
+
+
 @router.get("/access-roles/catalog")
 async def get_privilege_catalog(
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.read")),
 ):
     """Return all known resource types and their available actions.
-    Used by the frontend privilege editor checkbox matrix.
+
+    Two halves, kept distinguishable by the `platform` flag: the legacy
+    case-level vocabulary (hand-listed, and read by `has_privilege` /
+    `core/access_control.py`), and the platform actions generated from the
+    registry. They are different namespaces with different evaluators, and an
+    editor that blurred them would let someone grant `case.read` expecting it to
+    open a platform screen.
     """
-    return _PRIVILEGE_CATALOG
+    return {
+        "resources": _PRIVILEGE_CATALOG["resources"] + _platform_catalog_resources(),
+    }
 
 
 # ── Access Roles ──────────────────────────────────────────────────────────────
@@ -328,7 +375,7 @@ async def get_privilege_catalog(
 async def list_access_roles(
     tenant_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.read")),
 ):
     if _user.tenant_id and "superadmin" not in (_user.roles or []):
         tenant_id = _user.tenant_id
@@ -345,7 +392,7 @@ async def list_access_roles(
 async def create_access_role(
     body: AccessRoleIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.write")),
 ):
     r = AccessRoleModel(**body.model_dump())
     session.add(r)
@@ -357,7 +404,7 @@ async def create_access_role(
 async def get_access_role(
     role_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.read")),
 ):
     r = (await session.execute(
         select(AccessRoleModel).where(AccessRoleModel.id == uuid.UUID(role_id))
@@ -372,14 +419,21 @@ async def update_access_role(
     role_id: str,
     body: AccessRoleIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.write")),
 ):
     r = (await session.execute(
         select(AccessRoleModel).where(AccessRoleModel.id == uuid.UUID(role_id))
     )).scalar_one_or_none()
     if r is None:
         raise HTTPException(404, "Access role not found")
-    for k, v in body.model_dump().items():
+    # Rewriting `privileges` can strip the bootstrap action from a role that
+    # every access group carries — the same lockout as deleting the role, by a
+    # quieter route. Checked before the write, like every other holder check.
+    fields = body.model_dump()
+    await lockout.assert_role_edit_survivable(
+        session, r, fields.get("privileges"), fields.get("name"),
+        context=f"updating access role {role_id}")
+    for k, v in fields.items():
         setattr(r, k, v)
     await session.flush()
     return _role_out(r)
@@ -389,12 +443,14 @@ async def update_access_role(
 async def delete_access_role(
     role_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.write")),
 ):
     r = (await session.execute(
         select(AccessRoleModel).where(AccessRoleModel.id == uuid.UUID(role_id))
     )).scalar_one_or_none()
     if r:
+        await lockout.assert_role_delete_survivable(
+            session, r, context=f"deleting access role {role_id}")
         await session.delete(r)
         await session.flush()
     from starlette.responses import Response
@@ -407,7 +463,7 @@ async def delete_access_role(
 async def list_access_groups(
     tenant_id: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.read")),
 ):
     if _user.tenant_id and "superadmin" not in (_user.roles or []):
         tenant_id = _user.tenant_id
@@ -422,7 +478,7 @@ async def list_access_groups(
 async def create_access_group(
     body: AccessGroupIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.write")),
 ):
     # Verify portal exists
     portal = (await session.execute(
@@ -448,7 +504,7 @@ async def create_access_group(
 async def get_access_group(
     group_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.read")),
 ):
     g = (await session.execute(
         select(AccessGroupModel).where(AccessGroupModel.id == uuid.UUID(group_id))
@@ -463,13 +519,19 @@ async def update_access_group(
     group_id: str,
     body: AccessGroupIn,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.write")),
 ):
     g = (await session.execute(
         select(AccessGroupModel).where(AccessGroupModel.id == uuid.UUID(group_id))
     )).scalar_one_or_none()
     if g is None:
         raise HTTPException(404, "Access group not found")
+    # PATCH sets is_active and rewrites role_ids, so it can revoke exactly what
+    # DELETE revokes — the guarded door and the unguarded one led to the same
+    # room until this call existed.
+    await lockout.assert_group_edit_survivable(
+        session, g, body.role_ids, body.is_active,
+        context=f"updating access group {group_id}")
     g.name = body.name
     g.description = body.description
     g.portal_id = uuid.UUID(body.portal_id)
@@ -486,12 +548,21 @@ async def update_access_group(
 async def delete_access_group(
     group_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.write")),
 ):
     g = (await session.execute(
         select(AccessGroupModel).where(AccessGroupModel.id == uuid.UUID(group_id))
     )).scalar_one_or_none()
     if g:
+        members = (await session.execute(
+            select(OperatorAccessGroupModel.operator_id).where(
+                OperatorAccessGroupModel.access_group_id == g.id)
+        )).scalars().all()
+        # Deactivating a group revokes it for every member at once, which is the
+        # fastest way to lock the platform out of its own access administration.
+        await lockout.assert_not_last_holder(
+            session, removing_user_ids=[str(m) for m in members],
+            context=f"deactivating access group {group_id}")
         g.is_active = False
         await session.flush()
     from starlette.responses import Response
@@ -504,7 +575,7 @@ async def delete_access_group(
 async def list_members(
     group_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.read")),
 ):
     rows = (await session.execute(
         select(OperatorAccessGroupModel).where(
@@ -519,7 +590,7 @@ async def add_member(
     group_id: str,
     body: MemberIn,
     session: AsyncSession = Depends(get_session),
-    current_user: AuthenticatedUser = Depends(require_role("admin")),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.write")),
 ):
     # Check group exists
     g = (await session.execute(
@@ -557,7 +628,7 @@ async def remove_member(
     group_id: str,
     operator_id: str,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.groups.write")),
 ):
     m = (await session.execute(
         select(OperatorAccessGroupModel).where(
@@ -566,6 +637,11 @@ async def remove_member(
         )
     )).scalar_one_or_none()
     if m:
+        # Checked BEFORE the delete: afterwards there may be nobody left to
+        # authorise putting it back (§6.1 of the privilege-authz design).
+        await lockout.assert_not_last_holder(
+            session, removing_user_ids=[operator_id],
+            context=f"removing {operator_id} from access group {group_id}")
         await session.delete(m)
         await session.flush()
     from starlette.responses import Response
@@ -619,3 +695,100 @@ async def switch_context(
     from case_service.auth.dependencies import _enrich_with_access_group
     user = await _enrich_with_access_group(user, session)
     return user.to_dict()
+
+
+# ── Phase 6: role → privilege, in DATA ────────────────────────────────────────
+#
+# Until this existed, a platform role's privileges came only from
+# `SEEDED_ROLE_PRIVILEGES`, derived in code from each action's `legacy_roles` —
+# the parity oracle, not a policy knob. Changing who may do what meant editing
+# the record of what `require_role` used to answer, and a deploy.
+#
+# Entries here are ADDED to the seed. See `hxguard/role_store.py` for why that,
+# and not replacement, is the only safe shape for a cache-served authorization
+# source: an empty cache must mean "as before", never "nobody holds anything".
+
+
+class RolePrivilegesBody(BaseModel):
+    #: Bounded for the same reason the HxSentinel rule params are: this column
+    #: holds a handful of grants, and an admin — trusted or not — should not be
+    #: able to park an arbitrary blob in a table read on every request.
+    privileges: list[dict] = Field(default_factory=list, max_length=200)
+
+
+def _role_privilege_view(role: str) -> dict:
+    from case_service.hxguard import role_store
+    from case_service.hxguard.privileges import (
+        SEEDED_ROLE_PRIVILEGES, effective_privileges,
+    )
+    return {
+        "role": role,
+        # Split deliberately three ways. "What did I grant" and "what does this
+        # role actually hold" are different questions, and an admin who cannot
+        # see the seed will re-grant something they already had — or try to
+        # remove it by deleting a row that was never there.
+        "seeded": list(SEEDED_ROLE_PRIVILEGES.get(role, [])),
+        "stored": role_store.privileges_for(role),
+        "effective": effective_privileges([role]),
+    }
+
+
+@router.get("/role-privileges")
+async def list_role_privileges(
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.read")),
+):
+    """Every platform role, with its seeded, stored and effective privileges."""
+    from case_service.hxguard.privileges import KNOWN_ROLES
+    return {"roles": [_role_privilege_view(r) for r in KNOWN_ROLES]}
+
+
+@router.put("/role-privileges/{role}")
+async def put_role_privileges(
+    role: str,
+    body: RolePrivilegesBody,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.write")),
+):
+    """Replace one role's STORED entries (the seed is untouched).
+
+    Guarded against lockout the same way group and role edits are, and for a
+    sharper reason: a `deny` entry here revokes for **every holder of the role at
+    once**, which is the fastest route to nobody holding `identity.groups.write`
+    that the platform has.
+    """
+    from case_service.enterprise.security_events import log_security_event
+    from case_service.hxguard import role_store
+    from case_service.hxguard.privileges import KNOWN_ROLES
+
+    if role not in KNOWN_ROLES:
+        raise HTTPException(404, f"Unknown platform role {role!r}")
+
+    try:
+        role_store._valid_or_raise(body.privileges)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    before = role_store.privileges_for(role)
+
+    # Compares holders BEFORE against holders AFTER. Staging the change and then
+    # calling `lockout.assert_not_last_holder` looks equivalent and is not — see
+    # that function's docstring for how it defeats the guard.
+    await role_store.assert_write_keeps_bootstrap_holders(
+        session, role=role, privileges=list(body.privileges),
+        context=f"editing privileges of role '{role}'")
+
+    stored = await role_store.set_role_privileges(
+        session, role=role, privileges=list(body.privileges),
+        updated_by=user.user_id)
+    await log_security_event(
+        session, event_type="role_privileges_changed", severity="warning",
+        user_id=user.user_id, resource_type="role", resource_id=role,
+        action="identity.roles.write",
+        details={"before": before, "after": stored},
+    )
+    await session.commit()
+
+    # Refresh from committed state so this worker answers with the new grants
+    # immediately; the cron carries it to the others.
+    await role_store.refresh(session)
+    return _role_privilege_view(role)

@@ -1165,10 +1165,14 @@ class UserDirectoryModel(Base):
     __table_args__ = (
         Index("idx_user_directory_manager", "manager_user_id"),
         Index("idx_user_directory_tenant", "tenant_id"),
+        Index("ix_user_directory_external", "external_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # Mirrors velaris_users.external_id — the two rows are one principal and the
+    # spine writes both in the same transaction (mig 157).
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     manager_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -3389,6 +3393,7 @@ class HelixUserModel(Base):
         Index("ix_velaris_users_email",    "email",    unique=True),
         Index("ix_velaris_users_username", "username", unique=True),
         Index("ix_velaris_users_sso",      "sso_provider", "sso_subject"),
+        Index("ix_velaris_users_external", "external_id"),
     )
 
     id:                       Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
@@ -3406,6 +3411,11 @@ class HelixUserModel(Base):
     mfa_secret_enc:           Mapped[dict | None]    = mapped_column(PortableJSON(), nullable=True)
     sso_provider:             Mapped[str | None]     = mapped_column(String(255), nullable=True)
     sso_subject:              Mapped[str | None]     = mapped_column(String(255), nullable=True)
+    # The stable key an external directory asserts (SCIM externalId, SAML
+    # NameID). Deliberately NOT username: that changes on rename, and an
+    # identity keyed on it forks one person into two accounts. Not unique —
+    # two providers may assert the same opaque id (mig 157).
+    external_id:              Mapped[str | None]     = mapped_column(String(255), nullable=True)
     created_at:               Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:               Mapped[datetime]       = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     last_login_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -3449,7 +3459,448 @@ class SsoProviderModel(Base):
     config:            Mapped[dict]        = mapped_column(PortableJSON(), nullable=False, default=dict)
     created_at:        Mapped[datetime]    = mapped_column(MicroDateTime(), default=_utcnow)
 
+    # SAML SP key material (mig 162). Columns rather than keys inside `config`,
+    # for the same reason as `client_secret_enc`: `config` is returned wholesale
+    # to the admin console, and key material must never be in a response body.
+    # The private half is sealed with the tenant's HxVault DEK; the certificate
+    # is public by design — it is published in SP metadata for the IdP to import.
+    sp_key_enc:        Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    sp_cert:           Mapped[str | None]  = mapped_column(Text, nullable=True)
+    sp_key_created_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+
 # <<< P64 Real Auth
+
+
+# >>> Enterprise identity P0 — provisioning spine (mig 157)
+
+class IdentityGroupMappingModel(Base):
+    """An IdP group name → a Velaris access group.
+
+    An unmapped group grants NOTHING. There is deliberately no fallback that
+    matches an access group by name: the IdP administrator controls those
+    strings, so a name fallback would let them mint Velaris authorization by
+    naming a directory group after one of ours.
+
+    ``tenant_id`` holds the RESOLVED tenant UUID, never the caller's token.
+    The platform stores a slug in some tenant columns and a UUID in others
+    (``tenancy.identity.resolve_tenant``); keying this table on the ambiguous
+    form would make a mapping resolve differently depending on how it was
+    written.
+    """
+
+    __tablename__ = "identity_group_mappings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source", "external_group",
+                         name="identity_group_mappings_uq"),
+        Index("ix_igm_tenant_source", "tenant_id", "source"),
+    )
+
+    id:              Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: Which entry point may use this mapping — saml | scim | oidc | bulk_sync.
+    source:          Mapped[str]       = mapped_column(String(20), nullable=False)
+    external_group:  Mapped[str]       = mapped_column(String(255), nullable=False)
+    access_group_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("access_groups.id", ondelete="CASCADE"), nullable=False,
+    )
+    priority:        Mapped[int]       = mapped_column(Integer, nullable=False, default=100)
+    created_by:      Mapped[str]       = mapped_column(String(255), nullable=False, default="system")
+    created_at:      Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class IdentityProvisionLogModel(Base):
+    """One row per provisioning decision, from every entry point.
+
+    Exists to answer "why is this user in this group?" and, just as important,
+    "the IdP sent twelve groups and three of them map to nothing" — an unmapped
+    group is recorded here rather than silently dropped.
+    """
+
+    __tablename__ = "identity_provision_log"
+    __table_args__ = (
+        Index("ix_ipl_tenant_time", "tenant_id", "created_at"),
+        Index("ix_ipl_external", "external_id"),
+    )
+
+    id:          Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: scim | saml_jit | oidc | bulk_sync
+    source:      Mapped[str]        = mapped_column(String(20), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    username:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: create | update | deactivate | group_add | group_remove | rejected
+    action:      Mapped[str]        = mapped_column(String(30), nullable=False)
+    #: ok | error. A refusal is action=rejected, result=error, reason in detail.
+    result:      Mapped[str]        = mapped_column(String(20), nullable=False)
+    detail:      Mapped[dict]       = mapped_column(PortableJSON(), nullable=False, default=dict)
+    created_at:  Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+
+class SamlAssertionReplayModel(Base):
+    """One row per consumed SAML assertion ID (mig 158).
+
+    **The primary key is the replay defence.** Every other control on an
+    assertion is a time window five or so minutes wide, inside which the same
+    signed bytes log in as often as they are posted. The first POST takes this
+    row; a second collides on the unique insert and is refused. A
+    SELECT-then-INSERT would race in exactly the case that matters.
+
+    Rows past ``not_on_or_after`` are inert — the assertion fails its own time
+    window by then — so the retention runner may delete them freely.
+    """
+
+    __tablename__ = "saml_assertion_replay"
+    __table_args__ = (
+        Index("ix_saml_replay_expiry", "not_on_or_after"),
+    )
+
+    assertion_id:    Mapped[str]       = mapped_column(String(255), primary_key=True)
+    provider_id:     Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    not_on_or_after: Mapped[datetime]  = mapped_column(DateTime(timezone=True), nullable=False)
+    seen_at:         Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class SamlAuthnRequestModel(Base):
+    """One row per outstanding SP-initiated AuthnRequest (mig 163).
+
+    Recorded when `/login` builds the request and **deleted** when an assertion
+    quotes it, so `InResponseTo` is a check rather than a field we merely read.
+    A second assertion quoting the same request finds nothing — consumption is
+    the DELETE, not a SELECT that could race with it.
+
+    Absent `InResponseTo` is fine: an IdP-initiated sign-in answers no request.
+    """
+
+    __tablename__ = "saml_authn_requests"
+    __table_args__ = (
+        Index("ix_saml_authn_req_expiry", "expires_at"),
+    )
+
+    request_id:  Mapped[str]       = mapped_column(String(255), primary_key=True)
+    provider_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    expires_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ScimTokenModel(Base):
+    """A machine credential for an IdP's SCIM client (mig 159).
+
+    Stored as SHA-256 only: the plaintext is shown once at mint, so a database
+    read yields nothing that works. **The tenant comes from this row and never
+    from the request** — a client that could name its own tenant could
+    enumerate and rewrite every other one.
+    """
+
+    __tablename__ = "scim_tokens"
+    __table_args__ = (
+        Index("ix_scim_tokens_hash", "token_hash", unique=True),
+        Index("ix_scim_tokens_tenant", "tenant_id"),
+    )
+
+    id:           Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[str | None]     = mapped_column(String(255), nullable=True)
+    name:         Mapped[str]            = mapped_column(String(255), nullable=False)
+    token_hash:   Mapped[str]            = mapped_column(String(64), nullable=False)
+    scopes:       Mapped[list]           = mapped_column(PortableJSON(), nullable=False, default=list)
+    created_by:   Mapped[str]            = mapped_column(String(255), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:   Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
+
+# <<< Enterprise identity P0
+
+
+# >>> Omnichannel inbound (mig 160)
+#
+# Modelled on `email_messages`, which already proves the bidirectional,
+# nullable-case, threaded shape works. `sms_messages` is deliberately NOT
+# widened: it is step-bound (`case_id` and `step_id` both NOT NULL) because it
+# records "the workflow sent this", and an inbound message has neither.
+
+class ChannelEndpointModel(Base):
+    """The addressable thing a customer contacts — the "email account" equivalent."""
+
+    __tablename__ = "channel_endpoints"
+    __table_args__ = (
+        UniqueConstraint("provider", "channel", "address",
+                         name="channel_endpoints_addr_uq"),
+        Index("ix_chep_tenant", "tenant_id", "channel"),
+    )
+
+    id:                     Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:              Mapped[str]       = mapped_column(String(255), nullable=False)
+    #: sms | whatsapp | voice
+    channel:                Mapped[str]       = mapped_column(String(20), nullable=False)
+    #: twilio | meta | generic
+    provider:               Mapped[str]       = mapped_column(String(30), nullable=False)
+    address:                Mapped[str]       = mapped_column(String(64), nullable=False)
+    connector_id:           Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The webhook signing secret. The inbound route authenticates on this and
+    #: nothing else — there is no token, and the caller is Twilio or Meta.
+    signing_secret_enc:     Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    default_case_type_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    auto_create_case:       Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
+    conversation_ttl_hours: Mapped[int]       = mapped_column(Integer, nullable=False, default=72)
+    routing:                Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    is_active:              Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
+    created_at:             Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:             Mapped[datetime]  = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class ChannelConversationModel(Base):
+    """One thread with one peer on one endpoint."""
+
+    __tablename__ = "channel_conversations"
+    __table_args__ = (
+        Index("ix_chconv_lookup", "endpoint_id", "peer_address", "status"),
+        Index("ix_chconv_case", "case_id"),
+        Index("ix_chconv_tenant", "tenant_id", "last_message_at"),
+    )
+
+    id:                Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:         Mapped[str]       = mapped_column(String(255), nullable=False)
+    endpoint_id:       Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("channel_endpoints.id", ondelete="CASCADE"), nullable=False)
+    peer_address:      Mapped[str]       = mapped_column(String(128), nullable=False)
+    case_id:           Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    customer_id:       Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: open | assigned | closed
+    status:            Mapped[str]       = mapped_column(String(20), nullable=False, default="open")
+    assigned_to:       Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: WhatsApp's 24-hour session window. Outside it, only a pre-approved
+    #: template may be sent — unmodelled, replies fail silently at the provider.
+    window_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_message_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unread_count:      Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    metadata_json:     Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    created_at:        Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ChannelMessageModel(Base):
+    """One message, either direction, on a channel conversation.
+
+    ``provider_message_id`` is UNIQUE and that **is** the idempotency guarantee:
+    Twilio and Meta both retry deliveries, and without it a retry creates a
+    second case. It is the role `message_id` plays for email.
+    """
+
+    __tablename__ = "channel_messages"
+    __table_args__ = (
+        Index("ix_chmsg_provider_id", "provider_message_id", unique=True),
+        Index("ix_chmsg_conv", "conversation_id", "created_at"),
+        Index("ix_chmsg_case", "case_id"),
+        Index("ix_chmsg_unread", "tenant_id", "is_read"),
+    )
+
+    id:                  Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:           Mapped[str]       = mapped_column(String(255), nullable=False)
+    conversation_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("channel_conversations.id", ondelete="CASCADE"), nullable=False)
+    case_id:             Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    channel:             Mapped[str]       = mapped_column(String(20), nullable=False)
+    #: inbound | outbound
+    direction:           Mapped[str]       = mapped_column(String(10), nullable=False)
+    author:              Mapped[str | None] = mapped_column(String(255), nullable=True)
+    peer_address:        Mapped[str]       = mapped_column(String(128), nullable=False)
+    body:                Mapped[str]       = mapped_column(Text, nullable=False, default="")
+    media:               Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    template_name:       Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: received | queued | sent | delivered | read | failed
+    status:              Mapped[str]       = mapped_column(String(30), nullable=False, default="received")
+    error:               Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload:         Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    is_read:             Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
+    created_at:          Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    sent_at:             Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at:         Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WhatsAppTemplateModel(Base):
+    """A pre-approved WhatsApp template — the only thing sendable outside the 24h window."""
+
+    __tablename__ = "whatsapp_templates"
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "name", "language", name="whatsapp_templates_uq"),
+    )
+
+    id:                   Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:            Mapped[str]       = mapped_column(String(255), nullable=False)
+    endpoint_id:          Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("channel_endpoints.id", ondelete="CASCADE"), nullable=False)
+    name:                 Mapped[str]       = mapped_column(String(255), nullable=False)
+    language:             Mapped[str]       = mapped_column(String(10), nullable=False)
+    provider_template_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body_params:          Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    approval_status:      Mapped[str]       = mapped_column(String(20), nullable=False, default="pending")
+    created_at:           Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+# <<< Omnichannel inbound
+
+
+# >>> RPA / bot runner (mig 161)
+#
+# A bot is a container that performs a task and returns a result. It runs on the
+# Marketplace Layer-2 substrate unchanged — digest-pinned, registry-allowlisted,
+# internal network with no route out, non-root, read-only rootfs, zero database
+# credentials — because an RPA bot is a different kind of tenant of that
+# substrate, not a different substrate.
+
+class BotDefinitionModel(Base):
+    """What a bot *is*. Deliberately close to an L2 app manifest, because the
+    review a platform admin performs is the same review."""
+
+    __tablename__ = "bot_definitions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="bot_definitions_name_uq"),
+    )
+
+    id:                 Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:          Mapped[str]       = mapped_column(String(255), nullable=False)
+    name:               Mapped[str]       = mapped_column(String(255), nullable=False)
+    description:        Mapped[str]       = mapped_column(Text, nullable=False, default="")
+    image:              Mapped[str]       = mapped_column(String(512), nullable=False)
+    #: Pinned. The tag is display-only and is never what gets pulled.
+    digest:             Mapped[str]       = mapped_column(String(80), nullable=False)
+    signature_verified: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
+    declared_command:   Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: NON-SECRET ONLY. A password here would be static, identical for every job,
+    #: and readable by anyone who can read this table.
+    declared_env:       Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    credential_refs:    Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    input_schema:       Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    output_schema:      Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    granted_domains:    Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    timeout_seconds:    Mapped[int]       = mapped_column(Integer, nullable=False, default=300)
+    max_concurrency:    Mapped[int]       = mapped_column(Integer, nullable=False, default=1)
+    #: 'light' keeps the L2 pid cap; 'browser' raises it — a Chromium process
+    #: tree exceeds 64 immediately.
+    resource_profile:   Mapped[str]       = mapped_column(String(20), nullable=False, default="light")
+    #: draft until an explicit approval by an admin who is not the creator.
+    status:             Mapped[str]       = mapped_column(String(20), nullable=False, default="draft")
+    created_by:         Mapped[str]       = mapped_column(String(255), nullable=False)
+    approved_by:        Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at:        Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:         Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:         Mapped[datetime]  = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class BotJobModel(Base):
+    """One execution.
+
+    ``result_token_hash`` + ``result_token_used_at`` are how a container returns
+    its work **without** the broker gaining write scopes: a per-job, single-use
+    credential over its own row and nothing else.
+    """
+
+    __tablename__ = "bot_jobs"
+    __table_args__ = (
+        Index("ix_botjobs_queue", "status", "queued_at"),
+        Index("ix_botjobs_case", "case_id"),
+        Index("ix_botjobs_bot", "bot_id", "status"),
+        Index("ix_botjobs_tenant", "tenant_id", "queued_at"),
+        Index("ix_botjobs_token", "result_token_hash"),
+    )
+
+    id:                   Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:            Mapped[str]       = mapped_column(String(255), nullable=False)
+    bot_id:               Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("bot_definitions.id", ondelete="CASCADE"), nullable=False)
+    case_id:              Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    step_id:              Mapped[str | None] = mapped_column(String(255), nullable=True)
+    process_instance_id:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    node_id:              Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: workflow | agent | api | schedule
+    trigger:              Mapped[str]       = mapped_column(String(20), nullable=False, default="api")
+    requested_by:         Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input:                Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    output:               Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    artifacts:            Mapped[list]      = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: queued | leased | running | succeeded | failed | timed_out | cancelled
+    status:               Mapped[str]       = mapped_column(String(20), nullable=False, default="queued")
+    attempt:              Mapped[int]       = mapped_column(Integer, nullable=False, default=0)
+    #: A crashed runner's lease expires and the job requeues — this is what makes
+    #: two runners safe without a distributed lock.
+    lease_expires_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    container_id:         Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_token_hash:    Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_token_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error:                Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at:            Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    started_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at:             Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BotRunEventModel(Base):
+    """The job's own timeline — leased, started, progress, artifact, result, error."""
+
+    __tablename__ = "bot_run_events"
+    __table_args__ = (
+        Index("ix_botevents_job", "job_id", "created_at"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    job_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("bot_jobs.id", ondelete="CASCADE"), nullable=False)
+    kind:       Mapped[str]       = mapped_column(String(30), nullable=False)
+    detail:     Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class BotCredentialLeaseModel(Base):
+    """A per-job credential lease (P4).
+
+    A bot signing into a supplier portal needs that portal's password. It gets a
+    TTL-bounded lease revoked at teardown — never a value stored on the
+    definition row, which would be static, identical for every job, and readable
+    by anyone who can read the table.
+    """
+
+    __tablename__ = "bot_credential_leases"
+    __table_args__ = (
+        Index("ix_botleases_job", "job_id"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    job_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("bot_jobs.id", ondelete="CASCADE"), nullable=False)
+    vault_ref:  Mapped[str]       = mapped_column(String(512), nullable=False)
+    leased_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    expires_at: Mapped[datetime]  = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class BotCredentialModel(Base):
+    """The store the per-job leases draw from.
+
+    The design assumed HxVault was a path-addressed secret store; it is envelope
+    encryption for data at rest. So the store is this table and the property
+    that matters is preserved — the value is encrypted under the tenant's DEK
+    (``encrypt_credentials(..., vault=True)``), so a database dump yields
+    nothing and crypto-shredding a tenant destroys its bot credentials with
+    everything else.
+
+    ``version`` is what makes "rotating the secret invalidates outstanding
+    leases" true rather than aspirational.
+    """
+
+    __tablename__ = "bot_credentials"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "ref", name="bot_credentials_ref_uq"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[str]       = mapped_column(String(255), nullable=False)
+    ref:        Mapped[str]       = mapped_column(String(512), nullable=False)
+    value_enc:  Mapped[dict]      = mapped_column(PortableJSON(), nullable=False, default=dict)
+    created_by: Mapped[str]       = mapped_column(String(255), nullable=False)
+    version:    Mapped[int]       = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at: Mapped[datetime]  = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+# <<< RPA / bot runner
 
 
 # >>> Connector Intelligence (outbound rules + form audit)
@@ -6252,3 +6703,34 @@ class CaseRiskConfigModel(Base):
     verify_gate_severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
     updated_by:           Mapped[str]        = mapped_column(String(255), nullable=False)
     updated_at:           Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class RolePrivilegeModel(Base):
+    """Phase 6 — privilege entries a platform role holds, in DATA.
+
+    `SEEDED_ROLE_PRIVILEGES` is derived in code from each action's
+    `legacy_roles`, and `legacy_roles` is the parity oracle recording what
+    `require_role` used to answer — not a policy knob. Without this table there
+    is no way to grant a platform role an action except a code change.
+
+    **Additive to the seed, never a replacement.** The cache serving this table
+    is in-process, so an unloaded or failed cache is empty; under "replace" that
+    would mean every role holds nothing — a silent platform-wide lockout for the
+    first seconds of boot. Additive makes an empty cache mean "today's
+    behaviour", the only acceptable way for an authorization cache to fail.
+    Revocation is an explicit ``{"effect": "deny"}`` entry (deny-wins has existed
+    since Phase 1 and no seeded role uses it), so a removal is always a row
+    somebody wrote rather than an absence.
+
+    ``role`` is a platform role name from ``velaris_users.roles``, NOT an
+    ``access_roles`` row — those are the case-level concept and keep their own
+    privileges column.
+    """
+
+    __tablename__ = "role_privileges"
+
+    role:       Mapped[str]      = mapped_column(String(64), primary_key=True)
+    privileges: Mapped[list]     = mapped_column(PortableJSON(), default=list)
+    updated_by: Mapped[str]      = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

@@ -47,6 +47,8 @@ from case_service.storage import get_storage_backend
 
 log = logging.getLogger(__name__)
 
+from case_service import hxguard
+
 router = APIRouter(prefix="/hxnexus", tags=["hxnexus"])
 
 
@@ -78,7 +80,11 @@ async def _assert_case_access(
         raise coded(404, LLM_NOTFOUND_404, "Case not found")
 
     # Admins and managers have platform-wide case access
-    if user.is_admin or user.has_role("manager"):
+    # Phase 4 step 2: `has_role("manager")` also returned True for any admin
+    # (has_role passes on is_admin), so the two clauses overlapped. They are now
+    # distinct: the privilege, or the manager role held literally.
+    if (hxguard.user_allows(user, "casework.sensitive.read")
+            or "manager" in (user.roles or [])):
         return case
 
     # Case worker: must be creator or have an active assignment
@@ -125,7 +131,7 @@ async def llmops_metrics(
     group_by: str = "model",
     hours: int | None = None,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("ai.metrics.read")),
 ):
     """Per-call AI metrics — cost, volume, latency, error rate (#32, §5.4).
 
@@ -157,6 +163,11 @@ async def hxnexus_status(_: AuthenticatedUser = Depends(get_current_user)):
         "name": "HxNexus",
         "backend": info["backend"],
         "available": available,
+        # None when healthy. Non-null means the configured provider was dropped
+        # for a named reason and the local model is answering in its place —
+        # without this, `backend: "ollama"` and `available: true` look like a
+        # deliberate local-only install rather than a broken external one.
+        "misconfigured": info["misconfigured"],
         "config": info["config"],
         "capabilities": ["next_best_action", "document_qa", "chat", "transcript", "summarize"],
     }
@@ -670,7 +681,7 @@ async def developer_guide(
 @router.post("/docs/regenerate")
 async def regenerate_docs(
     session: AsyncSession = Depends(get_session),
-    current_user: AuthenticatedUser = Depends(require_role("designer", "admin")),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("docs.guides.regenerate")),
 ):
     """Force regeneration of both business and developer guides."""
     allowed, retry = regen_rate_limiter.is_allowed(str(current_user.user_id))

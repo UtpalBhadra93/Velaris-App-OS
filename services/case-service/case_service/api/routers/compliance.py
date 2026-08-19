@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.compliance import (
     chain_status, verify_chain, seal_new_entries,
@@ -38,7 +39,7 @@ async def get_audit_status(
 async def seal_chain(
     max_rows: int = Query(10000, ge=1, le=100000),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.audit.seal")),
 ):
     return await seal_new_entries(session, max_rows=max_rows)
 
@@ -67,7 +68,7 @@ async def get_audit_anchors(
 async def trigger_audit_anchor(
     force: bool = Query(False, description="Anchor even if the tip is unchanged"),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.audit.seal")),
 ):
     try:
         return await anchor_chain_tip(session, force=force)
@@ -85,7 +86,9 @@ class GenerateReportBody(BaseModel):
 
 
 @router.get("/frameworks")
-async def list_frameworks():
+async def list_frameworks(
+    _user: AuthenticatedUser = Depends(hxguard.guard("compliance.frameworks.read")),
+):
     return {k: v["name"] for k, v in FRAMEWORKS.items()}
 
 
@@ -93,7 +96,7 @@ async def list_frameworks():
 async def generate_report(
     body: GenerateReportBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.reports.generate")),
 ):
     if body.framework not in FRAMEWORKS:
         raise HTTPException(400, f"Unknown framework: {body.framework}")
@@ -221,7 +224,7 @@ async def get_lineage(
 async def record_consent(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.consent.write")),
 ):
     """Append one consent decision to the ledger (#39 / §8.1).
 
@@ -259,7 +262,7 @@ async def record_consent(
 async def get_consent_state(
     subject_ref: str,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.consent.read")),
 ):
     """Current lawful basis per purpose, plus the full ledger (Article 15).
 
@@ -292,7 +295,7 @@ async def check_consent(
     subject_ref: str,
     purpose: str,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.consent.read")),
 ):
     """Is processing for `purpose` currently lawful for this subject?
 
@@ -315,7 +318,7 @@ async def check_consent(
 @router.post("/privacy/scan")
 async def run_pii_scan(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.privacy.scan")),
 ):
     """Scan every form and data model for probable personal data (#39 / §8.10).
 
@@ -337,7 +340,7 @@ async def list_pii_findings(
     status: str | None = None,
     limit: int = 200,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.privacy.read")),
 ):
     """Findings awaiting or past review.
 
@@ -356,7 +359,7 @@ async def list_pii_findings(
     ).limit(max(1, min(int(limit), 1000)))
     if status:
         q = q.where(PIIFindingModel.status == status)
-    if user.tenant_id and not user.is_admin:
+    if user.tenant_id and not hxguard.user_allows(user, "compliance.crosstenant.read"):
         q = q.where(PIIFindingModel.tenant_id == str(user.tenant_id))
 
     rows = (await session.execute(q)).scalars().all()
@@ -384,7 +387,7 @@ async def review_pii_finding(
     finding_id: uuid.UUID,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin", "security")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.privacy.review")),
 ):
     """Confirm or dismiss a finding.
 
@@ -413,7 +416,7 @@ async def review_pii_finding(
 async def create_ledger_account(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.ledger.write")),
 ):
     """Create or fetch a chart-of-accounts entry (#39 / §8.4). Idempotent."""
     from case_service.compliance import ledger
@@ -438,7 +441,7 @@ async def create_ledger_account(
 async def post_ledger_transaction(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.ledger.write")),
 ):
     """Post one balanced transaction.
 
@@ -482,7 +485,7 @@ async def reverse_ledger_transaction(
     transaction_id: uuid.UUID,
     body: dict | None = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.ledger.write")),
 ):
     """Reverse a transaction by posting its mirror image.
 
@@ -506,7 +509,7 @@ async def reverse_ledger_transaction(
 @router.get("/ledger/trial-balance")
 async def get_trial_balance(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.ledger.read")),
 ):
     """Per-account totals plus the whole-ledger balance check.
 
@@ -523,7 +526,7 @@ async def get_trial_balance(
 @router.get("/ledger/reconcile")
 async def reconcile_ledger(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.ledger.read")),
 ):
     """Captured payments vs what the ledger recorded.
 
@@ -544,7 +547,7 @@ async def reconcile_ledger(
 async def record_backup(
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.dr.write")),
 ):
     """Record a backup that ops has taken (#39 / §8.9).
 
@@ -594,7 +597,7 @@ async def list_backups(
     region_id: uuid.UUID | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.dr.read")),
 ):
     """Recorded backups, newest first.
 
@@ -616,7 +619,7 @@ async def list_backups(
     )
     if region_id:
         q = q.where(BackupRecordModel.region_id == region_id)
-    if user.tenant_id and not user.is_admin:
+    if user.tenant_id and not hxguard.user_allows(user, "compliance.crosstenant.read"):
         q = q.where(BackupRecordModel.tenant_id == str(user.tenant_id))
 
     rows = (await session.execute(q)).scalars().all()
@@ -649,7 +652,7 @@ async def record_restore_test(
     backup_id: uuid.UUID,
     body: dict,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.dr.write")),
 ):
     """Record the outcome of actually restoring a backup.
 
@@ -686,7 +689,7 @@ async def get_dr_posture(
     rpo_hours: int = 24,
     rto_hours: int = 4,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.dr.read")),
 ):
     """Per-region recovery posture against declared objectives.
 

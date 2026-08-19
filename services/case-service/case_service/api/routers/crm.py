@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import CrmSyncRecordModel, InvoiceRecordModel
@@ -27,7 +28,7 @@ def _has_sensitive_access(user: AuthenticatedUser) -> bool:
     all other authenticated roles receive totals-only (unit_price, amount, and
     description are replaced with '***' to avoid cost/pricing disclosure).
     """
-    return user.is_admin or "finance" in user.roles or "admin" in user.roles
+    return hxguard.user_allows(user, "finance.details.read")
 
 
 def _redact_line_items(line_items: list | None, full_access: bool) -> list | None:

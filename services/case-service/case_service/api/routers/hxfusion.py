@@ -20,7 +20,9 @@ from case_service.api.schemas.hxfusion import (
     AIDirectorRequest, AIDirectorResponse,
 )
 
-router = APIRouter(prefix="/fusion", tags=["HxFusion"], dependencies=[Depends(require_role("integration", "admin", "designer"))])
+from case_service import hxguard
+
+router = APIRouter(prefix="/fusion", tags=["HxFusion"], dependencies=[Depends(hxguard.guard("integration.fusion.access"))])
 
 
 # ── Process Definitions ───────────────────────────────────────────────────────

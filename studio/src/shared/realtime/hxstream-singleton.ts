@@ -1,3 +1,4 @@
+import { getAccessToken } from "@/auth/tokenManager";
 /**
  * HxStream persistent singleton — survives page navigation.
  *
@@ -94,7 +95,7 @@ class HxStreamSingleton {
 
   private connect() {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const token = localStorage.getItem("helix_token") ?? "";
+    const token = getAccessToken() ?? "";
     const url   = `${proto}://${window.location.host}/api/v1/hxstream/ws?token=${encodeURIComponent(token)}`;
 
     try {

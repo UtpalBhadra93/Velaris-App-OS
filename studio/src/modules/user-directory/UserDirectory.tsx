@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Entry = {
   id?: string;
@@ -30,7 +31,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TZ_RE = /^[A-Za-z][A-Za-z0-9_/+-]*$/;
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

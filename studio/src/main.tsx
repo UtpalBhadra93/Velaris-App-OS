@@ -1,6 +1,7 @@
 import React from "react";
-import { attemptRefresh } from "@/auth/tokenManager";
+import { attemptRefresh, getAccessToken, getRefreshToken } from "@/auth/tokenManager";
 import { AuthProvider } from "@/auth";
+import SamlHandoffGate from "@/auth/SamlHandoffGate";
 import { PermissionsProvider, usePermissions } from "@/auth/PermissionsContext";
 import { ThemeProvider } from "@/theme/ThemeContext";
 import ProtectedRoute from "@/auth/ProtectedRoute";
@@ -39,14 +40,14 @@ window.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
     const url = typeof args[0] === "string" ? args[0] : (args[0] as Request).url;
     const isExcluded = _EXCLUDED_401.some(p => url.includes(p));
     // Only treat as "session expired" when the user actually had a token
-    const hasSession = !!localStorage.getItem("helix_token");
+    const hasSession = !!getAccessToken();
     if (!isExcluded && hasSession) {
       const refreshed = await attemptRefresh();
       // Logout when the chain is dead (tokens cleared) or there is nothing to
       // refresh with (legacy token-only session). A failed refresh with the
       // chain still intact is a transient (network/429) — keep the session.
       if (!refreshed &&
-          (!localStorage.getItem("helix_token") || !localStorage.getItem("helix_refresh_token"))) {
+          (!getAccessToken() || !getRefreshToken())) {
         window.dispatchEvent(new CustomEvent("velaris:unauthorized"));
       }
     }
@@ -85,6 +86,7 @@ import HxNexus from "@modules/hxnexus/HxNexus";
 import Portal, { PortalLogin } from "@modules/portal/Portal";
 import PortalAdmin from "@modules/portal/PortalAdmin";
 import MeetJoin from "@modules/portal/MeetJoin";
+import SsoCallback from "@/auth/SsoCallback";
 import AccessGroupAdmin from "@modules/access-groups/AccessGroupAdmin";
 import HxStream from "@modules/hxstream/HxStream";
 import HxStatus from "@modules/hxstatus/HxStatus";
@@ -110,6 +112,8 @@ import HxMigrate from "@modules/hxmigrate/HxMigrate";
 import HxDBMigrate from "@modules/hxdbmigrate/HxDBMigrate";
 import HxReplay from "@modules/hxreplay/HxReplay";
 import RiskReview from "@modules/hxsentinel/RiskReview";
+import ChannelInbox from "@modules/channels/ChannelInbox";
+import BotConsole from "@modules/bots/BotConsole";
 import HxDeploy from "@modules/hxdeploy/HxDeploy";
 import HxWork from "@modules/hxwork/HxWork";
 import HxCanvas from "@modules/hxcanvas/HxCanvas";
@@ -123,6 +127,7 @@ function PermRoute({ path, pageName, children }: { path: string; pageName: strin
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider><AuthProvider><FeatureFlagsProvider><BrowserRouter><PermissionsProvider>
+     <SamlHandoffGate>
       <Routes>
         <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
           {/* ── Open to all authenticated users ── */}
@@ -163,6 +168,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/hxdbmigrate"  element={<PermRoute path="/hxdbmigrate"  pageName="HxDBMigrate"> <HxDBMigrate /> </PermRoute>} />
           <Route path="/hxreplay"     element={<PermRoute path="/hxreplay"     pageName="HxReplay">    <HxReplay />    </PermRoute>} />
           <Route path="/risk-review"  element={<PermRoute path="/risk-review"  pageName="Risk Review"> <RiskReview />  </PermRoute>} />
+          <Route path="/channels"     element={<PermRoute path="/channels"     pageName="Channel Inbox"><ChannelInbox /></PermRoute>} />
+          <Route path="/bots"         element={<PermRoute path="/bots"         pageName="Bots">         <BotConsole />   </PermRoute>} />
           <Route path="/scout"        element={<PermRoute path="/scout"        pageName="Scout">        <Scout />        </PermRoute>} />
           <Route path="/scout-ai"     element={<PermRoute path="/scout-ai"     pageName="Scout AI">     <ScoutAI />      </PermRoute>} />
           <Route path="/orchestrator" element={<PermRoute path="/orchestrator" pageName="Orchestrator"> <Orchestrator /> </PermRoute>} />
@@ -206,7 +213,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/portal/:slug/*" element={<Portal />} />
         {/* Public HxMeet guest join — single-use invite link, no auth */}
         <Route path="/meet/join" element={<MeetJoin />} />
+        {/* SSO landing — the user has no session yet, so it cannot be protected */}
+        <Route path="/auth/sso/callback" element={<SsoCallback />} />
 </Routes>
+     </SamlHandoffGate>
     </PermissionsProvider></BrowserRouter></FeatureFlagsProvider></AuthProvider></ThemeProvider>
   </React.StrictMode>
 );

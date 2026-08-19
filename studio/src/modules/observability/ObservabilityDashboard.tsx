@@ -1,5 +1,6 @@
 // HELIX P23 — Observability Dashboard
 import React, { useEffect, useMemo, useState } from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type MetricsSummary = {
   total_requests: number;
@@ -19,7 +20,7 @@ const TRACE_PAGE_SIZE = 20;
 const ENDPOINT_PAGE_SIZE = 10;
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

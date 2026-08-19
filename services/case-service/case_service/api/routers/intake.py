@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from case_service import hxguard
+from case_service.auth.models import AuthenticatedUser
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,6 +87,7 @@ async def list_intake_events(
     status: str | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.intake.read")),
 ):
     """List recent intake events with filter/status breakdown."""
     from sqlalchemy import select, desc
@@ -119,6 +122,7 @@ async def list_intake_events(
 async def get_intake_event(
     event_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.intake.read")),
 ):
     """Get full details of an intake event including raw payload."""
     e = await session.get(IntakeEventModel, event_id)

@@ -61,3 +61,4 @@ deploy/openbao/enabled
 deploy/docker-compose/egress-gw/conf/allowlist.json
 deploy/docker-compose/egress-gw/log/*
 !deploy/docker-compose/egress-gw/log/.gitkeep
+.venv

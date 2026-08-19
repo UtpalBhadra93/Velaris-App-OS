@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role, get_current_user
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_session
 from case_service.enterprise import security_events, gdpr
@@ -25,7 +26,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/enterprise", tags=["enterprise"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(prefix="/enterprise", tags=["enterprise"], dependencies=[Depends(hxguard.guard("compliance.enterprise.access"))])
 
 
 # ─── Security events ─────────────────────────────────────────────
@@ -378,7 +379,7 @@ async def preview_retention(
 async def run_retention(
     confirm: bool = False,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.retention.run")),
 ):
     """Apply every enabled policy. **Deletes data.**
 

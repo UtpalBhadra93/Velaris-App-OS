@@ -1,6 +1,7 @@
 // HELIX P25 — Email Inbox
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Msg = {
   id: string;
@@ -33,7 +34,7 @@ const PAGE_SIZE = 20;
 const AUTO_REFRESH_MS = 30_000;
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

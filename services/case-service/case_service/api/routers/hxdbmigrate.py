@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxvault
+from case_service import hxguard, hxvault
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
@@ -45,10 +45,21 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/hxdbmigrate", tags=["hxdbmigrate"])
 
 
-def _require_admin(user: AuthenticatedUser) -> None:
-    roles = user.roles or []
-    if not (user.has_privilege("*", "*") or "admin" in roles or "superadmin" in roles):
-        raise HTTPException(403, "HxDBMigrate requires admin role")
+async def _require_admin(session: AsyncSession, user: AuthenticatedUser) -> None:
+    """Phase 4 step 2: the module gate, decided by privilege rather than by name.
+
+    Was `has_privilege("*", "*") or "admin" in roles or "superadmin" in roles`.
+    The wildcard clause is deliberately not carried over — a legacy access-group
+    `{"resource": "*"}` entry means every *case-level* resource and has never
+    been a platform grant (privileges.py draws that boundary, and Phase 4 step 1
+    made it load-bearing). `superadmin` still passes, as an identity bypass
+    inside the evaluator.
+
+    Async because `require()` writes the `authz_denied` SecurityEvent HxShield
+    consumes; a refusal that leaves no trace is worse than the role check it
+    replaces.
+    """
+    await hxguard.require_user(session, user, "platform.dbmigrate.access")
 
 
 def _tenant(user: AuthenticatedUser) -> str:
@@ -131,8 +142,11 @@ async def _get_source(session: AsyncSession, user: AuthenticatedUser, source_id:
 # ── source-type allowlist (for the UI form) ─────────────────────────────────────
 
 @router.get("/source-types")
-async def get_source_types(user: AuthenticatedUser = Depends(get_current_user)):
-    _require_admin(user)
+async def get_source_types(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    await _require_admin(session, user)
     return {"source_types": source_mod.source_types(), "ssl_modes": source_mod.ssl_modes()}
 
 
@@ -144,7 +158,7 @@ async def create_source(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     try:
         st = source_mod.normalise_type(body.source_type)
     except source_mod.SourceError as exc:
@@ -186,7 +200,7 @@ async def list_sources(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     rows = (await session.execute(
         select(HxDBMigrateSourceModel)
         .where(HxDBMigrateSourceModel.tenant_id == _tenant(user))
@@ -201,7 +215,7 @@ async def get_source(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     return _source_view(await _get_source(session, user, source_id))
 
 
@@ -211,7 +225,7 @@ async def delete_source(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     await session.delete(s)
     await session.commit()
@@ -223,7 +237,7 @@ async def test_source(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     pw = decrypt_credentials(s.credentials).get("password", "")
     try:
@@ -254,7 +268,7 @@ async def analyze_source(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     pw = decrypt_credentials(s.credentials).get("password", "")
 
@@ -308,7 +322,7 @@ async def list_analyses(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     rows = (await session.execute(
         select(HxDBMigrateAnalysisModel)
@@ -343,7 +357,7 @@ async def workflow_tables(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Candidate workflow tables (from the latest DEEP analysis — no new source read)."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     rep = await _latest_deep_report(session, s.id)
     if rep is None:
@@ -364,7 +378,7 @@ async def generate_case_type(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Generate a DRAFT case-type definition_json from a source table (not applied)."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     pw = decrypt_credentials(s.credentials).get("password", "")
     try:
@@ -429,7 +443,7 @@ async def migrate_data(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Batch-migrate source-table rows into Velaris cases of a target case-type."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     _require_active(s)
 
@@ -496,7 +510,7 @@ async def sync_source_table(
 ):
     """One bounded incremental sync pass: new source rows → cases, changed rows →
     case-data updates (idempotent via row links)."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     _require_active(s)
 
@@ -551,7 +565,7 @@ async def get_sync_status(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Per-table coverage vs the LIVE source + the Migration Health Score."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     pw = decrypt_credentials(s.credentials).get("password", "")
     try:
@@ -585,7 +599,7 @@ async def cutover_source(
 
     From here Velaris is the system of record; the source was never written to,
     so rollback (within the window) is simply deleting the Velaris copy."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     _require_active(s)
 
@@ -655,7 +669,7 @@ async def rollback_source(
 ):
     """Inside the rollback window: cancel every case this source created (soft —
     status='cancelled', auditable), drop the links, unfreeze the source."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     if s.status != "cutover":
         raise HTTPException(400, f"Only a cut-over source can be rolled back "
@@ -698,7 +712,7 @@ async def complete_source(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Mark a cut-over migration as final (closes the rollback window early)."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     if s.status != "cutover":
         raise HTTPException(400, f"Only a cut-over source can be completed "
@@ -718,7 +732,7 @@ async def get_certificate(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """The signed Compliance Migration Certificate (fmt=json | pdf)."""
-    _require_admin(user)
+    await _require_admin(session, user)
     s = await _get_source(session, user, source_id)
     signed = await cert_mod.build_certificate(session, s)
     if fmt == "pdf":
@@ -735,7 +749,7 @@ async def get_analysis(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     try:
         aid = uuid.UUID(analysis_id)
     except ValueError:

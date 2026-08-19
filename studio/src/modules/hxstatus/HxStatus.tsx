@@ -52,7 +52,7 @@ export default function HxStatus() {
 
   const load = useCallback(async () => {
     try {
-      const r = await apiFetch("/api/v1/status/public");
+      const r = await apiFetch("/status/public");
       if (!r.ok) throw new Error(await r.text());
       setData(await r.json());
       setError(null);
@@ -69,7 +69,7 @@ export default function HxStatus() {
 
   async function loadInternal() {
     try {
-      const r = await apiFetch("/api/v1/status/internal?days=7");
+      const r = await apiFetch("/status/internal?days=7");
       if (r.status === 403 || r.status === 401) {
         setInternal({ forbidden: true });
         return;

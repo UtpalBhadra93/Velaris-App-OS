@@ -39,6 +39,19 @@ class Subject:
     id: str
     roles: tuple[str, ...] = ()
     is_admin: bool = False
+    #: Access-group privileges written in the platform-action namespace. Part of
+    #: the frozen identity on purpose: `_cache_key` hashes the whole Subject, so
+    #: a privilege that is not here would be a decision input the cache cannot
+    #: see — the classic way a permission change appears to take effect for one
+    #: user and not another.
+    privileges: tuple[tuple[tuple[str, Any], ...], ...] = ()
+    #: Phase 6 role-store generation, for the same reason as `privileges` above
+    #: and one step less obvious. The role → privilege mapping is resolved INSIDE
+    #: the evaluator, so when an admin edits a role nothing about the subject
+    #: changes — the cache key would be identical and every worker would keep
+    #: serving the old answer for the rest of the TTL. Stamping the generation
+    #: makes an edit invalidate exactly the entries it should.
+    role_store_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,24 +77,20 @@ class AuthzBackend(Protocol):
 #: empty set = any *authenticated* subject of kind "user".
 #: An action ABSENT from this registry (and not grant-backed) is DENIED.
 ACTION_ROLES: dict[str, set[str]] = {
-    "variables.namespace.admin":     {"admin"},
-    "variables.scan":                {"admin", "designer"},
-    "variables.promote":             {"admin"},
-    "connector.namespace.register":  {"admin", "integration"},
-    "devconn.namespace.register":    {"admin", "integration", "developer"},
+    # ONE entry left, and it is not a role decision at all.
+    #
+    # Phase 5 (2026-08-15) moved the other 14 into the privilege registry
+    # (`actions.py`), where `check()` now routes them — they were `action ->
+    # role set` tables, the same shape Phase 0 inventoried everywhere else.
+    # Their rows are DELETED here rather than left behind: two tables claiming
+    # to decide the same action is how a ledger drifts from the code, and the
+    # dead one is always the one someone edits.
+    #
+    # `case.rule.apply` stays because its role set is EMPTY — "any authenticated
+    # user". A privilege model cannot express that: a subject with no roles
+    # holds no privileges, so registering it would silently close an open
+    # surface. The decision here is authentication, not authorization.
     "case.rule.apply":               set(),     # any authenticated user
-    "rules.write":                   {"admin", "designer"},  # rule CRUD gates automation behavior
-    "replay.run":                    {"admin"},  # HxReplay cohort replay = bulk case read
-    "costing.rates":                 {"admin"},  # rate cards are commercially sensitive
-    "mcp.tokens.mint":               {"admin", "designer"},  # P4 scoped external-agent tokens
-    # HxSentinel P1. Labelling is the engine's ground truth, so a wrong or
-    # malicious label poisons everything learned later — keep it narrower than
-    # ordinary case work.
-    "risk.read":                     {"admin", "manager", "case_worker"},
-    "risk.label":                    {"admin", "manager"},
-    "risk.taxonomy":                 {"admin"},   # vocabulary changes are tenant-wide
-    "risk.rules":                    {"admin", "manager"},   # tune the rule engine (tenant-wide)
-    "risk.scores.review":            {"admin", "manager"},   # supervise reviewers' scores (dashboard + dispute)
 }
 
 #: grant-backed actions: resolved against namespace_grants, not roles.
@@ -108,10 +117,12 @@ class RbacBackend:
             return Decision(False, f"unknown action '{action}' (fail-closed)", self.name)
         if subject.kind != "user":
             return Decision(False, f"action '{action}' requires a user subject, got {subject.kind}", self.name)
-        if "superadmin" in subject.roles or subject.is_admin:
-            return Decision(True, "admin bypass", self.name)
         if not roles:
+            # The only remaining entry. An admin bypass above this line would be
+            # dead code: everyone authenticated already passes.
             return Decision(True, "any authenticated user", self.name)
+        if "superadmin" in subject.roles:
+            return Decision(True, "superadmin break-glass", self.name)
         matched = roles & set(subject.roles)
         if matched:
             return Decision(True, f"role {sorted(matched)[0]}", self.name)
@@ -180,8 +191,16 @@ class RebacBackend:
             return Decision(False, f"'{action}' requires resource.case_id (fail-closed)", self.name)
         if subject.kind != "user":
             return Decision(False, f"case actions require a user subject, got {subject.kind}", self.name)
-        if "superadmin" in subject.roles or subject.is_admin or "manager" in subject.roles:
-            return Decision(True, "admin/manager bypass", self.name)
+        # Phase 5 (2026-08-15): was `superadmin or is_admin or "manager" in roles`.
+        # That bypass ran before a single relationship was consulted, so "manager
+        # sees every case in the deployment" was unrevocable and appeared in no
+        # gate, no registry and no screen. It is now a named privilege, seeded to
+        # admin+manager so today's answer is unchanged — but revocable, and
+        # visible in the action catalogue like everything else.
+        if "superadmin" in subject.roles:
+            return Decision(True, "superadmin break-glass", self.name)
+        if subject_allows(subject, "casework.records.any"):
+            return Decision(True, "privilege: casework.records.any", self.name)
 
         from sqlalchemy import select
         from case_service.db.models import CaseInstanceModel
@@ -239,8 +258,41 @@ class RebacBackend:
         return False
 
 
+class PrivilegeAdapter:
+    """Routes platform actions to the Phase-1 privilege evaluator.
+
+    A thin adapter rather than a rewrite: `privileges.PrivilegeBackend` is a
+    pure function of (subject, action) with no session and no I/O, which is what
+    let the Phase-1 parity table prove it exhaustively. Keeping it that way and
+    adapting here preserves that proof.
+    """
+
+    name = "privilege"
+
+    async def evaluate(
+        self, session: AsyncSession, subject: Subject,
+        action: str, resource: dict[str, Any] | None,
+    ) -> Decision:
+        from case_service.hxguard.privileges import PrivilegeBackend
+
+        class _S:
+            kind = subject.kind
+            roles = list(subject.roles)
+            is_admin = subject.is_admin
+            privileges = _thaw_privileges(subject.privileges)
+
+        return PrivilegeBackend().evaluate(_S(), action, resource)
+
+
 _backend: AuthzBackend = RbacBackend()
 _rebac_backend: AuthzBackend = RebacBackend()
+_privilege_backend: AuthzBackend = PrivilegeAdapter()
+
+#: Actions decided by the privilege model (Phase 1). Imported lazily-ish at
+#: module load so an unknown action still fails closed in RbacBackend.
+from case_service.hxguard.actions import ACTIONS as _PLATFORM_ACTION_DEFS  # noqa: E402
+
+PLATFORM_ACTIONS: frozenset[str] = frozenset(_PLATFORM_ACTION_DEFS)
 
 
 # ── Decision cache (availability mitigation) ─────────────────────────
@@ -290,7 +342,11 @@ async def check(
         d = hit[0]
         return Decision(d.allow, d.reason, d.source, cached=True)
 
-    backend = _rebac_backend if action in CASE_ACTIONS else _backend
+    backend = (
+        _rebac_backend if action in CASE_ACTIONS
+        else _privilege_backend if action in PLATFORM_ACTIONS
+        else _backend
+    )
     try:
         decision = await backend.evaluate(session, subject, action, resource)
     except Exception as exc:                      # fail-closed on ANY error
@@ -345,6 +401,79 @@ async def require(
         raise HTTPException(403, f"Not authorized: {decision.reason}")
 
 
+def subject_allows(subject: Subject, action: str) -> bool:
+    """`user_allows`, for callers that already hold a `Subject`.
+
+    The two backends inside this module work in Subjects, not AuthenticatedUsers
+    — `RebacBackend` in particular is handed one by `check()`. Fails closed on
+    anything unexpected, like every other decision path here.
+    """
+    try:
+        from case_service.hxguard.privileges import PrivilegeBackend
+
+        class _S:
+            kind = subject.kind
+            roles = list(subject.roles)
+            is_admin = subject.is_admin
+            privileges = _thaw_privileges(subject.privileges)
+
+        return bool(PrivilegeBackend().evaluate(_S(), action).allow)
+    except Exception as exc:                          # fail-closed, always
+        log.warning("subject_allows(%s) failed — denying: %s", action, exc)
+        return False
+
+
+def user_allows(user: AuthenticatedUser, action: str) -> bool:
+    """Synchronous privilege test for a PLATFORM action. No session, no I/O.
+
+    Phase 4 step 2 needs this. The imperative role checks it replaces are
+    ordinary sync helpers — `_has_sensitive_access(user) -> bool`,
+    `_table_allowed(...)`, `_can_view(...)` — called deep inside handler bodies
+    and often inside comprehensions. Making all of them async to reach `check()`
+    would be a signature change across 19 routers, and the reason they are sync
+    is not laziness: **a platform decision is a pure function of the subject.**
+    Privileges already travel on `Subject` (they are part of the cache key), so
+    there is nothing to await.
+
+    Use this for questions whose answer *shapes* a response — row scoping,
+    redaction, whether to show a field. For a gate that refuses the request,
+    prefer `require()`: it caches, and it writes the `authz_denied` SecurityEvent
+    that HxShield consumes. A redaction test deliberately writes no audit event;
+    it is not a denial, and one per row would drown the log.
+
+    Fails closed: an unknown action, a non-platform action, or any error is False.
+    """
+    if action not in PLATFORM_ACTIONS:
+        log.warning("user_allows called with non-platform action %r — denying", action)
+        return False
+    try:
+        from case_service.hxguard.privileges import PrivilegeBackend
+
+        subject = subject_from_user(user)
+
+        class _S:
+            kind = subject.kind
+            roles = list(subject.roles)
+            is_admin = subject.is_admin
+            privileges = _thaw_privileges(subject.privileges)
+
+        return bool(PrivilegeBackend().evaluate(_S(), action).allow)
+    except Exception as exc:                          # fail-closed, always
+        log.warning("user_allows(%s) failed — denying: %s", action, exc)
+        return False
+
+
+async def require_user(
+    session: AsyncSession, user: AuthenticatedUser, action: str,
+    resource: dict[str, Any] | None = None,
+) -> None:
+    """`require()` for callers holding an AuthenticatedUser rather than a Subject.
+
+    The imperative sites migrated in Phase 4 step 2 all have the user in hand;
+    this saves each of them repeating `subject_from_user`."""
+    await require(session, subject_from_user(user), action, resource)
+
+
 async def require_case(
     session: AsyncSession,
     user: AuthenticatedUser,
@@ -377,10 +506,55 @@ async def require_case(
 
 
 def subject_from_user(user: AuthenticatedUser) -> Subject:
+    ag = getattr(user, "active_access_group", None)
+    raw = list(getattr(ag, "privileges", None) or []) if ag else []
+    from case_service.hxguard import role_store
+
     return Subject(
         kind="user", id=user.user_id,
         roles=tuple(user.roles or ()), is_admin=bool(user.is_admin),
+        privileges=_freeze_privileges(raw),
+        role_store_generation=role_store.generation(),
     )
+
+
+def _freeze_privileges(privs: list[dict]) -> tuple:
+    """Hashable form, because Subject is a frozen dataclass used as a cache key.
+
+    **Lists become tuples, they do NOT become strings.** The first version wrote
+    `str(v)`, which turned `{"actions": ["write"]}` into the *string*
+    `"['write']"`; thawed back, `_verb_matches` iterated it character by character
+    and matched nothing. Every access-group privilege entry in the platform
+    namespace therefore evaluated to a silent deny.
+
+    It was invisible for as long as nothing depended on it: platform roles come
+    from `user.roles`, and until Phase 4 step 1 an access group reached a
+    platform action through the role-name merge instead. Step 1 makes this path
+    the only one an access group has, so the round trip has to be faithful.
+    """
+    def _freeze_value(v):
+        if isinstance(v, (list, tuple)):
+            return tuple(_freeze_value(x) for x in v)
+        if isinstance(v, dict):
+            return tuple(sorted((str(k), _freeze_value(x)) for k, x in v.items()))
+        return v if isinstance(v, (str, int, float, bool, type(None))) else str(v)
+
+    out = []
+    for p in privs:
+        if isinstance(p, dict):
+            out.append(tuple(sorted((str(k), _freeze_value(v)) for k, v in p.items())))
+    return tuple(sorted(out, key=repr))
+
+
+def _thaw_privileges(frozen: tuple) -> list[dict]:
+    """Inverse of `_freeze_privileges` — tuples back to the lists the evaluator
+    expects. Nested dicts are not reconstructed: privilege entries are flat
+    (`resource`, `actions`, `effect`, `case_type_id`), and inventing a shape the
+    evaluator never sees would be the wrong kind of thorough."""
+    def _thaw_value(v):
+        return [_thaw_value(x) for x in v] if isinstance(v, tuple) else v
+
+    return [{k: _thaw_value(v) for k, v in entry} for entry in frozen]
 
 
 def guard(action: str):

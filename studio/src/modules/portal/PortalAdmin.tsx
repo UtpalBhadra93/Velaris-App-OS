@@ -1,6 +1,7 @@
 // HELIX P33 — Customer Portal Admin
 import React, { useEffect, useState, useCallback } from "react";
 import { useFeatureFlags } from "@/app/FeatureFlagsContext";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Tenant = {
   id: string;
@@ -54,7 +55,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

@@ -212,7 +212,7 @@ async def billing_export(session: AsyncSession, tenant_id: str | None, *,
     """One line per case with billable entries in the window — invoice input.
 
     Commercially sensitive (per-case cost): the router gates this behind the
-    same HxGuard ``costing.rates`` capability as the rate card.
+    same HxGuard ``costing.rates.access`` capability as the rate card.
     """
     from case_service.db.models import CaseInstanceModel, CaseTimeEntryModel
     stmt = select(CaseTimeEntryModel).where(

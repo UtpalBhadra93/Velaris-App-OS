@@ -7,11 +7,12 @@
  */
 import React, { useCallback, useEffect, useState } from "react";
 import { Button } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/hxreplay";
 
 function authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t
     ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }
     : { "Content-Type": "application/json" };

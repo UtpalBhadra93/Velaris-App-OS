@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+from case_service import hxguard
+from case_service.auth.models import AuthenticatedUser
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,7 +89,9 @@ async def health_deep(session: AsyncSession = Depends(get_session)) -> dict[str,
 
 
 @router.get("/api/v1/observability/metrics")
-async def metrics_summary() -> dict[str, Any]:
+async def metrics_summary(
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+) -> dict[str, Any]:
     from case_service.observability.metrics import (
         http_requests_total, http_request_duration_seconds,
     )
@@ -172,7 +176,9 @@ def _quantile_from_buckets(buckets, count, q):
 
 
 @router.get("/api/v1/observability/traces/recent")
-async def recent_traces(limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+async def recent_traces(
+    limit: int = Query(50, ge=1, le=200), _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+) -> dict[str, Any]:
     spans = recent_spans(limit=limit)
     return {"count": len(spans), "spans": spans}
 
@@ -183,6 +189,7 @@ async def list_events(
     limit: int = Query(100, ge=1, le=500),
     severity: str | None = None,
     event_type: str | None = None,
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ) -> dict[str, Any]:
     from case_service.db.models import TelemetryEventModel
     q = select(TelemetryEventModel).order_by(TelemetryEventModel.created_at.desc()).limit(limit)
@@ -216,6 +223,7 @@ async def health_history(
     session: AsyncSession = Depends(get_session),
     hours: int = Query(24, ge=1, le=168),
     component: str | None = None,
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ) -> dict[str, Any]:
     from case_service.db.models import HealthCheckResultModel
     since = datetime.now(timezone.utc) - timedelta(hours=hours)

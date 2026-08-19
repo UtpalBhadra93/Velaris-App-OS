@@ -6,10 +6,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@shared/components";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/hxcanvas";
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {

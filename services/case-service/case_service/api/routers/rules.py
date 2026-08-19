@@ -30,6 +30,7 @@ from case_service.core.rules_evaluator import (
     validate_data as validate_data_fn,
 )
 from case_service.db import repository as repo
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_session
@@ -70,7 +71,7 @@ async def create_rule(
     body: RuleCreate,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(hxguard.guard("rules.write")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
 ):
     _validate_expression_rule(body.rule_type, body.definition_json)
     rule = await repo.create_rule(
@@ -189,7 +190,7 @@ async def rule_migration_report(
 
     # Migrating rules is a designer/admin act; the report is the work list for
     # it, not general-audience information.
-    if not (user.is_admin or user.has_role("admin") or user.has_role("designer")):
+    if not hxguard.user_allows(user, "design.rules.read"):
         raise HTTPException(403, "Rule migration report requires designer or admin")
 
     # stage -> case type, so stage-scoped rules land on the right type.
@@ -214,7 +215,7 @@ async def rule_migration_report(
     # NAMES and rule NAMES — an unscoped version would let any authenticated
     # user in one tenant read the process inventory of every other.
     ct_q = select(CaseTypeModel.id, CaseTypeModel.name, CaseTypeModel.version)
-    if user.tenant_id and not user.is_admin:
+    if user.tenant_id and not hxguard.user_allows(user, "design.rules.read"):
         # Global case types (tenant_id NULL) are shared, so they stay visible.
         ct_q = ct_q.where(
             or_(
@@ -311,7 +312,7 @@ async def update_rule(
     body: RuleUpdate,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(hxguard.guard("rules.write")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
 ):
     rule = await repo.get_rule(session, rule_id)
     if rule is None:
@@ -340,7 +341,7 @@ async def delete_rule(
     rule_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    _user: AuthenticatedUser = Depends(hxguard.guard("rules.write")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
 ):
     rule = await repo.get_rule(session, rule_id)         # capture target before delete
     deleted = await repo.delete_rule(session, rule_id)

@@ -23,6 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service import hxguard
 from case_service.api.routers.releases import is_feature_enabled
+from case_service.core.error_codes import (
+    RISK_NOTFOUND_404,
+    RISK_REJECTED_400,
+    RISK_URL_400,
+    coded,
+)
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db import repository as repo
@@ -49,17 +55,17 @@ def _require_enabled() -> None:
     disabled module indistinguishable from an absent one.
     """
     if not is_feature_enabled(FLAG):
-        raise HTTPException(404, "Not found")
+        raise coded(404, RISK_NOTFOUND_404, "Not found")
 
 
 async def _authorized_case(session, user, case_id: str, action: str) -> uuid.UUID:
     try:
         cid = uuid.UUID(case_id)
     except ValueError:
-        raise HTTPException(404, "Case not found")
+        raise coded(404, RISK_NOTFOUND_404, "Case not found")
     case = await repo.get_case_instance(session, cid)
     if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
-        raise HTTPException(404, "Case not found")
+        raise coded(404, RISK_NOTFOUND_404, "Case not found")
     await hxguard.require_case(session, user, action, cid)
     return cid
 
@@ -73,7 +79,7 @@ async def get_taxonomy(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     return {"labels": await sentinel.list_labels(session, _tenant(user))}
 
 
@@ -91,14 +97,14 @@ async def add_label(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.taxonomy")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.taxonomy.write")
     try:
         row = await sentinel.create_label(
             session, tenant_id=_tenant(user), key=body.key, display=body.display,
             description=body.description, is_negative=body.is_negative,
         )
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
     await session.commit()
     return {"key": row.key, "display": row.display, "is_core": False}
 
@@ -129,7 +135,7 @@ async def get_outcome(
 ):
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     current = await sentinel.get_current_outcome(session, cid)
     history = await sentinel.get_outcome_history(session, cid)
     return {
@@ -151,14 +157,14 @@ async def put_outcome(
 ):
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.label")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.outcomes.write")
     try:
         row = await sentinel.set_outcome(
             session, case_id=cid, tenant_id=_tenant(user), outcome=body.outcome,
             labelled_by=user.user_id, note=body.note, source="manual",
         )
     except sentinel.UnknownOutcomeError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
     await session.commit()
     return _outcome_view(row)
 
@@ -183,11 +189,11 @@ async def bulk_outcome(
     unreadable case in a 300-case selection should not discard the other 299.
     """
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.label")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.outcomes.write")
     try:
         await sentinel.validate_outcome(session, _tenant(user), body.outcome.strip().lower())
     except sentinel.UnknownOutcomeError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
 
     labelled, skipped = [], []
     for raw in body.case_ids:
@@ -215,7 +221,7 @@ async def list_unlabelled(
 ):
     """Closed cases with no outcome label — the retro-labelling work queue."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
 
     labelled = select(CaseOutcomeModel.case_id).where(
         CaseOutcomeModel.tenant_id == _tenant(user)
@@ -267,7 +273,7 @@ async def get_signals(
 ):
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     rows = await sentinel.get_signals(session, cid)
     return {"case_id": str(cid), "signals": [{
         "signal_type": r.signal_type,
@@ -289,10 +295,17 @@ async def extract_signals(
     """Re-extract signals for a case. Idempotent — adds only what is new."""
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.label")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.outcomes.write")
     added = await sentinel.extract_signals(session, cid)
     await session.commit()
     return {"case_id": str(cid), "added": len(added),
+            # Why nothing was added, when nothing was. A bare "added: 0" reads as
+            # "this case has no signals" even when the real cause is a vault the
+            # engine could not open — and that silence keeps the whole engine dark.
+            "skipped": getattr(added, "skipped", []),
+            # Re-extraction reconciles, so a signal can disappear. Say so rather
+            # than let a shrinking index look like nothing happened.
+            "removed": getattr(added, "removed", []),
             "signals": [{"signal_type": r.signal_type, "hashed": r.hashed} for r in added]}
 
 
@@ -328,7 +341,7 @@ async def get_case_findings(
     """
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     if evaluate:
         await risk_engine.evaluate_case(session, cid, actor_id=user.user_id)
         await session.commit()
@@ -344,11 +357,11 @@ async def _authorized_finding(session, user, finding_id: str):
     try:
         fid = uuid.UUID(finding_id)
     except ValueError:
-        raise HTTPException(404, "Finding not found")
+        raise coded(404, RISK_NOTFOUND_404, "Finding not found")
     from case_service.db.models import CaseRiskFindingModel
     finding = await session.get(CaseRiskFindingModel, fid)
     if finding is None:
-        raise HTTPException(404, "Finding not found")
+        raise coded(404, RISK_NOTFOUND_404, "Finding not found")
     await _authorized_case(session, user, str(finding.case_id), "case.read")
     return finding
 
@@ -368,12 +381,12 @@ async def add_finding_feedback(
 ):
     """Score a finding 1–5 with an optional note.
 
-    Gated `risk.read`: scoring requires having *seen* the evidence (the score UI
+    Gated `risk.assessment.read`: scoring requires having *seen* the evidence (the score UI
     lives on the finding). Append-only — re-scoring adds a row.
     """
     _require_enabled()
     finding = await _authorized_finding(session, user, finding_id)
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     row = await risk_engine.add_feedback(
         session, finding=finding, reviewer=user.user_id, score=body.score, note=body.note)
     await session.commit()
@@ -389,7 +402,7 @@ async def get_finding_feedback(
     """Latest score + full history for a finding, each with an outcome cross-check."""
     _require_enabled()
     finding = await _authorized_finding(session, user, finding_id)
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     return {"finding_id": finding_id, **await risk_engine.get_feedback(session, finding)}
 
 
@@ -431,12 +444,12 @@ async def dispute_feedback(
     try:
         fid = uuid.UUID(feedback_id)
     except ValueError:
-        raise HTTPException(404, "Feedback not found")
+        raise coded(404, RISK_NOTFOUND_404, "Feedback not found")
     from case_service.db.models import CaseRiskFeedbackModel
     fb = await session.get(CaseRiskFeedbackModel, fid)
     # Tenant scope: a supervisor disputes only their own tenant's scores.
     if fb is None or norm_tenant_str(fb.tenant_id) != _tenant(user):
-        raise HTTPException(404, "Feedback not found")
+        raise coded(404, RISK_NOTFOUND_404, "Feedback not found")
     from case_service.sentinel import oversight
     row = await oversight.dispute_score(
         session, feedback_id=fid, tenant=_tenant(user), disputed_by=user.user_id, note=body.note)
@@ -465,7 +478,7 @@ async def list_rules(
 ):
     """The rule catalogue (code defaults) merged with this tenant's overrides."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     cfg = await risk_engine._effective_config(session, _tenant(user))
     return {"rules": [{**item, **cfg.get(item["key"], {})} for item in rulecat.catalogue()]}
 
@@ -479,9 +492,9 @@ async def put_rule_config(
 ):
     """Override one rule for this tenant (enable/disable, severity, params)."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     if rule_key not in rulecat.RULES_BY_KEY:
-        raise HTTPException(404, "Unknown rule")
+        raise coded(404, RISK_NOTFOUND_404, "Unknown rule")
     if body.severity is not None and body.severity not in rulecat.SEVERITIES:
         raise HTTPException(400, f"severity must be one of {rulecat.SEVERITIES}")
     # Defence in depth: params only ever carries a handful of numeric thresholds
@@ -522,12 +535,12 @@ async def train_risk_model(
     """Train a new (pending) local model version on labelled history. 400 when
     there is too little labelled data to train honestly."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import model as risk_model
     try:
         m = await risk_model.train_model(session, _tenant(user))
     except risk_model.TrainError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
     await session.commit()
     return _model_view(m)
 
@@ -539,7 +552,7 @@ async def get_risk_models(
 ):
     """All model versions for the tenant (newest first)."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import model as risk_model
     return {"models": [_model_view(m) for m in await risk_model.list_models(session, _tenant(user))]}
 
@@ -552,11 +565,11 @@ async def activate_risk_model(
 ):
     """Activate a trained model version (archives the prior active). Never silent."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import model as risk_model
     m = await risk_model.activate_model(session, _tenant(user), version, actor=user.user_id)
     if m is None:
-        raise HTTPException(404, "Model version not found")
+        raise coded(404, RISK_NOTFOUND_404, "Model version not found")
     await session.commit()
     return _model_view(m)
 
@@ -590,13 +603,13 @@ async def install_signal_pack(
     CONFORMING safe-expression — an unsafe or malformed pack is rejected (400).
     """
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import packs
     try:
         row = await packs.install_pack(
             session, tenant=_tenant(user), manifest=body.manifest, installed_by=user.user_id)
     except packs.ManifestError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
     await session.commit()
     return _pack_view(row)
 
@@ -608,7 +621,7 @@ async def signal_pack_catalogue(
 ):
     """The bundled official packs, each flagged whether this tenant installed it."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import official_packs, packs
     installed = {p.pack_id for p in await packs.list_packs(session, _tenant(user))}
     return {"catalogue": [{**c, "installed": c["pack_id"] in installed}
@@ -623,11 +636,11 @@ async def install_official_pack(
 ):
     """One-click install of a bundled official pack (no manifest to paste)."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import official_packs, packs
     manifest = official_packs.get_official(pack_id)
     if manifest is None:
-        raise HTTPException(404, "Official pack not found")
+        raise coded(404, RISK_NOTFOUND_404, "Official pack not found")
     row = await packs.install_pack(
         session, tenant=_tenant(user), manifest=manifest, installed_by=user.user_id)
     await session.commit()
@@ -647,15 +660,15 @@ async def install_pack_from_url(
     """Install a community pack from a remote manifest URL (SSRF-guarded, size-
     capped, and validated by the same CONFORMING sandbox as any pack)."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import packs
     try:
         row = await packs.install_from_url(
             session, tenant=_tenant(user), url=body.url, installed_by=user.user_id)
     except packs.ManifestError as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, RISK_REJECTED_400, str(exc))
     except ValueError as exc:             # SSRF / blocked host
-        raise HTTPException(400, f"URL rejected: {exc}")
+        raise coded(400, RISK_URL_400, f"URL rejected: {exc}")
     await session.commit()
     return _pack_view(row)
 
@@ -666,7 +679,7 @@ async def list_signal_packs(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import packs
     return {"packs": [_pack_view(p) for p in await packs.list_packs(session, _tenant(user))]}
 
@@ -678,10 +691,10 @@ async def uninstall_signal_pack(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import packs
     if not await packs.uninstall_pack(session, _tenant(user), pack_id):
-        raise HTTPException(404, "Pack not found")
+        raise coded(404, RISK_NOTFOUND_404, "Pack not found")
     await session.commit()
 
 
@@ -708,7 +721,7 @@ async def run_tuning_analysis(
     already has one open. Managing rule tuning is a `risk.rules` action.
     """
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import tuning
     created = await tuning.generate_proposals(session, _tenant(user))
     await session.commit()
@@ -724,7 +737,7 @@ async def run_notes_mining(
     platform) into rule-change proposals. Honest 200 with []-created when the
     local model is unavailable. Human approves each proposal."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import tuning
     created = await tuning.mine_notes(session, _tenant(user))
     await session.commit()
@@ -738,7 +751,7 @@ async def list_rule_proposals(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.sentinel import tuning
     rows = await tuning.list_proposals(session, _tenant(user),
                                        status=None if status == "all" else status)
@@ -759,17 +772,17 @@ async def decide_rule_proposal(
 ):
     """Approve (apply to the rule) or reject a proposal. Never silent."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     try:
         pid = uuid.UUID(proposal_id)
     except ValueError:
-        raise HTTPException(404, "Proposal not found")
+        raise coded(404, RISK_NOTFOUND_404, "Proposal not found")
     from case_service.sentinel import tuning
     p = await tuning.decide_proposal(
         session, proposal_id=pid, tenant=_tenant(user),
         decision=body.decision, decided_by=user.user_id, note=body.note)
     if p is None:
-        raise HTTPException(404, "Proposal not found")
+        raise coded(404, RISK_NOTFOUND_404, "Proposal not found")
     await session.commit()
     return _proposal_view(p)
 
@@ -789,7 +802,7 @@ async def get_config(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     from case_service.db.models import CaseRiskConfigModel
     row = await session.get(CaseRiskConfigModel, _tenant(user))
     return {"verify_gate_severity": row.verify_gate_severity if row else None}
@@ -803,7 +816,7 @@ async def put_config(
 ):
     """Set the optional verify gate. Managing the gate is a rule-config action."""
     _require_enabled()
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
     from case_service.db.models import CaseRiskConfigModel
     sev = body.verify_gate_severity
     if sev in ("", "off"):
@@ -847,7 +860,7 @@ async def get_case_holds(
 ):
     _require_enabled()
     cid = await _authorized_case(session, user, case_id, "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     holds = await risk_engine.list_holds(session, cid, status=None if all else "open")
     return {"case_id": str(cid), "holds": [_hold_view(h) for h in holds]}
 
@@ -868,21 +881,21 @@ async def resolve_hold(
 ):
     """Clear a verify-gate hold — the only thing that releases the stage gate.
 
-    Gated at ``risk.read``: the worker who performs the verification is exactly
+    Gated at ``risk.assessment.read``: the worker who performs the verification is exactly
     who the gate is meant to force to look. The clear is audited with the note.
     """
     _require_enabled()
     try:
         hid = uuid.UUID(hold_id)
     except ValueError:
-        raise HTTPException(404, "Hold not found")
+        raise coded(404, RISK_NOTFOUND_404, "Hold not found")
     from case_service.db.models import CaseRiskHoldModel
     hold = await session.get(CaseRiskHoldModel, hid)
     if hold is None:
-        raise HTTPException(404, "Hold not found")
+        raise coded(404, RISK_NOTFOUND_404, "Hold not found")
     # Case-scoped authorization: resolve the hold's case (404 if not visible).
     await _authorized_case(session, user, str(hold.case_id), "case.read")
-    await hxguard.require(session, hxguard.subject_from_user(user), "risk.read")
+    await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
     if body.status not in ("cleared", "dismissed"):
         raise HTTPException(400, "status must be 'cleared' or 'dismissed'")
     resolved = await risk_engine.resolve_hold(

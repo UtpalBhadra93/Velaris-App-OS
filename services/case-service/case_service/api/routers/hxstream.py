@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_session
@@ -56,20 +57,25 @@ def _actor_scope(user: AuthenticatedUser) -> str | None:
     - manager portal → only their own events for now (report tree is complex)
     - all others → their own events only
     """
-    if user.is_admin:
+    if hxguard.user_allows(user, "platform.stream.read_all"):
         return None
     ag = user.active_access_group
     if ag:
         rank = _PORTAL_RANK.get(ag.portal_type, 0)
         if rank >= _ADMIN_RANK:
             return None
-    # non-admin: restrict to own events
+    # no read-all privilege: restrict to own events
     return user.user_id
 
 
 def _require_hxstream_access(user: AuthenticatedUser) -> None:
-    """HxStream requires admin or staff-level portal (not customer/viewer)."""
-    if user.is_admin:
+    """HxStream requires the access privilege, or a staff-level portal.
+
+    Phase 4 step 2 replaced `user.is_admin` with the privilege; the portal-rank
+    clause is untouched, because it is not role-name authorization — it is a
+    property of the access group the operator is working in.
+    """
+    if hxguard.user_allows(user, "platform.stream.access"):
         return
     ag = user.active_access_group
     if ag and _PORTAL_RANK.get(ag.portal_type, 0) >= _PORTAL_RANK["staff"]:
@@ -295,7 +301,19 @@ async def hxstream_ws(
         try:
             from case_service.auth.jwt_handler import decode_jwt_token
             from case_service.config import get_settings
-            claims = decode_jwt_token(token, secret=get_settings().auth_secret)
+            # `public_key` must be passed or `decode_jwt_token` verifies HS256
+            # only (the algorithm is chosen internally from this argument, which
+            # is what stops algorithm-confusion attacks). Every other entry point
+            # passes it; this one did not, so on any deployment with
+            # VELARIS_CASE_AUTH_RSA_* set — where tokens are RS256 — the decode
+            # raised and the socket closed 4001 for every caller, authenticated
+            # or not. Found while migrating the role check below.
+            _settings = get_settings()
+            claims = decode_jwt_token(
+                token,
+                secret=_settings.auth_secret,
+                public_key=_settings.auth_rsa_public_key or "",
+            )
             ws_user_id = str(claims.get("sub") or claims.get("preferred_username") or "")
             roles = []
             realm = claims.get("realm_access", {})
@@ -303,7 +321,14 @@ async def hxstream_ws(
                 roles = realm.get("roles", [])
             if not roles:
                 roles = claims.get("roles", [])
-            is_admin = "admin" in roles
+            # Phase 4 step 2. This one decides scope from a LOCAL `roles`
+            # variable built out of raw JWT claims, which is why an AST pass
+            # looking for `user.is_admin` walked straight past it. Same answer,
+            # asked of the privilege model: build the subject the claims
+            # describe and evaluate the read-all action against it.
+            is_admin = hxguard.user_allows(
+                AuthenticatedUser(user_id=ws_user_id, roles=list(roles)),
+                "platform.stream.read_all")
         except Exception:
             await websocket.send_json({"type": "error", "message": "Invalid or expired token"})
             await websocket.close(code=4001)

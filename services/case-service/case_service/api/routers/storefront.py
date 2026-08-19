@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_admin
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.config import get_settings
 from case_service.db.models import (
@@ -34,6 +34,8 @@ from case_service.db.session import get_session
 from case_service.storefront import content as sf_content
 from case_service.storefront import service as sf_service
 from case_service.storefront.common import get_store_for_user, require_enabled_user
+
+from case_service.hxguard import service as hxguard
 
 router = APIRouter(prefix="/storefront", tags=["storefront"])
 
@@ -75,7 +77,7 @@ class StoreUpdate(BaseModel):
 
 @router.get("/stores")
 async def list_stores(
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -91,7 +93,7 @@ async def list_stores(
 @router.post("/stores", status_code=201)
 async def create_store(
     body: StoreCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -125,7 +127,7 @@ async def create_store(
 @router.get("/stores/{slug}")
 async def get_store(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -137,7 +139,7 @@ async def get_store(
 async def update_store(
     slug: str,
     body: StoreUpdate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -160,7 +162,7 @@ async def update_store(
 @router.delete("/stores/{slug}")
 async def archive_store(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -176,7 +178,7 @@ async def archive_store(
 async def clone_store(
     slug: str,
     body: StoreCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.stores.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -296,7 +298,7 @@ async def _get_product(session: AsyncSession, store: StorefrontStoreModel, produ
 @router.get("/stores/{slug}/products")
 async def list_products(
     slug: str, status: str | None = None, limit: int = 50, offset: int = 0,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -313,7 +315,7 @@ async def list_products(
 @router.post("/stores/{slug}/products", status_code=201)
 async def create_product(
     slug: str, body: ProductCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -347,7 +349,7 @@ async def create_product(
 @router.get("/stores/{slug}/products/{product_id}")
 async def get_product(
     slug: str, product_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -369,7 +371,7 @@ async def get_product(
 @router.put("/stores/{slug}/products/{product_id}")
 async def update_product(
     slug: str, product_id: str, body: ProductUpdate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -391,7 +393,7 @@ async def update_product(
 @router.delete("/stores/{slug}/products/{product_id}")
 async def archive_product(
     slug: str, product_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -420,7 +422,7 @@ class VariantCreate(BaseModel):
 @router.post("/stores/{slug}/products/{product_id}/options", status_code=201)
 async def add_option(
     slug: str, product_id: str, body: OptionCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -436,7 +438,7 @@ async def add_option(
 @router.post("/stores/{slug}/products/{product_id}/variants", status_code=201)
 async def add_variant(
     slug: str, product_id: str, body: VariantCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -459,7 +461,7 @@ async def add_variant(
 @router.delete("/stores/{slug}/products/{product_id}/variants/{variant_id}")
 async def delete_variant(
     slug: str, product_id: str, variant_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -498,7 +500,7 @@ def _category_dict(c: StorefrontCategoryModel) -> dict:
 @router.get("/stores/{slug}/categories")
 async def list_categories(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -514,7 +516,7 @@ async def list_categories(
 @router.post("/stores/{slug}/categories", status_code=201)
 async def create_category(
     slug: str, body: CategoryCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -542,7 +544,7 @@ async def create_category(
 @router.delete("/stores/{slug}/categories/{category_id}")
 async def delete_category(
     slug: str, category_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -568,7 +570,7 @@ async def delete_category(
 @router.put("/stores/{slug}/products/{product_id}/categories")
 async def set_product_categories(
     slug: str, product_id: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.products.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -620,7 +622,7 @@ async def _get_store_variant(session, store, variant_id) -> StorefrontProductVar
 @router.get("/stores/{slug}/inventory")
 async def list_inventory(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.inventory.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -642,7 +644,7 @@ async def list_inventory(
 @router.patch("/stores/{slug}/inventory/{variant_id}")
 async def adjust_inventory(
     slug: str, variant_id: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.inventory.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -663,7 +665,7 @@ async def adjust_inventory(
 @router.get("/stores/{slug}/inventory/{variant_id}/history")
 async def inventory_history(
     slug: str, variant_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.inventory.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -704,7 +706,7 @@ def _promo_dict(p: StorefrontPromotionModel) -> dict:
 @router.get("/stores/{slug}/promotions")
 async def list_promotions(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.promotions.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -719,7 +721,7 @@ async def list_promotions(
 @router.post("/stores/{slug}/promotions", status_code=201)
 async def create_promotion(
     slug: str, body: PromotionCreate,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.promotions.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -753,7 +755,7 @@ async def _get_promotion(session, store, promo_id) -> StorefrontPromotionModel:
 @router.put("/stores/{slug}/promotions/{promo_id}")
 async def update_promotion(
     slug: str, promo_id: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.promotions.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -771,7 +773,7 @@ async def update_promotion(
 @router.delete("/stores/{slug}/promotions/{promo_id}")
 async def deactivate_promotion(
     slug: str, promo_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.promotions.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -786,7 +788,7 @@ async def deactivate_promotion(
 @router.post("/stores/{slug}/promotions/validate")
 async def validate_promotion_admin(
     slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.promotions.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -816,7 +818,7 @@ async def _active_theme(session, store_id):
 @router.get("/stores/{slug}/theme")
 async def get_theme(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -829,7 +831,7 @@ async def get_theme(
 @router.put("/stores/{slug}/theme")
 async def save_theme(
     slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -857,7 +859,7 @@ async def save_theme(
 @router.post("/stores/{slug}/theme/preview")
 async def preview_theme(
     slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -874,7 +876,7 @@ async def preview_theme(
 @router.get("/stores/{slug}/pages")
 async def list_pages(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -889,7 +891,7 @@ async def list_pages(
 @router.get("/stores/{slug}/pages/{page_slug}")
 async def get_page(
     slug: str, page_slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -907,7 +909,7 @@ async def get_page(
 @router.put("/stores/{slug}/pages/{page_slug}")
 async def save_page(
     slug: str, page_slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -937,7 +939,7 @@ async def save_page(
 @router.get("/stores/{slug}/navigation")
 async def get_navigation(
     slug: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -951,7 +953,7 @@ async def get_navigation(
 @router.put("/stores/{slug}/navigation")
 async def save_navigation(
     slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -979,7 +981,7 @@ async def save_navigation(
 @router.get("/stores/{slug}/seo")
 async def get_seo(
     slug: str, target_type: str = "store", target_id: str = "",
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1001,7 +1003,7 @@ async def get_seo(
 @router.put("/stores/{slug}/seo")
 async def save_seo(
     slug: str, body: dict,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1047,7 +1049,7 @@ def _media_dict(m: StorefrontMediaModel) -> dict:
 @router.get("/stores/{slug}/media")
 async def list_media(
     slug: str, folder: str | None = None,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.read")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1066,7 +1068,7 @@ async def upload_media(
     file: UploadFile = File(...),
     alt_text: str = Form(""),
     folder: str = Form(""),
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1104,7 +1106,7 @@ async def upload_media(
 @router.delete("/stores/{slug}/media/{media_id}")
 async def delete_media(
     slug: str, media_id: str,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("commerce.content.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):

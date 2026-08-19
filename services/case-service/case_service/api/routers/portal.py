@@ -16,6 +16,18 @@ Admin endpoints (staff, requires auth):
   GET    /portal-admin/tenants             list portals + enabled status
   PATCH  /portal-admin/tenants/{slug}      update portal settings (enable, branding, case types)
   GET    /portal-admin/submissions         all portal submissions across tenants
+
+Error codes
+-----------
+53 of the 64 raise sites here carry a `VEL-PORTAL-*` catalog code. The portal
+UI shows the code as an opaque reference and **never links to the catalog** —
+most of these endpoints answer anonymous customers, who have no access to the
+docs site. The code is for the support call that follows.
+
+The 11 sites left bare are pure request-shape validation ("rating must be 1–5",
+"Unknown form_id"). A code changes nothing about how those are resolved, and
+the catalog's own rule is that a code which does not change the resolution is
+noise.
 """
 from __future__ import annotations
 
@@ -54,6 +66,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     CaseAuditLogModel,
@@ -64,7 +77,21 @@ from case_service.db.models import (
     PaymentDisbursementModel,
     TenantModel,
 )
+from case_service.core.error_codes import (
+    PORTAL_ACCESS_404,
+    PORTAL_ACTION_409,
+    PORTAL_CASETYPE_400,
+    PORTAL_CLOSED_400,
+    PORTAL_INACTIVE_403,
+    PORTAL_NOTFOUND_404,
+    PORTAL_OTP_INVALID_400,
+    PORTAL_OTP_RATE_429,
+    PORTAL_RATE_LIMIT_429,
+    PORTAL_UPLOAD_400,
+    coded,
+)
 from case_service.db.session import get_session
+from case_service.documents import access_tokens
 from case_service.storage import get_storage_backend
 from case_service.hxnexus.factory import get_llm_backend, check_ai_available
 from case_service.api.routers.payments import _encrypt_bank_ref
@@ -218,11 +245,11 @@ async def get_portal_config(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     ps = _portal_settings(tenant)
     if not ps.get("enabled", False):
-        raise HTTPException(403, "This portal is not currently active")
+        raise coded(403, PORTAL_INACTIVE_403, "This portal is not currently active")
 
     allowed_ids = ps.get("allowed_case_type_ids", [])
     q = select(CaseTypeModel).where(CaseTypeModel.portal_enabled == True)  # noqa: E712
@@ -247,19 +274,19 @@ async def submit_case(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     ps = _portal_settings(tenant)
     if not ps.get("enabled", False):
-        raise HTTPException(403, "This portal is not currently active")
+        raise coded(403, PORTAL_INACTIVE_403, "This portal is not currently active")
 
     ct = await session.get(CaseTypeModel, body.case_type_id)
     if not ct or not ct.portal_enabled:
-        raise HTTPException(400, "Case type not available for portal submission")
+        raise coded(400, PORTAL_CASETYPE_400, "Case type not available for portal submission")
 
     allowed_ids = ps.get("allowed_case_type_ids", [])
     if allowed_ids and str(body.case_type_id) not in allowed_ids:
-        raise HTTPException(400, "Case type not allowed for this portal")
+        raise coded(400, PORTAL_CASETYPE_400, "Case type not allowed for this portal")
 
     # Portal v2 P2 — idempotent replay: same client_ref ⇒ same case.
     from case_service.db.models import PortalSubmissionRefModel as _Ref
@@ -377,7 +404,7 @@ async def track_case(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Tracking token not found")
+        raise coded(404, PORTAL_ACCESS_404, "Tracking token not found")
 
     ct = await session.get(CaseTypeModel, case.case_type_id)
     cvars = (await _case_vars_for(session, [case.id]))[case.id]
@@ -410,15 +437,15 @@ async def portal_upload_document(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Tracking token not found")
+        raise coded(404, PORTAL_ACCESS_404, "Tracking token not found")
     if case.status in ("resolved", "closed", "cancelled"):
-        raise HTTPException(400, "Cannot upload to a closed case")
+        raise coded(400, PORTAL_CLOSED_400, "Cannot upload to a closed case")
 
     from case_service.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
     filename = file.filename or "upload"
     ok, reason = validate_upload_filename(filename, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
     if not ok:
-        raise HTTPException(400, f"File rejected: {reason}")
+        raise coded(400, PORTAL_UPLOAD_400, f"File rejected: {reason}")
     filename = safe_filename(filename)
     data = await file.read()
     content_type = file.content_type or "application/octet-stream"
@@ -498,7 +525,7 @@ async def my_cases(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     cases = (await session.execute(
         select(CaseInstanceModel)
@@ -545,7 +572,7 @@ async def case_timeline(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     case = (await session.execute(
         select(CaseInstanceModel).where(
@@ -554,7 +581,7 @@ async def case_timeline(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Case not found or email does not match")
+        raise coded(404, PORTAL_ACCESS_404, "Case not found or email does not match")
 
     ct = await session.get(CaseTypeModel, case.case_type_id)
 
@@ -626,7 +653,7 @@ async def portal_case_documents(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     case = (await session.execute(
         select(CaseInstanceModel).where(
@@ -635,7 +662,7 @@ async def portal_case_documents(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Case not found or email does not match")
+        raise coded(404, PORTAL_ACCESS_404, "Case not found or email does not match")
 
     docs = (await session.execute(
         select(DocumentModel).where(
@@ -657,7 +684,14 @@ async def portal_case_documents(
                 "size_bytes":   d.versions[-1].size_bytes if d.versions else None,
                 "source":       d.portal_source or "staff",
                 "uploaded_at":  d.created_at.isoformat() if d.created_at else None,
-                "download_url": f"/api/v1/documents/{d.id}/download",
+                # A signed, expiring, single-document grant — not a bare URL.
+                # The authorization decision was made a few lines above (this
+                # case matches the caller's email, and the document is either
+                # staff-shared or the customer's own upload); the grant carries
+                # that decision to a route the customer cannot otherwise reach.
+                # Before 2026-08-15 this was an unauthenticated URL, which is
+                # what made EVERY document in the deployment world-readable.
+                "download_url": access_tokens.download_url(d.id),
             }
             for d in docs
         ],
@@ -683,7 +717,7 @@ async def portal_case_sla(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     case = (await session.execute(
         select(CaseInstanceModel).where(
@@ -692,7 +726,7 @@ async def portal_case_sla(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Case not found or email does not match")
+        raise coded(404, PORTAL_ACCESS_404, "Case not found or email does not match")
 
     # Get the most recent active SLA instance for this case
     sla = (await session.execute(
@@ -763,11 +797,11 @@ async def portal_ask(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     ip = request.client.host if request.client else "unknown"
     if not await _rate_check(f"ask:{ip}", max_calls=10, window_seconds=3600):
-        raise HTTPException(429, "Too many requests — please try again later")
+        raise coded(429, PORTAL_RATE_LIMIT_429, "Too many requests — please try again later")
 
     if not await check_ai_available():
         return {
@@ -824,7 +858,7 @@ async def portal_case_chat(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     case = (await session.execute(
         select(CaseInstanceModel).where(
@@ -833,11 +867,11 @@ async def portal_case_chat(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(404, "Case not found or email does not match")
+        raise coded(404, PORTAL_ACCESS_404, "Case not found or email does not match")
 
     ip = request.client.host if request.client else "unknown"
     if not await _rate_check(f"chat:{ip}:{case_id}", max_calls=20, window_seconds=86400):
-        raise HTTPException(429, "Message limit reached for today — please try again tomorrow")
+        raise coded(429, PORTAL_RATE_LIMIT_429, "Message limit reached for today — please try again tomorrow")
 
     if not await check_ai_available():
         return {
@@ -910,14 +944,14 @@ async def portal_request_bank_otp(
     """
     # Rate limit applied BEFORE the email check to prevent timing-based enumeration
     if not await _rate_check(f"bank_otp:{case_id}", max_calls=3, window_seconds=86400):
-        raise HTTPException(429, "OTP request limit reached. Please try again after 24 hours.")
+        raise coded(429, PORTAL_OTP_RATE_429, "OTP request limit reached. Please try again after 24 hours.")
 
     # Verify tenant exists
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     case = (await session.execute(
         select(CaseInstanceModel).where(CaseInstanceModel.id == case_id)
@@ -994,14 +1028,14 @@ async def portal_submit_bank_details(
     """
     # Rate-limit independently of request-otp to prevent OTP brute-force
     if not await _rate_check(f"bank_otp_submit:{case_id}", max_calls=10, window_seconds=3600):
-        raise HTTPException(429, "Too many attempts. Please request a new OTP and try again.")
+        raise coded(429, PORTAL_OTP_RATE_429, "Too many attempts. Please request a new OTP and try again.")
 
     # Verify tenant
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
 
     # Verify case + email ownership in a single query
     case = (await session.execute(
@@ -1011,11 +1045,11 @@ async def portal_submit_bank_details(
         )
     )).scalar_one_or_none()
     if not case:
-        raise HTTPException(403, "Email does not match this case or case not found.")
+        raise coded(404, PORTAL_ACCESS_404, "Email does not match this case or case not found.")
 
     # Verify OTP — single-use, constant-time comparison, expiry enforced inside helper
     if not _verify_portal_otp(str(case_id), body.otp):
-        raise HTTPException(400, "Invalid or expired verification code.")
+        raise coded(400, PORTAL_OTP_INVALID_400, "Invalid or expired verification code.")
 
     # Validate field content — reject blank values before encryption
     account_name   = body.account_name.strip()
@@ -1034,7 +1068,7 @@ async def portal_submit_bank_details(
     )).scalar_one_or_none()
 
     if not disbursement:
-        raise HTTPException(404, "No pending payment disbursement found for this case.")
+        raise coded(404, PORTAL_NOTFOUND_404, "No pending payment disbursement found for this case.")
 
     # SD-1: encrypt using the existing hxv1: envelope scheme — one source of truth
     disbursement.bank_reference = _encrypt_bank_ref(
@@ -1061,7 +1095,7 @@ async def portal_submit_bank_details(
 
 @admin_router.get("/tenants")
 async def list_portal_tenants(
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.read")),
     session: AsyncSession = Depends(get_session),
 ):
     tenants = (await session.execute(select(TenantModel))).scalars().all()
@@ -1091,14 +1125,14 @@ async def list_portal_tenants(
 async def update_portal_settings(
     slug: str,
     body: PortalSettingsUpdate,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Tenant '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Tenant '{slug}' not found")
 
     settings = dict(tenant.settings or {})
     portal = dict(settings.get("portal", {}))
@@ -1129,7 +1163,7 @@ async def list_portal_submissions(
     slug: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.submissions.read")),
     session: AsyncSession = Depends(get_session),
 ):
     q = select(CaseInstanceModel).where(
@@ -1166,12 +1200,12 @@ async def list_portal_submissions(
 async def toggle_case_type_portal(
     case_type_id: uuid.UUID,
     enabled: bool,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
     ct = await session.get(CaseTypeModel, case_type_id)
     if not ct:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Case type not found")
     ct.portal_enabled = enabled
     await session.commit()
     return {"case_type_id": str(case_type_id), "portal_enabled": enabled}
@@ -1211,7 +1245,7 @@ async def _linked_case(
     )).scalar_one_or_none()
     case = await session.get(CaseInstanceModel, case_id) if link else None
     if not case:
-        raise HTTPException(404, "Case not found")
+        raise coded(404, PORTAL_ACCESS_404, "Case not found")
     return case
 
 
@@ -1319,7 +1353,7 @@ async def account_upload_document(
 ):
     case = await _linked_case(slug, case_id, customer, session)
     if not case.portal_tracking_token:
-        raise HTTPException(400, "This case does not accept portal uploads")
+        raise coded(400, PORTAL_UPLOAD_400, "This case does not accept portal uploads")
     return await portal_upload_document(
         slug, case.portal_tracking_token, file=file, session=session)
 
@@ -1397,13 +1431,13 @@ async def account_session_token(
         )
     )).scalar_one_or_none()
     if row is None or row.status != "active" or row.driver != "embedded":
-        raise HTTPException(404, "Session not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Session not found")
     try:
         return await meet_service.join_customer(
             session, row=row, customer_id=customer.id,
             display_name=customer.display_name)
     except ValueError:
-        raise HTTPException(404, "Session not found")   # not invited — same 404
+        raise coded(404, PORTAL_NOTFOUND_404, "Session not found")   # not invited — same 404
 
 
 # ─── Portal v2: admin — customer-facing display config ───────────
@@ -1417,12 +1451,12 @@ class PortalDisplayUpdate(BaseModel):
 @admin_router.get("/case-types/{case_type_id}/portal-display")
 async def get_case_type_portal_display(
     case_type_id: uuid.UUID,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.read")),
     session: AsyncSession = Depends(get_session),
 ):
     ct = await session.get(CaseTypeModel, case_type_id)
     if not ct:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Case type not found")
     display = _portal_display(ct)
     return {
         "case_type_id": str(case_type_id),
@@ -1440,12 +1474,12 @@ async def get_case_type_portal_display(
 async def update_case_type_portal_display(
     case_type_id: uuid.UUID,
     body: PortalDisplayUpdate,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
     ct = await session.get(CaseTypeModel, case_type_id)
     if not ct:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Case type not found")
     valid_ids = {s.get("id") for s in (ct.definition_json or {}).get("stages", [])}
     display = dict(_portal_display(ct))
     if body.stage_labels is not None:
@@ -1556,13 +1590,13 @@ async def account_complete_action(
 
     case = await _linked_case(slug, case_id, customer, session)
     if case.status in ("resolved", "closed", "cancelled"):
-        raise HTTPException(400, "This case is closed")
+        raise coded(400, PORTAL_CLOSED_400, "This case is closed")
     ct = await session.get(CaseTypeModel, case.case_type_id)
     step = next((s for s in _customer_steps(ct, case.current_stage_id)
                  if s.get("id") == step_id), None)
     if step is None:
         # Not a customer step / not in the current stage — uniform 404.
-        raise HTTPException(404, "Action not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Action not found")
 
     existing = (await session.execute(
         select(CaseStepCompletionModel).where(
@@ -1571,7 +1605,7 @@ async def account_complete_action(
         )
     )).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(409, "This action has already been completed")
+        raise coded(409, PORTAL_ACTION_409, "This action has already been completed")
 
     ca = step.get("customer_action") or {}
     if ca.get("type", "approval") == "approval":
@@ -1623,13 +1657,15 @@ async def account_complete_action(
                         case.id, step_id)
 
     auto_advanced = False
+    held_by_risk = False
     if status == "completed" and case.status in ("open", "new", "reopened"):
-        new_stage = await _auto_advance_if_complete(
+        new_stage, held_by_risk = await _auto_advance_if_complete(
             session, case.id, case.current_stage_id, ct.definition_json or {})
         auto_advanced = new_stage is not None
     await session.commit()
 
-    return {"step_id": step_id, "status": status, "auto_advanced": auto_advanced}
+    return {"step_id": step_id, "status": status, "auto_advanced": auto_advanced,
+            "advance_held_by_risk": held_by_risk}
 
 
 # ═══ Portal v2 (P4) — case messages, customer side ══════════════════
@@ -1684,10 +1720,10 @@ async def account_post_message(
         raise HTTPException(400, "Message must be 1–10000 characters")
     case = await _linked_case(slug, case_id, customer, session)
     if case.status in ("closed", "cancelled"):
-        raise HTTPException(400, "This case is closed")
+        raise coded(400, PORTAL_CLOSED_400, "This case is closed")
     ip = request.client.host if request.client else "unknown"
     if not await _rate_check(f"msg:{ip}:{case_id}", max_calls=30, window_seconds=3600):
-        raise HTTPException(429, "Message limit reached — please try again later")
+        raise coded(429, PORTAL_RATE_LIMIT_429, "Message limit reached — please try again later")
     msg = CaseMessageModel(
         case_id=case.id,
         author=f"customer:{customer.id}",
@@ -1724,7 +1760,7 @@ async def account_case_csat(
     if case.status not in ("resolved", "closed"):
         raise HTTPException(400, "You can rate a request once it is resolved")
     if await session.get(PortalCsatModel, case.id) is not None:
-        raise HTTPException(409, "This request has already been rated")
+        raise coded(409, PORTAL_ACTION_409, "This request has already been rated")
     session.add(PortalCsatModel(
         case_id=case.id, customer_id=customer.id,
         rating=body.rating, comment=(body.comment or "").strip() or None,
@@ -1766,10 +1802,10 @@ async def portal_ask_feedback(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Portal '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
     ip = request.client.host if request.client else "unknown"
     if not await _rate_check(f"askfb:{ip}", max_calls=20, window_seconds=3600):
-        raise HTTPException(429, "Too many requests")
+        raise coded(429, PORTAL_RATE_LIMIT_429, "Too many requests")
     q = (body.question or "").strip()[:2000]
     if not q:
         raise HTTPException(400, "question is required")
@@ -1788,24 +1824,24 @@ _LOGO_MAX_BYTES = 1_000_000
 async def upload_portal_logo(
     slug: str,
     file: UploadFile = File(...),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant:
-        raise HTTPException(404, f"Tenant '{slug}' not found")
+        raise coded(404, PORTAL_NOTFOUND_404, f"Tenant '{slug}' not found")
     ctype = (file.content_type or "").lower()
     if ctype not in _LOGO_TYPES:
-        raise HTTPException(400, "Logo must be a PNG, JPEG, or WebP image")
+        raise coded(400, PORTAL_UPLOAD_400, "Logo must be a PNG, JPEG, or WebP image")
     data = await file.read()
     if len(data) > _LOGO_MAX_BYTES:
-        raise HTTPException(400, "Logo must be under 1 MB")
+        raise coded(400, PORTAL_UPLOAD_400, "Logo must be under 1 MB")
     # Magic-byte sanity: never trust the declared content type alone.
     if not (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"
             or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")):
-        raise HTTPException(400, "File content does not match an accepted image type")
+        raise coded(400, PORTAL_UPLOAD_400, "File content does not match an accepted image type")
 
     storage = get_storage_backend()
     key = f"portal/logo/{tenant.slug}.{_LOGO_TYPES[ctype]}"
@@ -1834,12 +1870,12 @@ async def get_portal_logo(
     ps = _portal_settings(tenant) if tenant else {}
     key = ps.get("logo_key")
     if not tenant or not key:
-        raise HTTPException(404, "No logo")
+        raise coded(404, PORTAL_NOTFOUND_404, "No logo")
     storage = get_storage_backend()
     try:
         data = await storage.get(key)
     except Exception:
-        raise HTTPException(404, "No logo")
+        raise coded(404, PORTAL_NOTFOUND_404, "No logo")
     return Response(content=data, media_type=ps.get("logo_content_type", "image/png"),
                     headers={"Cache-Control": "public, max-age=300"})
 
@@ -1860,10 +1896,10 @@ async def portal_case_type_form(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
     if not tenant or not _portal_settings(tenant).get("enabled", False):
-        raise HTTPException(404, "Portal not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Portal not found")
     ct = await session.get(CaseTypeModel, case_type_id)
     if not ct or not ct.portal_enabled:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, PORTAL_NOTFOUND_404, "Case type not found")
     form_id = _portal_display(ct).get("form_id")
     if not form_id:
         return {"fields": []}

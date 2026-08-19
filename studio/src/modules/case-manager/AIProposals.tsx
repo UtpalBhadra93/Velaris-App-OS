@@ -52,7 +52,7 @@ export default function AIProposals({ caseId }: { caseId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiFetch(`/api/v1/cases/${caseId}/ai-actions`);
+      const r = await apiFetch(`/cases/${caseId}/ai-actions`);
       if (!r.ok) throw new Error(await r.text());
       setRows((await r.json()).proposals ?? []);
       setError(null);
@@ -71,7 +71,7 @@ export default function AIProposals({ caseId }: { caseId: string }) {
     try {
       const body: Record<string, unknown> = { decision };
       if (decision === "override") body.value = editing[id] ?? "";
-      const r = await apiFetch(`/api/v1/cases/${caseId}/ai-actions/${id}/decide`, {
+      const r = await apiFetch(`/cases/${caseId}/ai-actions/${id}/decide`, {
         method: "POST",
         body: JSON.stringify(body),
       });

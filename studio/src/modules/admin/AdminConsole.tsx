@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import RuleMigrationReport from "./RuleMigrationReport";
+import SsoTab from "./SsoTab";
+import IdentityTab from "./IdentityTab";
 import { useApi } from "@shared/hooks";
 import { useAuth } from "@/auth";
 import { usePermissions } from "@/auth/PermissionsContext";
@@ -33,17 +35,19 @@ import {
   getForm,
 } from "@shared/api/client";
 import { Card, Button, Spinner, EmptyState, Stat, TimeAgo } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    Admin Console — system management dashboard
    ═══════════════════════════════════════════════════════════════════ */
 
-type Tab = "overview" | "audit" | "queues" | "webhooks" | "rules" | "calendars" | "permissions" | "marketplace";
+type Tab = "overview" | "audit" | "queues" | "webhooks" | "rules" | "calendars" | "permissions" | "sso" | "identity" | "marketplace";
 
 const TAB_LABELS: Record<Tab, string> = {
   overview: "Overview", audit: "Audit", queues: "Queues",
   webhooks: "Webhooks", rules: "Business Rules", calendars: "Calendars",
-  permissions: "Permissions", marketplace: "Marketplace Sources",
+  permissions: "Permissions", sso: "SSO", identity: "Identity",
+  marketplace: "Marketplace Sources",
 };
 
 export default function AdminConsole() {
@@ -56,7 +60,7 @@ export default function AdminConsole() {
         display: "flex", gap: 2, marginBottom: "var(--space-xl)",
         borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0,
       }}>
-        {(["overview", "audit", "queues", "webhooks", "rules", "calendars", "permissions", "marketplace"] as Tab[]).map(t => (
+        {(["overview", "audit", "queues", "webhooks", "rules", "calendars", "permissions", "sso", "identity", "marketplace"] as Tab[]).map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
             textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
@@ -75,6 +79,8 @@ export default function AdminConsole() {
       {tab === "rules"       && <><RulesTab /><div style={{ marginTop: "var(--space-xl)" }}><RuleMigrationReport /></div></>}
       {tab === "calendars"   && <CalendarsTab />}
       {tab === "permissions" && <PermissionsTab />}
+      {tab === "sso"         && <SsoTab />}
+      {tab === "identity"    && <IdentityTab />}
       {tab === "marketplace" && <MarketplaceSourcesTab />}
     </div>
   );
@@ -1843,7 +1849,7 @@ function AccessRulesSection({ mktFetch }: { mktFetch: (path: string, opts?: Requ
 /* ── Marketplace Sources Tab ──────────────────────────────────────── */
 
 function _mktAuthHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
 }
 

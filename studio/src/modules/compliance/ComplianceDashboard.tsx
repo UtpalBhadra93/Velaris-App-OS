@@ -9,6 +9,7 @@ import ConsentPanel from "./ConsentPanel";
 import DRPanel from "./DRPanel";
 import LedgerPanel from "./LedgerPanel";
 import PrivacyPanel from "./PrivacyPanel";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const TABS = [
   { id: "audit",   label: "Audit & Evidence" },
@@ -49,7 +50,7 @@ type Report = {
 };
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

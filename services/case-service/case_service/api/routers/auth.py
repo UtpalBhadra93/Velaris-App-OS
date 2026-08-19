@@ -1,6 +1,7 @@
 """Auth API router — production credential-only login."""
 from __future__ import annotations
 
+from case_service import hxguard
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -69,7 +70,9 @@ async def get_me(user: AuthenticatedUser = Depends(get_current_user)):
 
 
 @router.get("/roles")
-async def list_available_roles():
+async def list_available_roles(
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+):
     return {
         "roles": [
             {"id": "admin",       "name": "Administrator", "description": "Full system access"},

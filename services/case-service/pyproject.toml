@@ -45,6 +45,13 @@ dependencies = [
     "semver>=3.0.0",
     "webauthn>=2.0.0",
     "wasmtime>=45,<46",
+    # SAML 2.0 SP (enterprise identity P1) — XML-DSig verification. Core, not an
+    # optional extra: it is pure Python over lxml and cryptography, both already
+    # here, so it adds no wheel of consequence. The design's optional-extra plan
+    # was written around pysaml2, which shells out to the `xmlsec1` BINARY — that
+    # would have put an apt package in the install path and a
+    # "configured but unusable" state in the code. This has neither.
+    "signxml>=4.0",
 ]
 
 [project.optional-dependencies]

@@ -19,6 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from case_service.auth.dependencies import get_current_user, require_role
 from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
+from case_service.core.error_codes import (
+    VAR_EXISTS_409,
+    VAR_NOTFOUND_404,
+    VAR_NSSTATUS_400,
+    VAR_REJECTED_400,
+    VAR_RESERVED_400,
+    VAR_SENSITIVITY_400,
+    coded,
+)
 from case_service.case_vars import CallerContext, VariableError
 from case_service.case_vars import get_all as vars_get_all
 from case_service.case_vars.service import (
@@ -41,7 +50,7 @@ OWNER_TYPES = {"connector", "devconn"}   # registrable via API; platform/form/po
 
 def _operator_ctx(user: AuthenticatedUser) -> CallerContext:
     # mirrors _has_sensitive_access in the cases router
-    privileged = user.is_admin or "finance" in (user.roles or []) or "admin" in (user.roles or [])
+    privileged = hxguard.user_allows(user, "finance.details.read")
     return CallerContext(kind="operator", actor_id=user.user_id, privileged=privileged)
 
 
@@ -91,7 +100,7 @@ async def create_namespace(
     if not NAME_RE.match(name):
         raise HTTPException(400, "Namespace must match ^[a-z][a-z0-9_]{0,99}$")
     if name in RESERVED_NAMESPACES:
-        raise HTTPException(400, f"'{name}' is a reserved namespace")
+        raise coded(400, VAR_RESERVED_400, f"'{name}' is a reserved namespace")
     if body.owner_type not in OWNER_TYPES:
         raise HTTPException(400, f"owner_type must be one of {sorted(OWNER_TYPES)}")
     if body.sensitivity not in SENSITIVITY_ORDER:
@@ -106,7 +115,7 @@ async def create_namespace(
     try:
         await session.flush()
     except Exception:
-        raise HTTPException(409, f"Namespace '{name}' already exists")
+        raise coded(409, VAR_EXISTS_409, f"Namespace '{name}' already exists")
     return _ns_out(ns)
 
 
@@ -119,9 +128,9 @@ async def patch_namespace(
 ):
     ns = await session.get(VariableNamespaceModel, namespace_id)
     if ns is None:
-        raise HTTPException(404, "Namespace not found")
+        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
     if ns.name in RESERVED_NAMESPACES:
-        raise HTTPException(400, "Reserved namespaces cannot be modified")
+        raise coded(400, VAR_RESERVED_400, "Reserved namespaces cannot be modified")
     if body.sensitivity is not None:
         if body.sensitivity not in SENSITIVITY_ORDER:
             raise HTTPException(400, f"sensitivity must be one of {SENSITIVITY_ORDER}")
@@ -168,7 +177,7 @@ async def create_grant(
     if body.grantee_type not in ("connector", "devconn", "rules", "module"):
         raise HTTPException(400, "invalid grantee_type")
     if await session.get(VariableNamespaceModel, namespace_id) is None:
-        raise HTTPException(404, "Namespace not found")
+        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
     grant = NamespaceGrantModel(
         id=uuid.uuid4(), namespace_id=namespace_id,
         grantee_type=body.grantee_type, grantee_ref=body.grantee_ref,
@@ -178,7 +187,7 @@ async def create_grant(
     try:
         await session.flush()
     except Exception:
-        raise HTTPException(409, "Grant already exists")
+        raise coded(409, VAR_EXISTS_409, "Grant already exists")
     hxguard.invalidate_cache()   # grant mutations invalidate cached decisions
     return {"id": str(grant.id)}
 
@@ -192,7 +201,7 @@ async def delete_grant(
 ):
     g = await session.get(NamespaceGrantModel, grant_id)
     if g is None or g.namespace_id != namespace_id:
-        raise HTTPException(404, "Grant not found")
+        raise coded(404, VAR_NOTFOUND_404, "Grant not found")
     await session.delete(g)
     hxguard.invalidate_cache()   # grant mutations invalidate cached decisions
 
@@ -239,7 +248,8 @@ def _check_override(override: str | None, ns: VariableNamespaceModel) -> None:
     if override not in SENSITIVITY_ORDER:
         raise HTTPException(400, f"sensitivity_override must be one of {SENSITIVITY_ORDER}")
     if SENSITIVITY_ORDER.index(override) < SENSITIVITY_ORDER.index(ns.sensitivity):
-        raise HTTPException(400, "sensitivity_override may only be STRICTER than the namespace")
+        raise coded(400, VAR_SENSITIVITY_400,
+                    "sensitivity_override may only be STRICTER than the namespace")
 
 
 @router.get("/case-types/{case_type_id}")
@@ -262,7 +272,7 @@ async def define_variable(
     case_type_id: uuid.UUID,
     body: VariableDefine,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("designer")),
+    user: AuthenticatedUser = Depends(hxguard.guard("variables.definitions.write")),
 ):
     name = (body.name or "").strip().lower()
     if not NAME_RE.match(name):
@@ -271,11 +281,12 @@ async def define_variable(
         raise HTTPException(400, f"var_type must be one of {sorted(VAR_TYPES)}")
     ns = await session.get(VariableNamespaceModel, body.namespace_id)
     if ns is None:
-        raise HTTPException(404, "Namespace not found")
+        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
     if ns.name == "velaris":
-        raise HTTPException(400, "velaris.* variables are virtual — they are the case's native fields")
+        raise coded(400, VAR_RESERVED_400,
+                    "velaris.* variables are virtual — they are the case's native fields")
     if ns.status != "active":
-        raise HTTPException(400, f"Namespace '{ns.name}' is {ns.status}")
+        raise coded(400, VAR_NSSTATUS_400, f"Namespace '{ns.name}' is {ns.status}")
     _check_override(body.sensitivity_override, ns)
 
     d = CaseTypeVariableModel(
@@ -289,7 +300,7 @@ async def define_variable(
     try:
         await session.flush()
     except Exception:
-        raise HTTPException(409, f"Variable '{d.full_key}' already defined for this case type")
+        raise coded(409, VAR_EXISTS_409, f"Variable '{d.full_key}' already defined for this case type")
     return _def_out(d, ns.name)
 
 
@@ -299,11 +310,11 @@ async def patch_variable(
     variable_id: uuid.UUID,
     body: VariablePatch,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("designer")),
+    user: AuthenticatedUser = Depends(hxguard.guard("variables.definitions.write")),
 ):
     d = await session.get(CaseTypeVariableModel, variable_id)
     if d is None or d.case_type_id != case_type_id:
-        raise HTTPException(404, "Variable not found")
+        raise coded(404, VAR_NOTFOUND_404, "Variable not found")
     if body.var_type is not None:
         if body.var_type not in VAR_TYPES:
             raise HTTPException(400, f"var_type must be one of {sorted(VAR_TYPES)}")
@@ -329,11 +340,11 @@ async def delete_variable(
     case_type_id: uuid.UUID,
     variable_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("designer")),
+    user: AuthenticatedUser = Depends(hxguard.guard("variables.definitions.write")),
 ):
     d = await session.get(CaseTypeVariableModel, variable_id)
     if d is None or d.case_type_id != case_type_id:
-        raise HTTPException(404, "Variable not found")
+        raise coded(404, VAR_NOTFOUND_404, "Variable not found")
     await session.delete(d)
 
 
@@ -348,7 +359,7 @@ async def get_case_variables(
     try:
         values = await vars_get_all(session, _operator_ctx(user), case_id)
     except VariableError as e:
-        raise HTTPException(400, str(e))
+        raise coded(400, VAR_REJECTED_400, str(e))
     return {"case_id": str(case_id), "variables": values}
 
 
@@ -358,7 +369,7 @@ async def get_case_variables(
 async def scan_case_data_keys(
     case_type_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(hxguard.guard("variables.scan")),
+    user: AuthenticatedUser = Depends(hxguard.guard("variables.blobkeys.scan")),
 ):
     """Inventory bare case.data keys for the migration wizard: occurrence
     count, inferred type, HxSync pii hint, and promotion status."""
@@ -382,7 +393,7 @@ async def promote_case_data_key(
     case_type_id: uuid.UUID,
     body: PromoteRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(hxguard.guard("variables.promote")),
+    user: AuthenticatedUser = Depends(hxguard.guard("variables.blobkeys.promote")),
 ):
     """Promote one case.data key into a typed variable (admin only).
 
@@ -404,5 +415,5 @@ async def promote_case_data_key(
             actor=user.user_id,
         )
     except VariableError as e:
-        raise HTTPException(400, str(e))
+        raise coded(400, VAR_REJECTED_400, str(e))
     return {"case_type_id": str(case_type_id), **result}

@@ -8,6 +8,7 @@ import {
   getEnterpriseSystemInfo, resolveGDPRRequest,
 } from "@shared/api/client";
 import { Card, Button, Spinner, Stat, EmptyState, TimeAgo } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    Enterprise — GDPR, Security Events, Retention (Phase 20)
@@ -365,7 +366,7 @@ function GDPRTab() {
     setActionBusy(true); setActionMsg(null);
     try {
       const resp = await fetch(`/api/v1/enterprise/gdpr/export/${encodeURIComponent(effectiveUserId)}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` },
+        headers: { Authorization: `Bearer ${getAccessToken() ?? ""}` },
       });
       if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
       const blob = await resp.blob();

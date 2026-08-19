@@ -150,6 +150,11 @@ class StepCompletionResponse(BaseModel):
     completed_by: str | None
     completed_at: str
     auto_advanced: bool = False        # True if stage was auto-advanced after this completion
+    #: True when the stage WOULD have advanced but an open HxSentinel risk hold
+    #: stopped it. Without this the caller cannot tell "held" from "steps still
+    #: outstanding" — both are auto_advanced=False — and the case just appears
+    #: to stop progressing with nothing explaining why.
+    advance_held_by_risk: bool = False
 
 
 class CaseResponse(BaseModel):

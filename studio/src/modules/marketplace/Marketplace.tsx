@@ -7,6 +7,7 @@ import React, { useState, useMemo, useCallback } from "react";
 import { useAuth } from "@/auth";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ interface MktPackage {
 const API = "/api/v1/marketplace";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

@@ -3,7 +3,7 @@
 Pins: timer lifecycle (one running per user per case), timesheet entries,
 billable rollup priced by role rate with honest fully_priced labelling,
 case-level authz (404 anti-oracle), own-entries-only delete, and the
-costing.rates-gated billing export (per-case cost is commercially sensitive).
+costing.rates.access-gated billing export (per-case cost is commercially sensitive).
 
 Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1

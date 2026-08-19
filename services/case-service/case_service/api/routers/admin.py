@@ -29,7 +29,9 @@ from case_service.db.models import (
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
+from case_service import hxguard
+
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(hxguard.guard("platform.admin.access"))])
 
 
 # ─── Schemas ──────────────────────────────────────────────────────
@@ -254,7 +256,7 @@ class CalendarCreateUpdate(BaseModel):
 async def create_calendar(
     body: CalendarCreateUpdate,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.calendars.write")),
 ):
     cal = BusinessCalendarModel(
         name=body.name or "New Calendar",
@@ -281,7 +283,7 @@ async def update_calendar(
     calendar_id: uuid.UUID,
     body: CalendarCreateUpdate,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.calendars.write")),
 ):
     cal = await session.get(BusinessCalendarModel, calendar_id)
     if not cal:

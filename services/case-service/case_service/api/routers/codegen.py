@@ -10,9 +10,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from case_service.auth.dependencies import require_role
+from case_service import hxguard
 from case_service.codegen.generator import AppConfig, generate_app, generate_zip
 
-router = APIRouter(prefix="/codegen", tags=["codegen"], dependencies=[Depends(require_role("designer", "admin"))])
+router = APIRouter(prefix="/codegen", tags=["codegen"], dependencies=[Depends(hxguard.guard("design.codegen.access"))])
 
 
 class AppGenerateRequest(BaseModel):

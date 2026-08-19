@@ -11,11 +11,12 @@
  */
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/auth";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/hxdbmanager";
 
 function _hdrs(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { "Content-Type": "application/json", Authorization: `Bearer ${t}` } : { "Content-Type": "application/json" };
 }
 

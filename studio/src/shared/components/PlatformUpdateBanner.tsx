@@ -39,7 +39,7 @@ export function PlatformUpdateBanner() {
 
   const load = useCallback(async () => {
     try {
-      const res = await apiFetch("/api/v1/platform/update/status");
+      const res = await apiFetch("/platform/update/status");
       if (!res.ok) return; // non-admin or service issue — stay silent
       setStatus((await res.json()) as UpdateStatus);
     } catch {
@@ -57,7 +57,7 @@ export function PlatformUpdateBanner() {
     setBusy(true);
     setError(null);
     try {
-      const res = await apiFetch("/api/v1/platform/update/request", {
+      const res = await apiFetch("/platform/update/request", {
         method: "POST",
         body: JSON.stringify({ mode }),
       });
@@ -75,7 +75,7 @@ export function PlatformUpdateBanner() {
   const cancel = async () => {
     setBusy(true);
     try {
-      await apiFetch("/api/v1/platform/update/request", { method: "DELETE" });
+      await apiFetch("/platform/update/request", { method: "DELETE" });
       await load();
     } finally {
       setBusy(false);

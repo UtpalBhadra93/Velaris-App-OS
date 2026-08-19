@@ -12,6 +12,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { computeCaseTypeDiff } from "@shared/hooks/useCommit";
 import type { ChangeEntry } from "@shared/hooks/useCommit";
+import { getAccessToken } from "@/auth/tokenManager";
 
 export interface CommitRecord {
   id: string;
@@ -90,7 +91,7 @@ export function CommitHistory({ componentType, componentId, limit = 50, compact 
         limit: String(limit),
       });
       const r = await fetch(`/api/v1/commits?${qs}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` },
+        headers: { Authorization: `Bearer ${getAccessToken() ?? ""}` },
       });
       if (r.ok) {
         const d = await r.json();

@@ -41,7 +41,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
+from case_service.config import get_settings
 from case_service.db.session import get_replica_session
 from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
@@ -181,11 +183,77 @@ async def public_status(
     return payload
 
 
+@router.get("/authz-parity")
+async def authz_parity(
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+):
+    """Privilege-authorization shadow counters (Phase 2).
+
+    The exit criterion for Phase 2 is *zero unexplained mismatches over a
+    deployment cycle*. Without somewhere to read the counters that claim cannot
+    be checked in a running system, only in a test — so this endpoint is part of
+    the phase rather than an extra.
+
+    - `compared` / `agreed` — the shadow ran and the two models concurred.
+    - `mismatch_would_allow` — the privilege model is **more** permissive than
+      the gate. The dangerous direction; investigate before Phase 3.
+    - `mismatch_would_deny` — **less** permissive. Breaks users at cutover.
+    - `unresolved_route` — a gate whose action could not be resolved, i.e. a hole
+      in the inventory. Non-zero means Phase 3 would migrate it blind.
+    - `error` — the shadow itself failed. Never affects a request; always a bug.
+
+    Counters are per process and reset on restart, so read them from a worker
+    that has been serving for a while.
+    """
+    from case_service.hxguard import shadow
+
+    snap = shadow.snapshot()
+    mismatches = snap.get("mismatch_would_allow", 0) + snap.get("mismatch_would_deny", 0)
+    return {
+        "phase": 2,
+        "enabled": bool(getattr(get_settings(), "hxguard_privilege_shadow", True)),
+        "counters": snap,
+        "clean": mismatches == 0 and snap.get("unresolved_route", 0) == 0
+                 and snap.get("error", 0) == 0,
+    }
+
+
+@router.get("/authz-role-collisions")
+async def authz_role_collisions(
+    session: AsyncSession = Depends(get_replica_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+):
+    """Access roles whose NAME used to confer a platform role (Phase 4 step 1).
+
+    Until step 1, `_enrich_with_access_group` merged access-role names into
+    `user.roles`, so an access role named `admin` made its members platform
+    admins. That merge is gone. Anyone who reached platform privileges only that
+    way has lost them, and the request path cannot say so — a denial for a
+    missing privilege looks exactly like a correct denial.
+
+    Non-empty is not automatically a problem: it is a problem for the operators
+    counted in `operators_affected`, and cosmetic for a role nobody holds.
+    The fix is to grant the platform role on the account or to write the access
+    role's platform intent as a dotted-namespace privilege entry — **never** to
+    rename the role, which revokes case-level access for every member at once.
+    """
+    from case_service.hxguard.role_names import colliding_access_roles
+
+    found = await colliding_access_roles(session)
+    return {
+        "phase": 4,
+        "name_merge_active": False,
+        "collisions": found,
+        "operators_affected": sum(r["operators_affected"] for r in found),
+        "clean": not any(r["operators_affected"] for r in found),
+    }
+
+
 @router.get("/internal")
 async def internal_status(
     days: int = 7,
     session: AsyncSession = Depends(get_replica_session),
-    _user: AuthenticatedUser = Depends(require_role("admin")),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ):
     """Full status including diagnostic detail — admin only.
 

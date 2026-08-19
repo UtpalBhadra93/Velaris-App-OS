@@ -84,7 +84,11 @@ async def _auto_advance(session: AsyncSession, case_id: uuid.UUID) -> None:
                 )).scalar_one_or_none()
                 if ct:
                     from case_service.api.routers.cases import _auto_advance_if_complete
-                    await _auto_advance_if_complete(session, case, ct.definition_json or {})
+                    # 4 args: the helper takes (session, case_id, stage_id, definition).
+                    # This passed 3 and raised TypeError on every call, swallowed by the
+                    # non-fatal except below — so this auto-advance never once ran.
+                    await _auto_advance_if_complete(
+                        session, case.id, case.current_stage_id, ct.definition_json or {})
     except Exception as exc:
         logger.warning("Auto-advance failed (non-fatal): %s", exc)
 

@@ -3,9 +3,10 @@
  * Tabs: Overview · Case Types · Glossary · Ask HxNexus
  */
 import React, { useEffect, useRef, useState } from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 function authHeaders(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 async function get<T>(path: string): Promise<T> {

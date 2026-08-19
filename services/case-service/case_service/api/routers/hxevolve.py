@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db import repository as repo
@@ -34,10 +35,15 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/hxevolve", tags=["hxevolve"])
 
 
-def _require_admin(user: AuthenticatedUser) -> None:
-    roles = user.roles or []
-    if not (user.has_privilege("*", "*") or "admin" in roles or "superadmin" in roles):
-        raise HTTPException(403, "HxEvolve requires admin role")
+async def _require_admin(session: AsyncSession, user: AuthenticatedUser) -> None:
+    """Phase 4 step 2: privilege-decided module gate.
+
+    The old `has_privilege("*", "*")` clause is not carried over — that legacy
+    access-group wildcard is case-level vocabulary and has never been a platform
+    grant (privileges.py::_crosses_into_platform_namespace). `superadmin` still
+    passes, inside the evaluator.
+    """
+    await hxguard.require_user(session, user, "design.evolve.access")
 
 
 def _tenant(user: AuthenticatedUser) -> str:
@@ -77,7 +83,7 @@ async def scan_case_type(
 ):
     """Detect → propose → prove for one case type. Every generated proposal is
     recorded; only replay-proven / plausibly-described ones are surfaced."""
-    _require_admin(user)
+    await _require_admin(session, user)
     try:
         ct_id = uuid.UUID(body.case_type_id)
     except ValueError:
@@ -90,7 +96,7 @@ async def scan_case_type(
     # the SAME HxGuard capability the manual cohort endpoint requires; the
     # concurrency cap is enforced in the prover (shared with the cron path)
     from case_service.hxguard import service as hxguard
-    await hxguard.require(session, hxguard.subject_from_user(user), "replay.run",
+    await hxguard.require(session, hxguard.subject_from_user(user), "replay.cohorts.run",
                           resource={"cohort": {"case_type_id": str(ct_id),
                                                "via": "hxevolve"}})
 
@@ -129,7 +135,7 @@ async def get_evolve_config(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     try:
         ct_id = uuid.UUID(case_type_id)
     except ValueError:
@@ -144,7 +150,7 @@ async def put_evolve_config(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     try:
         ct_id = uuid.UUID(case_type_id)
     except ValueError:
@@ -175,7 +181,7 @@ async def get_baseline(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     from case_service.db.models import HxEvolveBaselineModel
     from case_service.hxevolve import drift
     try:
@@ -195,7 +201,7 @@ async def rebaseline_case_type(
     The admin is asserting 'the current configuration is the new reference' —
     typically after reviewing (and possibly reverting) merged HxEvolve changes
     that a drift insight flagged."""
-    _require_admin(user)
+    await _require_admin(session, user)
     from case_service.hxevolve import drift
     try:
         ct_id = uuid.UUID(case_type_id)
@@ -219,7 +225,7 @@ async def list_insights(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     stmt = select(HxEvolveInsightModel).where(
         HxEvolveInsightModel.tenant_id == _tenant(user))
     if case_type_id:
@@ -259,7 +265,7 @@ async def get_insight(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     return _view(await _get_insight(session, user, insight_id), full=True)
 
 
@@ -269,7 +275,7 @@ async def dismiss_insight(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    _require_admin(user)
+    await _require_admin(session, user)
     i = await _get_insight(session, user, insight_id)
     if i.status != "surfaced":
         raise HTTPException(400, f"Only surfaced insights can be dismissed "
@@ -314,7 +320,7 @@ async def stage_insight(
     merge). new rules land DISABLED behind the branch; everything else is a
     branch on the live artifact whose content_snapshot is the patched config.
     HxEvolve itself changes nothing."""
-    _require_admin(user)
+    await _require_admin(session, user)
     i = await _get_insight(session, user, insight_id)
     if i.status != "surfaced":
         raise HTTPException(400, f"Only surfaced insights can be staged "

@@ -6,7 +6,7 @@ read-only over case history; its only writes are replay_runs / replay_results.
 
 Authorization: creating a single-case replay inherits the authz of viewing that
 case (it exposes that case's history); cohort replay (Phase C) is a bulk read
-gated behind the dedicated HxGuard capability ``replay.run``.
+gated behind the dedicated HxGuard capability ``replay.cohorts.run``.
 
 Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
@@ -37,8 +37,15 @@ def _tenant(user: AuthenticatedUser) -> str:
 
 
 def _is_admin(user: AuthenticatedUser) -> bool:
-    roles = user.roles or []
-    return user.has_privilege("*", "*") or "admin" in roles or "superadmin" in roles
+    """Phase 4 step 2: "may act beyond your own runs", decided by privilege.
+
+    Stays synchronous and boolean on purpose. Two of its three callers use it as
+    an **override on an ownership test** (`_is_admin(user) or r.created_by ==
+    user.user_id`), where the negative answer produces a 404 anti-oracle rather
+    than a refusal — that is response shaping, not a denial, and auditing it per
+    row would drown the `authz_denied` stream it shares with real refusals.
+    """
+    return hxguard.user_allows(user, "platform.replay.access")
 
 
 def _run_view(r: ReplayRunModel, *, with_summary: bool = True) -> dict:
@@ -155,7 +162,7 @@ async def _create_single(body: RunCreate, session: AsyncSession, user: Authentic
 async def _create_cohort(body: RunCreate, background_tasks: BackgroundTasks,
                          session: AsyncSession, user: AuthenticatedUser):
     # bulk read of many real cases → dedicated HxGuard capability, not a generic gate
-    await hxguard.require(session, hxguard.subject_from_user(user), "replay.run",
+    await hxguard.require(session, hxguard.subject_from_user(user), "replay.cohorts.run",
                           resource={"cohort": body.cohort_filter})
     if not (body.cohort_filter or {}).get("case_type_id"):
         raise HTTPException(400, "cohort_filter.case_type_id is required")

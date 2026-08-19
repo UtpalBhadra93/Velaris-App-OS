@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_admin
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     TestSuiteModel, TestRunModel, TestResultModel, MarketplaceWorkspaceModel, CaseTypeModel,
@@ -30,6 +30,8 @@ from case_service.db.session import get_session
 from case_service.testsuite import isolation, runner, conformance
 from case_service.testsuite.builtin import get_builtin_suite, list_builtin_suites
 from case_service.testsuite.generator import generate_structural
+
+from case_service.hxguard import service as hxguard
 
 router = APIRouter(prefix="/testsuite", tags=["testsuite"])
 
@@ -68,7 +70,7 @@ async def _resolve_suite(session: AsyncSession, name: str) -> tuple[list, str, u
 @router.post("/run")
 async def run(
     body: RunReq,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.run")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -114,7 +116,7 @@ class ConformanceReq(BaseModel):
 @router.post("/conformance")
 async def run_conformance(
     body: ConformanceReq,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.run")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -141,7 +143,7 @@ class GenerateReq(BaseModel):
 @router.post("/generate")
 async def generate_suite(
     body: GenerateReq,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.run")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -181,7 +183,7 @@ async def generate_suite(
 
 @router.get("/runs")
 async def list_runs(
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
     rows = (await session.execute(
@@ -195,7 +197,7 @@ async def list_runs(
 @router.get("/runs/{run_id}")
 async def run_detail(
     run_id: uuid.UUID,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
     run_row = await session.get(TestRunModel, run_id)
@@ -217,7 +219,7 @@ async def run_detail(
 @router.get("/runs/{run_id}/stream")
 async def run_stream(
     run_id: uuid.UUID,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
     """SSE: replay a completed run's results as events (live streaming during a

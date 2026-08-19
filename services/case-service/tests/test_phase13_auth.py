@@ -9,12 +9,17 @@ import pytest
 
 class TestAuthModels:
     def test_authenticated_user_roles(self):
+        """Rewritten by Phase 4 step 2. This asserted that an admin *is* every
+        other role — `is_designer`, `is_case_worker`, and `has_role("anything")`
+        all returned True. That was the shipped behaviour, and it is the defect
+        the phase removes: no gate could distinguish "holds the designer role"
+        from "is an admin". The flags are now literal and display-only."""
         from case_service.auth.models import AuthenticatedUser
         admin = AuthenticatedUser(user_id="u1", roles=["admin"])
         assert admin.is_admin is True
-        assert admin.is_designer is True
-        assert admin.is_case_worker is True
-        assert admin.has_role("anything") is True
+        assert admin.is_designer is False
+        assert admin.is_case_worker is False
+        assert not hasattr(admin, "has_role")
 
     def test_designer_role(self):
         from case_service.auth.models import AuthenticatedUser
@@ -22,8 +27,6 @@ class TestAuthModels:
         assert user.is_admin is False
         assert user.is_designer is True
         assert user.is_case_worker is False
-        assert user.has_role("designer") is True
-        assert user.has_role("admin") is False
 
     def test_case_worker_role(self):
         from case_service.auth.models import AuthenticatedUser
@@ -155,14 +158,23 @@ class TestAuthAPI:
 
 
 class TestRoleBasedAccess:
-    def test_require_role_admin(self):
+    """Rewritten by Phase 4 step 2. These asserted `has_role()`, which was
+    deleted: it answered True for *every* role once the caller was admin, so it
+    could not tell "holds the designer role" from "is an admin" — the defect the
+    phase exists to remove. The flags that remain are display-only."""
+
+    def test_role_flags_are_literal_not_inherited(self):
         from case_service.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u1", roles=["admin"])
-        assert user.has_role("admin") is True
-        assert user.has_role("designer") is True  # admin gets all
+        assert user.is_admin is True
+        assert user.is_designer is False, "admin must not imply designer any more"
 
-    def test_require_role_denied(self):
+    def test_flags_are_false_for_an_unprivileged_user(self):
         from case_service.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u1", roles=["viewer"])
-        assert user.has_role("admin") is False
-        assert user.has_role("designer") is False
+        assert user.is_admin is False
+        assert user.is_designer is False
+
+    def test_has_role_is_gone(self):
+        from case_service.auth.models import AuthenticatedUser
+        assert not hasattr(AuthenticatedUser(user_id="u1", roles=[]), "has_role")

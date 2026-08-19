@@ -11,6 +11,7 @@ import { useBranchMode, useCommit, useCurrentUserGroups } from "@shared/hooks";
 import { BranchModeBanner, CommitHistory, CommitModal, ReviewerPicker } from "@shared/components";
 import type { CommitRecord } from "@shared/components/CommitHistory";
 import { createBranch } from "@shared/api/client";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Scope = "global" | "case_type";
 
@@ -36,7 +37,7 @@ type Tree = {
 };
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

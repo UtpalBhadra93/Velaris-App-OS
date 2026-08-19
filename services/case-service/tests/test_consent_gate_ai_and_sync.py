@@ -247,3 +247,175 @@ class TestAiActionGate:
         out = await ai_action.execute(session, case_id=case.id, step=_STEP)
 
         assert out.get("refused") is not True
+
+
+class TestAnonymizedCaseIsRefused:
+    """An erased case must not read as an unowned one.
+
+    Both have a NULL `portal_submitter_email`, and they mean opposite things. A
+    staff case never had a data subject, so nobody's consent could be required —
+    that is why NO_SUBJECT is allowed. An anonymized case HAD one and erased them.
+    Letting it share the NO_SUBJECT path would mean erasure silently UNLOCKS the
+    AI and warehouse processing that consent had been gating.
+    """
+
+    async def _anon_case(self, session):
+        from case_service.compliance.retention import ANON_MARKER
+        case = await _case(session, None)              # erasure NULLs the column
+        case.data = {ANON_MARKER: "2026-01-01T00:00:00+00:00"}
+        await session.flush()
+        return case
+
+    async def test_allows_case_purpose_refuses_an_anonymized_case(self, session):
+        case = await self._anon_case(session)
+        allowed, reason = await c.allows_case_purpose(
+            session, case.id, c.AI_PROCESSING)
+        assert (allowed, reason) == (False, c.ANONYMIZED)
+
+    async def test_require_case_purpose_raises_for_an_anonymized_case(self, session):
+        case = await self._anon_case(session)
+        with pytest.raises(Exception):
+            await c.require_case_purpose(session, case, c.AI_PROCESSING)
+
+    async def test_the_reason_is_distinct_from_no_subject(self, session):
+        """"Erased" and "there was nobody to ask" must not look the same."""
+        assert c.ANONYMIZED != c.NO_SUBJECT
+
+    async def test_happy_path_staff_case_is_still_allowed(self, session):
+        """HAPPY PATH: the NO_SUBJECT allowance must survive intact."""
+        case = await _case(session, None)
+        allowed, reason = await c.allows_case_purpose(
+            session, case.id, c.AI_PROCESSING)
+        assert (allowed, reason) == (True, c.NO_SUBJECT)
+
+    async def test_happy_path_a_live_portal_case_is_still_gated(self, session):
+        """HAPPY PATH: an ordinary portal case is refused for lack of a grant,
+        by the ordinary rule — not by the new anonymized branch."""
+        case = await _case(session, "live@example.com")
+        allowed, reason = await c.allows_case_purpose(
+            session, case.id, c.AI_PROCESSING)
+        assert (allowed, reason) == (False, "no_lawful_basis")
+
+
+class TestWarehouseSyncGateUsesTheCaseRule:
+    """The warehouse gate read the column directly and missed the erasure rule.
+
+    It is the path that physically copies a row OUT of the platform, so an erased
+    case slipping through it is the worst version of this bug.
+    """
+
+    async def test_hxsync_calls_allows_case(self):
+        import inspect
+        from case_service.hxsync import pipeline
+        src = inspect.getsource(pipeline.run_sync) if hasattr(pipeline, "run_sync") \
+            else inspect.getsource(pipeline)
+        assert "allows_case(" in src
+        assert "allows_subject(" not in src, (
+            "the sync gate must go through the case-aware rule")
+
+    async def test_anonymized_case_is_refused_for_data_sharing(self, session):
+        from case_service.compliance.retention import ANON_MARKER
+        case = await _case(session, None)
+        case.data = {ANON_MARKER: "2026-01-01T00:00:00+00:00"}
+        await session.flush()
+
+        allowed, reason = await c.allows_case(session, case, c.DATA_SHARING)
+        assert (allowed, reason) == (False, c.ANONYMIZED)
+
+    async def test_happy_path_staff_case_still_syncs(self, session):
+        """HAPPY PATH: staff cases must keep flowing to the warehouse."""
+        case = await _case(session, None)
+        allowed, reason = await c.allows_case(session, case, c.DATA_SHARING)
+        assert (allowed, reason) == (True, c.NO_SUBJECT)
+
+
+class TestConsentDoesNotCrossTenants:
+    """A grant recorded in one tenant is not a lawful basis in another.
+
+    `current_state` applies NO tenant filter when `tenant_id` is None, so the old
+    `allows_case_purpose` — whose only caller (`core.ai_action`) passes none —
+    was satisfied by a grant from ANY tenant. `require_case_purpose` already fell
+    back to `case.tenant_id`; the two entry points disagreed. Both now scope to
+    the case's own tenant.
+    """
+
+    async def _tenant(self, session, slug):
+        from case_service.db.models import TenantModel
+        t = TenantModel(slug=slug, name=slug)
+        session.add(t)
+        await session.flush()
+        return t
+
+    async def _case_in(self, session, tenant, submitter):
+        case = await _case(session, submitter)
+        case.tenant_id = tenant.id
+        await session.flush()
+        return case
+
+    async def test_a_grant_in_another_tenant_does_not_authorize(self, session):
+        other = await self._tenant(session, f"other-{uuid.uuid4().hex[:6]}")
+        mine = await self._tenant(session, f"mine-{uuid.uuid4().hex[:6]}")
+
+        await c.record(session, subject_ref=SUBJECT, purpose=c.AI_PROCESSING,
+                       action=c.GRANTED, basis=c.CONSENT, tenant_id=str(other.id))
+        await session.flush()
+
+        case = await self._case_in(session, mine, SUBJECT)
+        allowed, reason = await c.allows_case_purpose(
+            session, case.id, c.AI_PROCESSING)
+        assert (allowed, reason) == (False, "no_lawful_basis")
+
+    async def test_happy_path_the_same_tenants_grant_does_authorize(self, session):
+        """HAPPY PATH: consent must still work inside its own tenant."""
+        mine = await self._tenant(session, f"mine-{uuid.uuid4().hex[:6]}")
+        await c.record(session, subject_ref=SUBJECT, purpose=c.AI_PROCESSING,
+                       action=c.GRANTED, basis=c.CONSENT, tenant_id=str(mine.id))
+        await session.flush()
+
+        case = await self._case_in(session, mine, SUBJECT)
+        allowed, reason = await c.allows_case_purpose(
+            session, case.id, c.AI_PROCESSING)
+        assert (allowed, reason) == (True, "granted")
+
+
+class TestRequireCasePurposeFindsATenantedGrant:
+    """`require_case_purpose` refused every tenanted case with a valid grant.
+
+    It has fallen back to `case.tenant_id` for a long time, but
+    `consent_records.tenant_id` is a String and `case_instances.tenant_id` is a
+    GUID — filtering the string column by a UUID object matched nothing. Because
+    the gate fails closed, it read as "the customer never consented".
+    """
+
+    async def test_a_uuid_tenant_still_finds_its_grant(self, session):
+        from case_service.db.models import TenantModel
+
+        t = TenantModel(slug=f"t-{uuid.uuid4().hex[:6]}", name="T")
+        session.add(t)
+        await session.flush()
+
+        await c.record(session, subject_ref=SUBJECT, purpose=c.AI_PROCESSING,
+                       action=c.GRANTED, basis=c.CONSENT, tenant_id=str(t.id))
+        case = await _case(session, SUBJECT)
+        case.tenant_id = t.id                 # a UUID, as the ORM returns it
+        await session.flush()
+
+        # Must not raise: the grant exists and belongs to this tenant.
+        await c.require_case_purpose(session, case, c.AI_PROCESSING)
+
+    async def test_a_withdrawal_in_the_same_tenant_still_refuses(self, session):
+        """The coercion must not turn the gate into a rubber stamp."""
+        from case_service.db.models import TenantModel
+
+        t = TenantModel(slug=f"t-{uuid.uuid4().hex[:6]}", name="T")
+        session.add(t)
+        await session.flush()
+
+        await c.record(session, subject_ref=SUBJECT, purpose=c.AI_PROCESSING,
+                       action=c.WITHDRAWN, basis=c.CONSENT, tenant_id=str(t.id))
+        case = await _case(session, SUBJECT)
+        case.tenant_id = t.id
+        await session.flush()
+
+        with pytest.raises(Exception):
+            await c.require_case_purpose(session, case, c.AI_PROCESSING)

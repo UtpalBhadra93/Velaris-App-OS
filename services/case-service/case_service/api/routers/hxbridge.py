@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
@@ -343,7 +344,7 @@ async def rotate_connector_credentials(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """SD-6: Clear connector credentials so they can be re-entered. Requires admin or integration role."""
-    if not (user.is_admin or "integration" in user.roles or "admin" in user.roles):
+    if not hxguard.user_allows(user, "integration.connectors.rotate"):
         raise coded(403, CONN_ROLE_403, "admin or integration role required")
     row = await session.get(ConnectorRegistryModel, connector_id)
     if not row:

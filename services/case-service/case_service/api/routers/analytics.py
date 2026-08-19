@@ -15,6 +15,7 @@ from typing import Any
 import uuid
 from typing import Optional
 
+from case_service import hxguard
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -118,6 +119,7 @@ async def get_dashboard(
     case_type_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_ro_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("analytics.reports.read")),
 ):
     """Full analytics dashboard — all metrics in one call."""
     now = datetime.now(timezone.utc)
@@ -155,6 +157,7 @@ async def get_dashboard(
 async def get_overview_metrics(
     case_type_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_ro_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("analytics.reports.read")),
 ):
     base_filter = []
     if case_type_id:
@@ -168,6 +171,7 @@ async def get_overview_metrics(
 async def get_sla_compliance(
     case_type_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_ro_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("analytics.reports.read")),
 ):
     return await _get_sla_compliance(session, case_type_id)
 
@@ -177,6 +181,7 @@ async def get_cases_over_time(
     days: int = Query(30, ge=1, le=365),
     case_type_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_ro_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("analytics.reports.read")),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
     base_filter = []
@@ -189,6 +194,7 @@ async def get_cases_over_time(
 async def get_bottlenecks(
     case_type_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_ro_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("analytics.reports.read")),
 ):
     """Identify stages where cases spend the most time."""
     # Look at audit log stage_transitioned events to compute avg duration per stage

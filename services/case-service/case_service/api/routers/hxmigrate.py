@@ -8,6 +8,7 @@ import os
 import uuid
 from typing import Any
 
+from case_service import hxguard
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,7 +122,9 @@ class RunOut(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/platforms")
-async def list_platforms():
+async def list_platforms(
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+):
     return [
         {"id": "pega",           "label": "Pega",            "accepts": [".jar", ".zip", ".xml"]},
         {"id": "camunda",        "label": "Camunda",         "accepts": [".bpmn", ".xml", ".zip"]},

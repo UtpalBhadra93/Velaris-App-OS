@@ -10,11 +10,12 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAccessToken } from "@/auth/tokenManager";
 
 export const SANDBOX_KEY = "velaris_sandbox_workspace_id";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

@@ -49,6 +49,8 @@ import {
   type KycAnalysis,
   type KycCheck,
   apiFetch,
+  errorFromResponse,
+  openDocument,
 } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 import type { MyTaskResult, CaseSession, MeetProvider } from "@shared/api/client";
@@ -64,6 +66,7 @@ import {
   VoiceInput,
   appendTranscript,
 } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 import type { CaseSummary, CaseAuditEntry, CaseStatus, CasePriority, SLAStatusInfo, CaseTypeSummary } from "@shared/types";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -696,10 +699,11 @@ function FindingFeedback({ findingId }: { findingId: string }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [showScores, setShowScores] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   const load = async () => {
     try {
-      const r = await apiFetch(`/api/v1/risk/findings/${findingId}/feedback`);
+      const r = await apiFetch(`/risk/findings/${findingId}/feedback`);
       if (r.ok) { const b = await r.json(); setLatest(b.latest); setHistory(b.history || []); }
     } catch { /* non-fatal */ }
   };
@@ -711,21 +715,27 @@ function FindingFeedback({ findingId }: { findingId: string }) {
     const reason = window.prompt("Why dispute this score? (required)");
     if (!reason || !reason.trim()) return;
     try {
-      const r = await apiFetch(`/api/v1/risk/feedback/${feedbackId}/dispute`, {
+      const r = await apiFetch(`/risk/feedback/${feedbackId}/dispute`, {
         method: "POST", body: JSON.stringify({ note: reason.trim() }) });
-      if (!r.ok) window.alert(await r.text());
+      if (!r.ok) { setErr((await errorFromResponse(r, "Dispute failed")).message); return; }
+      setErr(null);
       await load();
-    } catch { /* non-fatal */ }
+    } catch (e: any) { setErr(e?.message || "Dispute failed"); }
   };
 
   const submit = async () => {
     if (!score || busy) return;
     setBusy(true);
     try {
-      const r = await apiFetch(`/api/v1/risk/findings/${findingId}/feedback`, {
+      const r = await apiFetch(`/risk/findings/${findingId}/feedback`, {
         method: "POST", body: JSON.stringify({ score, note: note.trim() || null }) });
-      if (r.ok) { setOpen(false); setNote(""); setScore(0); await load(); }
-    } finally { setBusy(false); }
+      // A silently dropped score is worse than a visible failure: these rows are
+      // the ground truth that rule tuning and the local model train on, so a
+      // no-op here shows up much later as "analyze produced nothing".
+      if (!r.ok) { setErr((await errorFromResponse(r, "Could not save your score")).message); return; }
+      setErr(null); setOpen(false); setNote(""); setScore(0); await load();
+    } catch (e: any) { setErr(e?.message || "Could not save your score"); }
+    finally { setBusy(false); }
   };
 
   const calColor = latest?.calibration === "miscalibrated" ? "var(--status-failed)"
@@ -733,6 +743,9 @@ function FindingFeedback({ findingId }: { findingId: string }) {
 
   return (
     <div style={{ marginTop: 6, borderTop: "1px dashed var(--border-subtle)", paddingTop: 6 }}>
+      {err && (
+        <div style={{ color: "var(--status-failed)", fontSize: 11, marginBottom: 4 }}>{err}</div>
+      )}
       {!open ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
           <span style={{ color: "var(--text-muted)" }}>
@@ -798,6 +811,123 @@ function FindingFeedback({ findingId }: { findingId: string }) {
   );
 }
 
+interface OutcomeLabel { key: string; display: string; description?: string | null; is_negative: boolean; is_core: boolean }
+interface OutcomeRow { outcome: string; note?: string | null; source?: string | null; labelled_by?: string | null; created_at?: string | null }
+
+/**
+ * Confirmed-outcome labelling — HxSentinel's ground truth.
+ *
+ * `case_outcomes` is append-only: relabelling inserts a row, and the history is
+ * evidence in its own right (a case cleared today and confirmed fraud in six
+ * months is a different story from one labelled fraud at closure). So this
+ * shows the whole trail and says "relabel", never "edit".
+ *
+ * Labelling is not restricted to closed cases on purpose — outcomes are usually
+ * confirmed long after closure, and retroactive labelling is the point.
+ */
+function OutcomeCard({ caseId }: { caseId: string }) {
+  const [labels, setLabels] = useState<OutcomeLabel[]>([]);
+  const [current, setCurrent] = useState<OutcomeRow | null>(null);
+  const [history, setHistory] = useState<OutcomeRow[]>([]);
+  const [choice, setChoice] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [openForm, setOpenForm] = useState(false);
+
+  const load = async () => {
+    const t = await apiFetch("/risk/taxonomy");
+    if (t.ok) setLabels((await t.json()).labels || []);
+    const r = await apiFetch(`/risk/cases/${caseId}/outcome`);
+    if (r.ok) { const b = await r.json(); setCurrent(b.current); setHistory(b.history || []); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [caseId]);
+
+  const save = async () => {
+    if (!choice) return;
+    setBusy(true);
+    try {
+      const r = await apiFetch(`/risk/cases/${caseId}/outcome`, {
+        method: "PUT", body: JSON.stringify({ outcome: choice, note: note.trim() || null }) });
+      if (!r.ok) { setErr((await errorFromResponse(r, "Could not record the outcome")).message); return; }
+      setErr(null); setOpenForm(false); setNote(""); setChoice("");
+      await load();
+    } catch (e: any) { setErr(e?.message || "Could not record the outcome"); }
+    finally { setBusy(false); }
+  };
+
+  const display = (key: string) => labels.find((l) => l.key === key)?.display || key;
+
+  return (
+    <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 8, padding: 12,
+      display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <strong style={{ fontSize: 13 }}>Confirmed outcome</strong>
+        {current ? (
+          <span style={{ fontSize: 11, padding: "1px 8px", borderRadius: 8, color: "#fff",
+            background: "var(--accent)" }}>{display(current.outcome)}</span>
+        ) : (
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>not labelled</span>
+        )}
+        <button onClick={() => setOpenForm((v) => !v)} style={{ marginLeft: "auto", fontSize: 11,
+          background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer" }}>
+          {openForm ? "Cancel" : current ? "Relabel" : "Label outcome"}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+        This is the ground truth HxSentinel learns from. Rules and the local model compare new
+        cases against confirmed outcomes — nothing downstream can correct a wrong label.
+      </div>
+      {err && <div style={{ color: "var(--status-failed)", fontSize: 12 }}>{err}</div>}
+
+      {openForm && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <select value={choice} onChange={(e) => setChoice(e.target.value)}
+            style={{ fontSize: 12, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border-default)",
+              background: "var(--bg-secondary)", color: "var(--text-primary)" }}>
+            <option value="">Select an outcome…</option>
+            {labels.map((l) => (
+              <option key={l.key} value={l.key}>{l.display}{l.is_core ? "" : " (tenant)"}</option>
+            ))}
+          </select>
+          {choice && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {labels.find((l) => l.key === choice)?.description}
+            </div>
+          )}
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
+            placeholder="How was this confirmed? (optional, but it is the evidence)"
+            style={{ fontSize: 12, padding: 8, borderRadius: 6, border: "1px solid var(--border-default)",
+              background: "var(--bg-secondary)", color: "var(--text-primary)", resize: "vertical" }} />
+          <div>
+            <Button size="sm" disabled={!choice || busy} onClick={save}>
+              {busy ? "Recording…" : "Record outcome"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {history.length > 1 && (
+        <details>
+          <summary style={{ fontSize: 11, color: "var(--text-muted)", cursor: "pointer" }}>
+            Label history ({history.length})
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+            {history.map((h, i) => (
+              <div key={i} style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                <span style={{ fontWeight: 600 }}>{display(h.outcome)}</span>
+                {h.created_at && <span style={{ color: "var(--text-muted)" }}> · {new Date(h.created_at).toLocaleString()}</span>}
+                {h.labelled_by && <span style={{ color: "var(--text-muted)" }}> · {h.labelled_by}</span>}
+                {h.note && <div style={{ color: "var(--text-muted)", paddingLeft: 8 }}>{h.note}</div>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => void }) {
   const [findings, setFindings] = useState<RiskFinding[]>([]);
   const [holds, setHolds] = useState<RiskHold[]>([]);
@@ -810,12 +940,26 @@ function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => voi
   const load = async () => {
     setLoading(true); setErr(null);
     try {
-      const fr = await apiFetch(`/api/v1/risk/cases/${caseId}/findings`);
-      if (fr.status === 404) { setOff(true); setLoading(false); return; }
-      if (!fr.ok) throw new Error(await fr.text());
+      const fr = await apiFetch(`/risk/cases/${caseId}/findings`);
+      if (fr.status === 404) {
+        // Case-scoped routes answer 404 with the same code whether the module
+        // is dark or the case simply isn't visible to you — that ambiguity is
+        // deliberate (it stops the surface being used to probe for cases). So
+        // ask the public flag endpoint which one it actually is instead of
+        // blaming a feature flag for what may be an authorization result.
+        const flags = await apiFetch("/releases/flags")
+          .then((f) => (f.ok ? f.json() : null))
+          .catch(() => null);
+        if (flags?.hxsentinel) setErr("No risk data for this case, or it is not visible to you.");
+        else setOff(true);
+        setLoading(false);
+        return;
+      }
+      if (!fr.ok) throw await errorFromResponse(fr, "Failed to load risk");
       setFindings((await fr.json()).findings || []);
-      const hr = await apiFetch(`/api/v1/risk/cases/${caseId}/holds`);
+      const hr = await apiFetch(`/risk/cases/${caseId}/holds`);
       if (hr.ok) setHolds((await hr.json()).holds || []);
+      else setErr("Verify-gate holds could not be loaded — this list may be incomplete.");
     } catch (e: any) { setErr(e?.message || "Failed to load risk"); }
     finally { setLoading(false); }
   };
@@ -826,9 +970,9 @@ function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => voi
     if (!note) { setErr("A note is required to clear a hold."); return; }
     setBusy(holdId); setErr(null);
     try {
-      const r = await apiFetch(`/api/v1/risk/holds/${holdId}/resolve`, {
+      const r = await apiFetch(`/risk/holds/${holdId}/resolve`, {
         method: "POST", body: JSON.stringify({ status, note }) });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) throw await errorFromResponse(r, "Resolve failed");
       await load();
       onResolved();
     } catch (e: any) { setErr(e?.message || "Resolve failed"); }
@@ -838,7 +982,7 @@ function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => voi
   if (loading) return <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Evaluating…</div>;
   if (off) return (
     <div style={{ color: "var(--text-muted)", fontSize: 12, maxWidth: 620 }}>
-      HxSentinel is not enabled for this workspace. Risk recommendations appear here once it is on.
+      HxSentinel is not enabled on this deployment. Risk recommendations appear here once it is on.
     </div>
   );
 
@@ -848,6 +992,8 @@ function RiskTab({ caseId, onResolved }: { caseId: string; onResolved: () => voi
         Deterministic recommendations with cited evidence — never a verdict. A human reviews and decides.
       </div>
       {err && <div style={{ color: "var(--status-failed)", fontSize: 12 }}>{err}</div>}
+
+      <OutcomeCard caseId={caseId} />
 
       {holds.filter((h) => h.status === "open").map((h) => (
         <div key={h.id} style={{ border: "1px solid var(--status-failed)", borderRadius: 8,
@@ -1407,8 +1553,10 @@ function SessionsTab({ caseId }: { caseId: string }) {
                 )}
                 <div style={{ display: "flex", gap: 12, alignItems: "center", color: "var(--text-muted)", fontSize: 11 }}>
                   {intel[s.id].transcript_document_id && (
-                    <a href={`/api/v1/documents/${intel[s.id].transcript_document_id}/download`}
-                      target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Transcript</a>
+                    <button
+                      onClick={() => openDocument(intel[s.id].transcript_document_id!, { filename: "transcript.txt" })}
+                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                               font: "inherit", color: "var(--accent)" }}>Transcript</button>
                   )}
                   {intel[s.id].language && <span>lang: {intel[s.id].language}</span>}
                   <span title={JSON.stringify(intel[s.id].model_versions)}>local models · assistive, not a verdict</span>
@@ -1598,6 +1746,11 @@ function StagesTab({
       });
       if (result.auto_advanced) {
         // All required steps done — refresh to show the new current stage
+        onRefresh();
+      } else if (result.advance_held_by_risk) {
+        // The stage WOULD have advanced but an HxSentinel hold stopped it.
+        // Silence here reads as "nothing happened" and the case looks stuck.
+        setErr("Stage advance is held by an open risk verification. Clear it on the ⚠ Risk tab.");
         onRefresh();
       }
     } catch (e: any) { setErr(e.message || "Failed"); }
@@ -2161,7 +2314,7 @@ function DocumentRequestForm({
       fd.append("description", `Step: ${stepId}`);
       const resp = await fetch(`/api/v1/cases/${caseId}/documents`, {
         method: "POST", body: fd,
-        headers: localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {},
+        headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {},
       });
       if (!resp.ok) throw new Error(await resp.text());
       const doc = await resp.json();

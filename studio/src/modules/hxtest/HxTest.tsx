@@ -7,12 +7,13 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { Button } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const TS = "/api/v1/testsuite";
 const HX = "/api/v1/hxtest";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {

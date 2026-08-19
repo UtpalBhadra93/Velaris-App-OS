@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { apiFetch } from "@shared/api/client";
 import { hxStream, type TraceEvent, type StreamEntry, type StreamGap } from "@shared/realtime/hxstream-singleton";
 import { useAuth } from "@/auth/AuthContext";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    HxStream — Live Execution & Interaction Stream (P46)
@@ -11,7 +12,7 @@ const API   = "/api/v1/hxstream";
 const CASES = "/api/v1/cases";
 
 function authHdr() {
-  const t = localStorage.getItem("helix_token") ?? "";
+  const t = getAccessToken() ?? "";
   return { Authorization: `Bearer ${t}` };
 }
 
@@ -288,7 +289,7 @@ export default function HxStream() {
     let stop = false;
     const poll = async () => {
       try {
-        const r = await apiFetch("/api/v1/hxstream/bus/backlog");
+        const r = await apiFetch("/hxstream/bus/backlog");
         if (r.ok && !stop) setBusBacklog(await r.json());
       } catch { /* transient — the next tick retries */ }
     };

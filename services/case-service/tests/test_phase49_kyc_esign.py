@@ -243,10 +243,14 @@ async def test_onfido_invalid_hmac_rejected(client: AsyncClient, session: AsyncS
 
 @pytest.mark.asyncio
 async def test_onfido_webhook_unknown_check_ok(client: AsyncClient):
+    """Rewritten 2026-08-15: unsigned is unverified, so an unknown check is
+    refused rather than processed. It previously asserted 200, pinning the
+    "no signature header → verified" shortcut that let an anonymous caller
+    mark an identity check `clear`."""
     payload = _onfido_webhook("chk_unknown")
     r = await client.post("/api/v1/identity/webhooks/onfido", content=payload,
                           headers={"content-type": "application/json"})
-    assert r.status_code == 200
+    assert r.status_code == 400
 
 
 # ── API — E-sign ──────────────────────────────────────────────────────────────
@@ -369,7 +373,9 @@ async def test_docusign_invalid_hmac_rejected(client: AsyncClient, session: Asyn
 
 @pytest.mark.asyncio
 async def test_docusign_unknown_envelope_ok(client: AsyncClient):
+    """Rewritten 2026-08-15 — see the Onfido case above. An unsigned DocuSign
+    webhook could otherwise mark an envelope `completed` and a document signed."""
     payload = _ds_webhook("env_unknown")
     r = await client.post("/api/v1/esign/webhooks/docusign", content=payload,
                           headers={"content-type": "application/json"})
-    assert r.status_code == 200
+    assert r.status_code == 400

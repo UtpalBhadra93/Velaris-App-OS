@@ -1,0 +1,411 @@
+"""Privilege authorization Phase 1 — the parity proof.
+
+The exit criterion for Phase 1 is a single claim: **for every action in the
+registry and every subject shape, `PrivilegeBackend` decides exactly what
+`require_role` decides today.** Everything else in this phase is machinery; this
+is the artefact that makes the Phase-3 cutover defensible, because after it a
+disagreement is a bug rather than an opinion.
+
+It also pins the two bypasses that are easy to lose in a rewrite — superadmin,
+and `is_admin` passing every gate — and the wildcard matching that is the
+classic way a privilege system quietly becomes permissive.
+
+Nothing here is enforced in the app yet. These tests would pass identically with
+the routers untouched, which is the point of Phase 1.
+
+Copyright (c) 2024-2026 Velaris Contributors
+SPDX-License-Identifier: BSL-1.1
+"""
+from __future__ import annotations
+
+import itertools
+
+import pytest
+
+from case_service.hxguard.actions import ACTIONS, GATE_ROLES, resource_of, verb_of
+from case_service.hxguard.privileges import (
+    KNOWN_ROLES,
+    SEEDED_ROLE_PRIVILEGES,
+    PrivilegeBackend,
+    effective_privileges,
+    evaluate_privileges,
+    legacy_role_gate_allows,
+    resource_matches,
+)
+
+
+class _Subject:
+    kind = "user"
+
+    def __init__(self, roles, privileges=None):
+        self.roles = list(roles)
+        self.privileges = privileges
+        self.is_admin = "admin" in self.roles
+
+
+#: Every shape a real subject takes at these gates: no roles, one role, and the
+#: role pairs that actually occur (an operator is rarely single-role).
+SUBJECT_ROLE_SETS = (
+    (),
+    *[(r,) for r in KNOWN_ROLES],
+    ("viewer", "designer"),
+    ("case_worker", "security"),
+    ("designer", "devops"),
+    ("manager", "viewer", "integration"),
+    ("admin", "viewer"),
+    ("superadmin", "viewer"),
+)
+
+
+# ── the parity table ──────────────────────────────────────────────
+
+class TestParity:
+    @pytest.mark.parametrize("action_name", sorted(ACTIONS))
+    def test_action_matches_the_legacy_gate_for_every_subject(self, action_name):
+        action = ACTIONS[action_name]
+        backend = PrivilegeBackend()
+        for roles in SUBJECT_ROLE_SETS:
+            expected = legacy_role_gate_allows(roles, action.legacy_roles)
+            got = backend.evaluate(_Subject(roles), action_name).allow
+            assert got == expected, (
+                f"{action_name} with roles={roles!r}: "
+                f"require_role({action.legacy_roles!r}) says {expected}, "
+                f"PrivilegeBackend says {got}"
+            )
+
+    def test_the_table_is_not_vacuous(self):
+        """A parity table that only ever compares False to False proves nothing.
+        Both answers must actually occur across the matrix."""
+        backend = PrivilegeBackend()
+        results = {
+            backend.evaluate(_Subject(roles), name).allow
+            for name in ACTIONS for roles in SUBJECT_ROLE_SETS
+        }
+        assert results == {True, False}
+
+    def test_every_gate_role_grants_something(self):
+        """If a role in the registry granted nothing, its seed is broken."""
+        backend = PrivilegeBackend()
+        for role in sorted(GATE_ROLES):
+            if role == "admin":
+                continue
+            granted = [n for n in ACTIONS
+                       if backend.evaluate(_Subject([role]), n).allow]
+            assert granted, f"role {role!r} appears in a gate but grants nothing"
+
+
+# ── the bypasses, pinned ──────────────────────────────────────────
+
+class TestBypasses:
+    def test_superadmin_passes_everything(self):
+        backend = PrivilegeBackend()
+        for name in ACTIONS:
+            d = backend.evaluate(_Subject(["superadmin"]), name)
+            assert d.allow and "break-glass" in d.reason
+
+    def test_admin_passes_everything(self):
+        backend = PrivilegeBackend()
+        assert all(backend.evaluate(_Subject(["admin"]), n).allow for n in ACTIONS)
+
+    def test_designer_gates_have_always_meant_designer_or_admin(self):
+        """`require_role("designer")` on the case-variable routes lists only
+        designer, but admin passes unconditionally. Seeding it designer-only
+        would be a silent tightening at cutover."""
+        backend = PrivilegeBackend()
+        designer_only = [a for a in ACTIONS.values() if a.legacy_roles == ("designer",)]
+        assert designer_only, "expected the case_variables gates"
+        for a in designer_only:
+            assert backend.evaluate(_Subject(["admin"]), a.name).allow
+            assert backend.evaluate(_Subject(["designer"]), a.name).allow
+
+    def test_roles_absent_from_every_gate_grant_nothing(self):
+        """viewer/case_worker/staff seed to an empty set. That is not an
+        oversight — it is what they can do at these gates.
+
+        `developer` and `finance` LEFT this list in Phase 4 step 2, which is the
+        point of the phase rather than a regression: both were named only by
+        imperative checks in handler bodies (`marketplace._require_developer_or_
+        admin`, `payments._has_finance_access`), so a scan of *dependency* gates
+        saw them nowhere and seeded them to nothing. `manager` left it too, via
+        `marketplace._can_view`."""
+        backend = PrivilegeBackend()
+        # `case_worker` left this list in Phase 5: `risk.assessment.read` named it in
+        # `ACTION_ROLES`, the case layer's own role table, which no earlier
+        # phase's detector could see because it was not a `require_role` gate.
+        for role in ("viewer", "staff"):
+            assert SEEDED_ROLE_PRIVILEGES[role] == []
+            assert not any(backend.evaluate(_Subject([role]), n).allow for n in ACTIONS)
+
+    def test_the_roles_that_phase_4_gave_privileges_to(self):
+        """The other half of the assertion above: these three now grant exactly
+        the actions their imperative checks named, and nothing else."""
+        backend = PrivilegeBackend()
+        for role, expected in (
+            # 2026-08-16: the omnichannel and RPA actions are the first NEW
+            # gates written natively rather than migrated, so these sets grow
+            # for the first time by intent rather than by discovery. A bot is
+            # developer work; a channel conversation is casework.
+            ("developer", {"marketplace.packages.publish", "marketplace.catalogue.read",
+                           "platform.dbmanager.read", "platform.dbmanager.reauth",
+                           "devconn.namespace.register",
+                           "bots.definitions.read", "bots.definitions.write",
+                           "bots.jobs.read", "bots.jobs.run"}),
+            ("finance", {"finance.details.read"}),
+            ("manager", {"marketplace.catalogue.read", "analytics.reports.read",
+                         "design.escalation.read", "risk.assessment.read", "risk.outcomes.write",
+                         "risk.rules.configure", "risk.scores.review", "casework.records.any",
+                         "channels.conversations.read", "channels.conversations.write",
+                         "channels.cti.pop", "bots.jobs.read", "bots.jobs.run"}),
+            ("case_worker", {"risk.assessment.read",
+                             "channels.conversations.read", "channels.conversations.write",
+                             "channels.cti.pop", "bots.jobs.read", "bots.jobs.run"}),
+        ):
+            granted = {n for n in ACTIONS if backend.evaluate(_Subject([role]), n).allow}
+            assert granted == expected, f"{role}: {granted ^ expected}"
+
+
+# ── fail-closed ───────────────────────────────────────────────────
+
+class TestFailClosed:
+    def test_unknown_action_is_denied(self):
+        d = PrivilegeBackend().evaluate(_Subject(["admin"]), "does.not.exist")
+        assert not d.allow and "unknown action" in d.reason
+
+    def test_unknown_action_is_denied_even_for_superadmin(self):
+        """Fail-closed outranks break-glass: an action that does not exist
+        cannot be granted, or a typo becomes a capability."""
+        d = PrivilegeBackend().evaluate(_Subject(["superadmin"]), "does.not.exist")
+        assert not d.allow
+
+    def test_a_non_user_subject_is_denied(self):
+        class Machine(_Subject):
+            kind = "connector"
+        assert not PrivilegeBackend().evaluate(Machine(["admin"]), next(iter(ACTIONS))).allow
+
+    def test_the_backend_never_raises(self):
+        backend = PrivilegeBackend()
+        for subject in (_Subject([]), _Subject(None or []), _Subject(["admin"], privileges=None)):
+            for name in ("", "x", "a.b.c", next(iter(ACTIONS))):
+                assert isinstance(backend.evaluate(subject, name).allow, bool)
+
+
+# ── wildcard matching ─────────────────────────────────────────────
+
+class TestWildcards:
+    def test_a_wildcard_matches_whole_segments_only(self):
+        assert resource_matches("compliance.*", "compliance.ledger")
+        assert resource_matches("compliance.*", "compliance.dr")
+        assert not resource_matches("compliance.*", "compliance_admin.ledger")
+        assert not resource_matches("compliance.*", "compliancex.ledger")
+
+    def test_bare_wildcard_matches_everything(self):
+        assert all(resource_matches("*", resource_of(n)) for n in ACTIONS)
+
+    def test_a_prefix_wildcard_never_matches_a_shorter_resource(self):
+        assert not resource_matches("compliance.ledger.*", "compliance")
+
+    @pytest.mark.parametrize("prefix", ["identity", "platform", "compliance", "portal"])
+    def test_a_domain_wildcard_grants_only_that_domain(self, prefix):
+        privs = [{"resource": f"{prefix}.*", "actions": ["*"]}]
+        for name in ACTIONS:
+            expected = resource_of(name).split(".")[0] == prefix
+            assert evaluate_privileges(privs, name) is expected, name
+
+
+# ── explicit deny ─────────────────────────────────────────────────
+
+class TestDeny:
+    def test_deny_beats_allow_regardless_of_order(self):
+        """'administers everything except identity' is unexpressible without
+        this, and some gates cannot migrate cleanly until it exists."""
+        target = "identity.users.write"
+        deny = {"resource": "identity.*", "actions": ["*"], "effect": "deny"}
+        allow = {"resource": "*", "actions": ["*"]}
+        assert not evaluate_privileges([allow, deny], target)
+        assert not evaluate_privileges([deny, allow], target)
+
+    def test_deny_is_scoped_to_what_it_names(self):
+        deny = {"resource": "identity.*", "actions": ["*"], "effect": "deny"}
+        allow = {"resource": "*", "actions": ["*"]}
+        assert evaluate_privileges([allow, deny], "compliance.ledger.read")
+
+    def test_no_seeded_role_uses_deny(self):
+        """The capability exists for Phase 3; nothing depends on it in Phase 1,
+        so it cannot change any current answer."""
+        for role, privs in SEEDED_ROLE_PRIVILEGES.items():
+            assert all("effect" not in p for p in privs), role
+
+
+# ── registry hygiene ──────────────────────────────────────────────
+
+class TestRegistry:
+    def test_every_action_is_well_formed(self):
+        for name, a in ACTIONS.items():
+            assert a.name == name
+            assert len(name.split(".")) >= 2, name
+            assert name.islower() and " " not in name, name
+            assert a.summary.strip(), name
+            assert a.kind in ("endpoint", "module"), name
+
+    def test_the_registry_covers_the_phase_0_inventory(self):
+        """49 endpoint actions from Phase 0, 19 from Phase 3.5's
+        `require_admin()` gates, 16 from Phase 4 step 2's imperative checks, and
+        6 from the 2026-08-15 sweep for routes that had **no gate at all** —
+        the population no previous phase could see, because a detector looking
+        for gates cannot find their absence — and 15 from Phase 5, which
+        migrated `RbacBackend.ACTION_ROLES`, the case layer's own role table,
+        plus the ReBAC admin/manager bypass.
+
+        The module count moves 12 → 17: Phase 4 added five whole-module gates
+        that were written as statements rather than as router dependencies
+        (hxdbmigrate, hxevolve, hxreplay, hxstream, hxdbmanager, marketplace
+        admin). A change here is the most consequential kind — a module action
+        governs every route in its file — so it is pinned exactly and moves only
+        with a phase."""
+        endpoint = [a for a in ACTIONS.values() if a.kind == "endpoint"]
+        module = [a for a in ACTIONS.values() if a.kind == "module"]
+        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6, (
+            f"{len(endpoint)} endpoint actions — expected 49 (Phase 0) + 19 "
+            f"(Phase 3.5) + 16 (Phase 4 step 2) + 6 (ungated sweep) + 15 "
+            f"(Phase 5: the case layer's ACTION_ROLES table + the ReBAC bypass) "
+            f"+ 4 (enterprise identity) + 5 (omnichannel channels.*) "
+            f"+ 6 (RPA bots.*)")
+        assert len(module) == 18, (
+            f"{len(module)} module actions — 12 from Phase 0, 6 from Phase 4")
+
+    def test_every_action_names_at_least_one_role(self):
+        """An action with no legacy roles has no parity oracle, so it would be
+        migrated on nothing but hope."""
+        for name, a in ACTIONS.items():
+            assert a.legacy_roles, name
+
+    def test_module_actions_use_the_access_verb(self):
+        """A router gate fires before the handler is known, so it cannot be read
+        or write. Naming one `.read` would promise a split that does not exist."""
+        for a in ACTIONS.values():
+            if a.kind == "module":
+                assert verb_of(a.name) == "access", a.name
+
+    def test_read_actions_outnumber_nothing_by_accident(self):
+        """33 of the 49 endpoint actions' gates are read-only in the inventory;
+        the registry must keep enough read verbs to make the read/write split
+        the real deliverable it is."""
+        reads = [a for a in ACTIONS.values()
+                 if a.kind == "endpoint" and verb_of(a.name) == "read"]
+        assert len(reads) >= 12, f"only {len(reads)} read actions — split lost?"
+
+
+# ── no behaviour change ───────────────────────────────────────────
+
+class TestCutoverLedger:
+    """Phase 3 is under way, so "nothing changed" is no longer the assertion.
+    What replaces it is a ledger: a router is either fully migrated or fully
+    not, and moving one is an explicit edit to `MIGRATED_ROUTERS`.
+
+    The guard this replaces caught its own author twice — once when Phase 2
+    added an endpoint, once when Phase 3 began. Keeping that property matters
+    more than keeping the exact number."""
+
+    def test_migrated_routers_have_no_role_gates_left(self):
+        from pathlib import Path
+        from case_service.hxguard.actions import MIGRATED_ROUTERS
+        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        for name in sorted(MIGRATED_ROUTERS):
+            src = (routers / name).read_text()
+            assert "require_role(" not in src, (
+                f"{name} is listed as migrated but still has role gates")
+            assert "hxguard.guard(" in src, f"{name} has no guard() calls"
+
+    def test_every_router_that_had_a_gate_is_in_the_ledger(self):
+        """A router losing its gates without joining the ledger is how a module
+        silently loses authorization — the failure this whole phase is built to
+        make impossible."""
+        from case_service.hxguard.actions import (
+            ACTION_BY_GATE, MIGRATED_ROUTERS, MODULE_ACTION_BY_FILE)
+        expected = {g.split("::")[0] for g in ACTION_BY_GATE} | set(MODULE_ACTION_BY_FILE)
+        assert expected == set(MIGRATED_ROUTERS), (
+            f"ledger drift: {expected ^ set(MIGRATED_ROUTERS)}")
+
+    def test_no_role_gate_remains_anywhere_in_the_api(self):
+        """Phase 3 completed 2026-08-13: all 110 gates migrated. Phase 3.5 added
+        the 56 `require_admin()` gates the original grep could not see.
+
+        **The gate spellings are listed, not pattern-matched, deliberately.**
+        Every under-count in this migration came from a detector that knew one
+        spelling and not the next: `require_role(` hid the router-level
+        `Depends(` gates, then it hid `require_admin()`. A new alias must be
+        added here by whoever introduces it."""
+        import re
+        from pathlib import Path
+        # The lookbehind matters: a router-local `_require_admin(user)` is an
+        # imperative check tracked by the legacy-site ledger below, not a
+        # dependency gate, and matching it here would make this test unfixable.
+        gate = re.compile(r"(?<![A-Za-z0-9_])(require_role|require_admin)\(")
+        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        offenders = {f.name: len(gate.findall(f.read_text()))
+                     for f in routers.glob("*.py") if gate.search(f.read_text())}
+        assert not offenders, f"role gates reappeared: {offenders}"
+
+    def test_every_gate_became_a_guard(self):
+        from pathlib import Path
+        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        guards = sum(f.read_text().count("hxguard.guard(") for f in routers.glob("*.py"))
+        assert guards >= 166, f"only {guards} guard() calls for 166 migrated gates"
+
+
+class TestLegacySiteLedger:
+    """Phase 3 migrated the *declarative* gates. The *imperative* ones — a
+    helper called inside a handler body that reads `user.is_admin` and raises
+    403 itself — were never counted, and there were more of them than there were
+    gates: 205 sites, 164 of them routed endpoints.
+
+    **Phase 4 step 2 migrated them and the ledger dropped to 75.** It is not
+    empty and should not become empty: what remains is superadmin identity
+    tests, display serialization, one deliberate literal role match, and
+    case-level `has_privilege` calls — see the header of `legacy_sites.txt`.
+    The ledger's job now is to keep that residue reviewed, so a genuinely new
+    role-name decision cannot slip in among things that merely look like one."""
+
+    def test_the_scan_matches_the_recorded_population(self):
+        from case_service.hxguard.legacy_sites import EXPECTED_SITES, scan
+        found = {f"{s.file}::{s.function}" for s in scan()}
+        new = found - EXPECTED_SITES
+        gone = EXPECTED_SITES - found
+        assert not new, (
+            f"{len(new)} new role-name decision site(s) — add an hxguard action "
+            f"instead, or record them in legacy_sites.txt: {sorted(new)[:8]}")
+        assert not gone, (
+            f"{len(gone)} recorded site(s) no longer decide on role names — "
+            f"delete their lines from legacy_sites.txt: {sorted(gone)[:8]}")
+
+    def test_the_ledger_is_not_empty_or_vacuous(self):
+        """A scan that silently matched nothing would pass the test above while
+        proving nothing — the same vacuity trap as the Phase-1 parity table."""
+        from case_service.hxguard.legacy_sites import scan, summary
+        s = summary()
+        assert s["sites"] > 40, s
+        assert s["endpoints"] > 0 and s["helpers"] > 0, s
+        assert any(x.direct for x in scan()), "no site reads a signal directly"
+
+    def test_migrated_routers_can_still_appear(self):
+        """Being in MIGRATED_ROUTERS is about gates, not bodies. `auth_real.py`
+        is migrated *and* still decides on `superadmin` inside handlers — both
+        are true, and conflating them is how the follow-up work got lost the
+        first time."""
+        from case_service.hxguard.actions import MIGRATED_ROUTERS
+        from case_service.hxguard.legacy_sites import scan
+        files = {s.file for s in scan()}
+        assert files & set(MIGRATED_ROUTERS), (
+            "expected at least one migrated router to still have imperative checks")
+
+    def test_the_four_phase35_routers_left_the_ledger_clean(self):
+        """storefront/checkout/testsuite/hxtest had 56 gates and no imperative
+        checks; after the cutover they should contribute no *unguarded*
+        endpoint sites."""
+        from case_service.hxguard.legacy_sites import scan
+        for name in ("storefront.py", "checkout.py", "testsuite.py", "hxtest.py"):
+            unguarded = [s for s in scan()
+                         if s.file == name and s.route and not s.also_guarded]
+            assert not unguarded, (
+                f"{name}: {len(unguarded)} endpoint(s) still decide on role "
+                f"names with no guard: {[s.function for s in unguarded][:5]}")

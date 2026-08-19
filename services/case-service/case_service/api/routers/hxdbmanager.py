@@ -31,8 +31,30 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
+from case_service.core.error_codes import (
+    DBM_AI_502,
+    DBM_AI_503,
+    DBM_BLOCKED_400,
+    DBM_CONFIRM_400,
+    DBM_DISABLED_404,
+    DBM_PGSTAT_503,
+    DBM_PREVIEW_403,
+    DBM_PREVIEW_404,
+    DBM_PREVIEW_410,
+    DBM_PROTECTED_403,
+    DBM_QUERY_400,
+    DBM_RATE_429,
+    DBM_REAUTH_401,
+    DBM_ROLE_403,
+    DBM_STMT_400,
+    DBM_TABLE_403,
+    DBM_TABLE_404,
+    DBM_TOOLARGE_413,
+    coded,
+)
 from case_service.db.introspection import get_introspector
 from case_service.db.models import (
     DbManagerQueryLogModel, DmlBeforeImageModel, HelixUserModel, RevokedSessionModel,
@@ -188,8 +210,14 @@ _DEV_TABLES: set[str] = {
 
 
 def _is_superadmin(user: AuthenticatedUser) -> bool:
-    """True only for superadmin role. AuthenticatedUser has no property for this yet."""
-    return user.has_privilege("*", "*") or "superadmin" in (user.roles or [])
+    """True only for superadmin — the permanent identity bypass.
+
+    Phase 4 step 2 dropped the `has_privilege("*", "*")` clause. That wildcard is
+    a legacy access-group entry meaning "every case-level resource"; treating it
+    as superadmin here let an access-group grant reach the Tier-1 tables this
+    function guards. `superadmin` stays a role-name test on purpose (design §2.3).
+    """
+    return "superadmin" in (user.roles or [])
 
 
 def _table_allowed(user: AuthenticatedUser, table_name: str) -> bool:
@@ -198,9 +226,14 @@ def _table_allowed(user: AuthenticatedUser, table_name: str) -> bool:
         return False  # nobody sees Keycloak internals via DB Manager
     if table_name in _SUPERADMIN_ONLY_TABLES:
         return _is_superadmin(user)
-    if user.is_admin or _is_superadmin(user):
-        return True   # admin sees everything except hidden + superadmin-only
-    if user.is_designer or user.has_role("developer"):
+    # Phase 4 step 2. The tiers are unchanged; only their inputs are. Note that
+    # `has_role("developer")` used to return True for ANY admin (has_role passes
+    # on is_admin), so the developer tier was never actually reached by an
+    # admin — the tier above already answered. Naming the two tiers separately
+    # keeps that ordering explicit instead of accidental.
+    if _is_superadmin(user) or hxguard.user_allows(user, "platform.dbmanager.access"):
+        return True   # sees everything except hidden + superadmin-only
+    if hxguard.user_allows(user, "platform.dbmanager.read"):
         return table_name in _DEV_TABLES
     return False
 
@@ -213,13 +246,13 @@ def _require_table_access(user: AuthenticatedUser, table_name: str) -> None:
     # as 404 BEFORE any DB query. Without this, e.g. a NUL byte reaches the
     # information_schema lookup and Postgres raises an encoding error (500), not 404.
     if not _VALID_TABLE_NAME.match(table_name or "") or len(table_name) > 63:
-        raise HTTPException(404, f"Table '{table_name}' not found")
+        raise coded(404, DBM_TABLE_404, f"Table '{table_name}' not found")
     if not _table_allowed(user, table_name):
         if table_name in _HIDDEN_TABLES:
-            raise HTTPException(404, f"Table '{table_name}' not found")
+            raise coded(404, DBM_TABLE_404, f"Table '{table_name}' not found")
         if table_name in _SUPERADMIN_ONLY_TABLES:
-            raise HTTPException(403, f"Table '{table_name}' requires superadmin access")
-        raise HTTPException(403, f"Table '{table_name}' is not accessible for your role")
+            raise coded(403, DBM_TABLE_403, f"Table '{table_name}' requires superadmin access")
+        raise coded(403, DBM_TABLE_403, f"Table '{table_name}' is not accessible for your role")
 
 
 # ── Credential masking — Tier 1 always hidden, no permission overrides it ─────
@@ -453,24 +486,26 @@ def _require_admin(user: AuthenticatedUser):
     """SQL editor, DDL, DML — admin/superadmin only."""
     from case_service.api.routers.releases import is_feature_enabled
     if not is_feature_enabled("hxdbmanager"):
-        raise HTTPException(404, "HxDB Manager is not available on this instance")
-    if not (user.is_admin or _is_superadmin(user)):
-        raise HTTPException(403, "DB Manager SQL editor requires admin role")
+        raise coded(404, DBM_DISABLED_404, "HxDB Manager is not available on this instance")
+    if not (_is_superadmin(user) or hxguard.user_allows(user, "platform.dbmanager.access")):
+        raise coded(403, DBM_ROLE_403,
+                    "DB Manager SQL editor requires the platform.dbmanager.access privilege")
 
 
 def _require_db_viewer(user: AuthenticatedUser):
     """Schema browser + Table viewer — admin, superadmin, designer, or developer."""
     from case_service.api.routers.releases import is_feature_enabled
     if not is_feature_enabled("hxdbmanager"):
-        raise HTTPException(404, "HxDB Manager is not available on this instance")
-    if not (user.is_admin or user.is_designer or user.has_role("developer") or _is_superadmin(user)):
-        raise HTTPException(403, "DB Manager requires admin or developer role")
+        raise coded(404, DBM_DISABLED_404, "HxDB Manager is not available on this instance")
+    if not (_is_superadmin(user) or hxguard.user_allows(user, "platform.dbmanager.read")):
+        raise coded(403, DBM_ROLE_403,
+                    "DB Manager requires the platform.dbmanager.read privilege")
 
 
 def _require_write(user: AuthenticatedUser):
     """DDL and sensitive-data expose — superadmin only."""
     if not _is_superadmin(user):
-        raise HTTPException(403, "DB Manager write access requires superadmin role")
+        raise coded(403, DBM_ROLE_403, "DB Manager write access requires superadmin role")
 
 
 def _has_active_elevation(user_id: str) -> bool:
@@ -799,7 +834,7 @@ async def get_table_schema(
     insp = get_introspector(session)
     # Validate table exists (prevent injection via table_name in subsequent queries)
     if not await insp.table_exists(session, table_name):
-        raise HTTPException(404, f"Table '{table_name}' not found")
+        raise coded(404, DBM_TABLE_404, f"Table '{table_name}' not found")
 
     return {
         "table":   table_name,
@@ -828,19 +863,19 @@ async def dbview_reauth(
     """
     from case_service.api.routers.releases import is_feature_enabled
     if not is_feature_enabled("hxdbmanager"):
-        raise HTTPException(404, "HxDB Manager is not available on this instance")
+        raise coded(404, DBM_DISABLED_404, "HxDB Manager is not available on this instance")
     if not current_user.has_privilege("db_manager", "view_sensitive"):
-        raise HTTPException(403, "DBView requires the 'DB Manager / View masked account data' privilege")
+        raise coded(403, DBM_ROLE_403, "DBView requires the 'DB Manager / View masked account data' privilege")
 
     hu = await session.get(HelixUserModel, uuid.UUID(current_user.user_id))
     if not hu or not hu.password_hash:
-        raise HTTPException(401, "Password re-authentication is not available for this account")
+        raise coded(401, DBM_REAUTH_401, "Password re-authentication is not available for this account")
     try:
         ok = bcrypt.checkpw(body.password.encode(), hu.password_hash.encode())
     except Exception:
         ok = False
     if not ok:
-        raise HTTPException(401, "Incorrect password")
+        raise coded(401, DBM_REAUTH_401, "Incorrect password")
 
     expiry = time.monotonic() + _DBVIEW_ELEVATION_TTL_S
     async with _DBVIEW_ELEVATION_LOCK:
@@ -908,7 +943,7 @@ async def get_table_rows(
     insp = get_introspector(session)
     # Validate table
     if not await insp.table_exists(session, table_name):
-        raise HTTPException(404, f"Table '{table_name}' not found")
+        raise coded(404, DBM_TABLE_404, f"Table '{table_name}' not found")
 
     # Validate sort column if provided
     order_clause = ""
@@ -984,14 +1019,14 @@ async def execute_query(
     # Service accounts (HxSync, HxDeploy) are exempt — they run at volume and
     # are trusted internal callers, not human admins.
     if not _is_service_account(current_user) and not await _check_execute_rate(current_user.user_id):
-        raise HTTPException(429, f"Rate limit exceeded: max {_EXECUTE_RATE_LIMIT} queries per {_EXECUTE_RATE_WINDOW}s per user.")
+        raise coded(429, DBM_RATE_429, f"Rate limit exceeded: max {_EXECUTE_RATE_LIMIT} queries per {_EXECUTE_RATE_WINDOW}s per user.")
 
     sql = body.sql.strip()
     if not sql:
         raise HTTPException(400, "Empty query")
 
     if len(sql) > 50_000:
-        raise HTTPException(413, "SQL body too large (max 50KB)")
+        raise coded(413, DBM_TOOLARGE_413, "SQL body too large (max 50KB)")
 
     _tid = str(getattr(current_user, "tenant_id", "system"))
 
@@ -1000,7 +1035,7 @@ async def execute_query(
     if abuse_msg:
         await _log_query(session, _tid, current_user.user_id, sql, "rejected", error_detail=abuse_msg)
         await _fire_breach_event(session, current_user, "HIGH", "ABUSE_PATTERN_BLOCKED", abuse_msg, sql)
-        raise HTTPException(400, f"Query blocked: {abuse_msg}")
+        raise coded(400, DBM_BLOCKED_400, f"Query blocked: {abuse_msg}")
 
     kind = _classify(sql)
 
@@ -1008,12 +1043,12 @@ async def execute_query(
     if kind == "ddl":
         await _log_query(session, _tid, current_user.user_id, sql, "rejected")
         await _fire_breach_event(session, current_user, "MEDIUM", "DDL_VIA_EXECUTE", "DDL in /execute", sql)
-        raise HTTPException(400, "DDL statements are not allowed via /execute. Use /ddl with confirm=true.")
+        raise coded(400, DBM_STMT_400, "DDL statements are not allowed via /execute. Use /ddl with confirm=true.")
     if kind == "unknown":
         await _log_query(session, _tid, current_user.user_id, sql, "rejected",
                          error_detail="Unrecognised statement type")
         await _fire_breach_event(session, current_user, "HIGH", "UNKNOWN_STATEMENT", "Unrecognised SQL type", sql)
-        raise HTTPException(400, "Unrecognised statement type. Only SELECT and DML are permitted via /execute.")
+        raise coded(400, DBM_STMT_400, "Unrecognised statement type. Only SELECT and DML are permitted via /execute.")
 
     # DML requires write permission (superadmin) and may not target protected tables.
     if kind == "dml":
@@ -1022,7 +1057,7 @@ async def execute_query(
         if protected_msg:
             await _log_query(session, _tid, current_user.user_id, sql, "rejected", error_detail=protected_msg)
             await _fire_breach_event(session, current_user, "HIGH", "PROTECTED_TABLE_WRITE", protected_msg, sql)
-            raise HTTPException(403, protected_msg)
+            raise coded(403, DBM_PROTECTED_403, protected_msg)
 
     row_limit = min(body.row_limit or 1000, _ROW_LIMIT if not body.confirmed_unlimited else _ROW_LIMIT)
 
@@ -1073,7 +1108,7 @@ async def execute_query(
                      duration_ms, rows_affected, error_detail)
 
     if status != "success":
-        raise HTTPException(400, error_detail or "Query failed")
+        raise coded(400, DBM_QUERY_400, error_detail or "Query failed")
 
     dbview = _user_has_dbview(current_user)
     masked_rows, had_sensitive, revealed_tier2 = _mask_rows(rows, user_has_dbview=dbview)
@@ -1109,14 +1144,14 @@ async def execute_ddl(
     _require_write(current_user)
 
     if not body.confirm:
-        raise HTTPException(400, "DDL requires confirm=true and a reason.")
+        raise coded(400, DBM_CONFIRM_400, "DDL requires confirm=true and a reason.")
     if not body.reason or len(body.reason.strip()) < 5:
-        raise HTTPException(400, "A reason is required for DDL operations.")
+        raise coded(400, DBM_CONFIRM_400, "A reason is required for DDL operations.")
 
     sql = body.sql.strip()
     kind = _classify(sql)
     if kind not in ("ddl",):
-        raise HTTPException(400, "Only DDL statements are accepted at this endpoint.")
+        raise coded(400, DBM_STMT_400, "Only DDL statements are accepted at this endpoint.")
 
     t0 = time.monotonic()
     status = "success"
@@ -1135,7 +1170,7 @@ async def execute_ddl(
                      status, duration_ms, None, error_detail)
 
     if status != "success":
-        raise HTTPException(400, error_detail)
+        raise coded(400, DBM_QUERY_400, error_detail)
     return {"ok": True, "duration_ms": duration_ms}
 
 
@@ -1157,7 +1192,7 @@ async def export_table(
 
     insp = get_introspector(session)
     if not await insp.table_exists(session, table_name):
-        raise HTTPException(404, f"Table '{table_name}' not found")
+        raise coded(404, DBM_TABLE_404, f"Table '{table_name}' not found")
 
     result = await session.execute(
         text(f'SELECT * FROM {insp.quote_ident(table_name)} LIMIT :lim'), {"lim": limit})
@@ -1231,12 +1266,12 @@ async def explain_query(
     # Accepting DML here would cause EXPLAIN ANALYZE to actually execute the write,
     # so we restrict to SELECT and let the planner show estimated costs only.
     if _classify(sql) != "select":
-        raise HTTPException(400, "EXPLAIN only supports SELECT queries")
+        raise coded(400, DBM_STMT_400, "EXPLAIN only supports SELECT queries")
     try:
         plan = await get_introspector(session).explain_json(session, sql)
         return {"plan": plan}
     except Exception as exc:
-        raise HTTPException(400, str(exc))
+        raise coded(400, DBM_QUERY_400, str(exc))
 
 
 # ── Phase 3: AI SQL assistant ─────────────────────────────────────────────────
@@ -1256,7 +1291,7 @@ async def ai_generate_sql(
 
     from case_service.hxnexus.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
-        raise HTTPException(503, "HxNexus AI is not available")
+        raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 
     # Build schema context
     insp = get_introspector(session)
@@ -1277,10 +1312,10 @@ async def ai_generate_sql(
         raw = await llm.complete(body.question, system=system, temperature=0.1)
     except Exception as exc:
         log.warning("HxNexus AI call failed: %s", exc)
-        raise HTTPException(503, "HxNexus did not respond. Check that your AI backend (Ollama/Anthropic) is running and configured.")
+        raise coded(503, DBM_AI_503, "HxNexus did not respond. Check that your AI backend (Ollama/Anthropic) is running and configured.")
 
     if not raw or not raw.strip():
-        raise HTTPException(502, "HxNexus returned an empty response. The AI model may be overloaded or misconfigured.")
+        raise coded(502, DBM_AI_502, "HxNexus returned an empty response. The AI model may be overloaded or misconfigured.")
 
     # Strip markdown code fences properly (strip() removes characters, not substrings)
     cleaned = _re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=_re.IGNORECASE)
@@ -1290,10 +1325,10 @@ async def ai_generate_sql(
         result = _json.loads(cleaned)
     except _json.JSONDecodeError:
         log.warning("AI SQL: could not parse JSON from response: %s", cleaned[:200])
-        raise HTTPException(502, f"HxNexus returned a response that could not be parsed as JSON. Raw response (first 200 chars): {cleaned[:200]}")
+        raise coded(502, DBM_AI_502, f"HxNexus returned a response that could not be parsed as JSON. Raw response (first 200 chars): {cleaned[:200]}")
 
     if not result.get("sql"):
-        raise HTTPException(502, "HxNexus did not return a SQL query. Try rephrasing your question.")
+        raise coded(502, DBM_AI_502, "HxNexus did not return a SQL query. Try rephrasing your question.")
 
     return {
         "sql":            result.get("sql", ""),
@@ -1313,16 +1348,16 @@ async def ai_optimise_query(
 
     from case_service.hxnexus.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
-        raise HTTPException(503, "HxNexus AI is not available")
+        raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 
     sql = body.sql.strip()
     if _classify(sql) != "select":
-        raise HTTPException(400, "AI optimiser only supports SELECT queries")
+        raise coded(400, DBM_STMT_400, "AI optimiser only supports SELECT queries")
     insp = get_introspector(session)
     try:
         plan = await insp.explain_json(session, sql)
     except Exception as exc:
-        raise HTTPException(400, f"EXPLAIN failed: {exc}")
+        raise coded(400, DBM_QUERY_400, f"EXPLAIN failed: {exc}")
 
     import json as _json, re as _re
     _dialect_name = {"postgresql": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB"}[insp.name]
@@ -1337,10 +1372,10 @@ async def ai_optimise_query(
         raw = await llm.complete(_json.dumps(plan, default=str), system=system, temperature=0.2)
     except Exception as exc:
         log.warning("HxNexus AI optimise call failed: %s", exc)
-        raise HTTPException(503, "HxNexus did not respond. Check that your AI backend is running.")
+        raise coded(503, DBM_AI_503, "HxNexus did not respond. Check that your AI backend is running.")
 
     if not raw or not raw.strip():
-        raise HTTPException(502, "HxNexus returned an empty response.")
+        raise coded(502, DBM_AI_502, "HxNexus returned an empty response.")
 
     cleaned = _re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=_re.IGNORECASE)
     cleaned = _re.sub(r'\s*```$', '', cleaned).strip()
@@ -1349,7 +1384,7 @@ async def ai_optimise_query(
         return _json.loads(cleaned)
     except _json.JSONDecodeError:
         log.warning("AI optimise: could not parse JSON: %s", cleaned[:200])
-        raise HTTPException(502, f"HxNexus returned a response that could not be parsed. Raw: {cleaned[:200]}")
+        raise coded(502, DBM_AI_502, f"HxNexus returned a response that could not be parsed. Raw: {cleaned[:200]}")
 
 
 # ── Phase 4: Slow queries ─────────────────────────────────────────────────────
@@ -1375,13 +1410,13 @@ async def get_index_advice(
 
     from case_service.hxnexus.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
-        raise HTTPException(503, "HxNexus AI is not available")
+        raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 
     insp = get_introspector(session)
     stats = await insp.slow_queries(session, 20)
     if not stats.get("available"):
-        raise HTTPException(503, stats.get("message")
-                            or "Slow-query statistics are not available on this backend.")
+        raise coded(503, DBM_PGSTAT_503, stats.get("message")
+                     or "Slow-query statistics are not available on this backend.")
     slow = stats["queries"]
 
     import json as _json
@@ -1397,10 +1432,10 @@ async def get_index_advice(
         raw = await llm.complete(_json.dumps(slow, default=str), system=system, temperature=0.2)
     except Exception as exc:
         log.warning("HxNexus index advisor call failed: %s", exc)
-        raise HTTPException(503, "HxNexus did not respond. Check that your AI backend is running.")
+        raise coded(503, DBM_AI_503, "HxNexus did not respond. Check that your AI backend is running.")
 
     if not raw or not raw.strip():
-        raise HTTPException(502, "HxNexus returned an empty response.")
+        raise coded(502, DBM_AI_502, "HxNexus returned an empty response.")
 
     cleaned = _re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=_re.IGNORECASE)
     cleaned = _re.sub(r'\s*```$', '', cleaned).strip()
@@ -1409,7 +1444,7 @@ async def get_index_advice(
         return _json.loads(cleaned)
     except _json.JSONDecodeError:
         log.warning("Index advisor: could not parse JSON: %s", cleaned[:200])
-        raise HTTPException(502, f"HxNexus returned a response that could not be parsed. Raw: {cleaned[:200]}")
+        raise coded(502, DBM_AI_502, f"HxNexus returned a response that could not be parsed. Raw: {cleaned[:200]}")
 
 
 # ── DML Preview + Confirm (rollback-safe DML) ─────────────────────────────────
@@ -1435,19 +1470,19 @@ async def dml_preview(
     if not sql:
         raise HTTPException(400, "Empty query")
     if len(sql) > 50_000:
-        raise HTTPException(413, "SQL body too large (max 50KB)")
+        raise coded(413, DBM_TOOLARGE_413, "SQL body too large (max 50KB)")
 
     abuse_msg = _check_abuse(sql)
     if abuse_msg:
-        raise HTTPException(400, f"Query blocked: {abuse_msg}")
+        raise coded(400, DBM_BLOCKED_400, f"Query blocked: {abuse_msg}")
 
     kind = _classify(sql)
     if kind != "dml":
-        raise HTTPException(400, "Only DML (INSERT/UPDATE/DELETE) is accepted at /dml/preview")
+        raise coded(400, DBM_STMT_400, "Only DML (INSERT/UPDATE/DELETE) is accepted at /dml/preview")
 
     protected_msg = _check_protected_write(sql)
     if protected_msg:
-        raise HTTPException(403, protected_msg)
+        raise coded(403, DBM_PROTECTED_403, protected_msg)
 
     # Add RETURNING * so we can show which rows will be affected. RETURNING is
     # Postgres-only; on MySQL the preview reports the affected-row COUNT (via
@@ -1474,7 +1509,7 @@ async def dml_preview(
         finally:
             await sp.rollback()  # always rollback — this is preview only
     except Exception as exc:
-        raise HTTPException(400, f"Preview failed: {exc}")
+        raise coded(400, DBM_QUERY_400, f"Preview failed: {exc}")
 
     # Purge expired previews
     now = time.time()
@@ -1524,12 +1559,12 @@ async def dml_confirm(
 
     preview = _DML_PREVIEWS.get(preview_id)
     if not preview:
-        raise HTTPException(404, "Preview not found or expired")
+        raise coded(404, DBM_PREVIEW_404, "Preview not found or expired")
     if preview["user_id"] != current_user.user_id:
-        raise HTTPException(403, "Preview belongs to a different user")
+        raise coded(403, DBM_PREVIEW_403, "Preview belongs to a different user")
     if time.time() > preview["expires_at"]:
         _DML_PREVIEWS.pop(preview_id, None)
-        raise HTTPException(410, "Preview has expired (5-minute limit). Re-run /dml/preview.")
+        raise coded(410, DBM_PREVIEW_410, "Preview has expired (5-minute limit). Re-run /dml/preview.")
 
     sql  = preview["sql"]
     kind = preview["kind"]
@@ -1583,7 +1618,7 @@ async def dml_confirm(
     _DML_PREVIEWS.pop(preview_id, None)
 
     if status != "success":
-        raise HTTPException(400, error_detail or "DML execution failed")
+        raise coded(400, DBM_QUERY_400, error_detail or "DML execution failed")
 
     dbview = _user_has_dbview(current_user)
     masked_rows, had_sensitive, revealed_tier2 = _mask_rows(result_rows, user_has_dbview=dbview)

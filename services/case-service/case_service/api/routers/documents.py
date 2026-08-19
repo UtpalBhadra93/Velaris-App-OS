@@ -4,11 +4,13 @@ import uuid
 from typing import Optional
 
 from fastapi import (
+    Request,
     APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile,
 )
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard as _hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.core.error_codes import (
@@ -28,6 +30,71 @@ from case_service.documents import DocumentService, generate_preview
 from case_service.storage.backend import StorageError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+# ── Who may read a document (2026-08-15) ──────────────────────────
+#
+# Until now: nobody checked. These routes had no auth dependency and no check in
+# their bodies, so every document in the deployment was readable by UUID.
+#
+# They cannot simply take `Depends(get_current_user)`, because the customer
+# portal hands ANONYMOUS customers download links pointing here — that is why the
+# hole existed. So there are exactly two ways in, and no third:
+#
+#   1. an authenticated caller who passes the case-level ReBAC check, or
+#   2. a signed, expiring, single-document grant minted by the portal at the
+#      moment it made the same decision (documents/access_tokens.py).
+#
+# Order matters: the grant is checked FIRST and returns immediately. A portal
+# customer has no account, so falling through to `get_current_user` would 401
+# them — the grant has to be able to answer on its own.
+
+async def _authorize_document_read(
+    session: AsyncSession, request: Request, document_id: uuid.UUID,
+) -> None:
+    """Raise 404 unless the caller may read this document.
+
+    404 rather than 403, matching the case-action anti-oracle: a caller who may
+    not read a document must not be able to confirm that the id exists.
+    """
+    from case_service.documents import access_tokens
+    from case_service.db.models import DocumentModel
+
+    if access_tokens.verify(request.query_params.get("grant"), document_id):
+        return
+
+    user = await _optional_user(request)
+    if user is None:
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
+
+    doc = await session.get(DocumentModel, document_id)
+    if doc is None or doc.is_deleted:
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
+    if doc.case_id is not None:
+        await _hxguard.require_case(session, user, "case.read", doc.case_id)
+
+
+async def _optional_user(request: Request) -> AuthenticatedUser | None:
+    """`get_current_user`, but absent credentials is None rather than a 401.
+
+    Needed because these routes serve both an operator with a Bearer token and a
+    portal customer with a grant; only after BOTH fail is the answer a refusal.
+    """
+    from case_service.auth.dependencies import get_current_user as _gcu
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+    try:
+        return await _gcu(
+            request,
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=header[7:]),
+        )
+    except Exception:
+        return None            # an invalid token is not an identity
+
+
 service = DocumentService()
 
 
@@ -80,7 +147,9 @@ async def upload_document(
     uploaded_by: Optional[str] = Form(None),
     tenant_id: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    await _hxguard.require_case(session, user, "case.update", case_id)
     from case_service.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
     raw_name = file.filename or "unnamed"
     ok, reason = validate_upload_filename(raw_name, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
@@ -129,8 +198,10 @@ async def upload_document(
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: uuid.UUID,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    await _authorize_document_read(session, request, document_id)
     from case_service.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
@@ -141,9 +212,11 @@ async def get_document(
 @router.get("/{document_id}/download")
 async def download_document(
     document_id: uuid.UUID,
+    request: Request,
     version: Optional[int] = Query(None),
     session: AsyncSession = Depends(get_session),
 ):
+    await _authorize_document_read(session, request, document_id)
     try:
         data, filename, content_type = await service.download(session, document_id, version)
     except ValueError as e:
@@ -157,8 +230,10 @@ async def download_document(
 @router.get("/{document_id}/preview")
 async def preview_document(
     document_id: uuid.UUID,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    await _authorize_document_read(session, request, document_id)
     try:
         data, _, content_type = await service.download(session, document_id)
     except ValueError as e:
@@ -181,7 +256,7 @@ async def delete_document(
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
 
     case = await session.get(CaseInstanceModel, doc.case_id)
-    is_admin = user.is_admin or user.has_role("admin")
+    is_admin = _hxguard.user_allows(user, "docs.files.delete")
     is_case_owner = case is not None and case.created_by == user.user_id
     if not (is_admin or is_case_owner):
         raise coded(
@@ -199,7 +274,14 @@ async def upload_new_version(
     file: UploadFile = File(...),
     uploaded_by: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    from case_service.db.models import DocumentModel
+    _doc = await session.get(DocumentModel, document_id)
+    if _doc is None or _doc.is_deleted:
+        raise coded(404, DOC_NOTFOUND_404, "Document not found")
+    if _doc.case_id is not None:
+        await _hxguard.require_case(session, user, "case.update", _doc.case_id)
     data = await file.read()
     try:
         ver = await service.upload_version(
@@ -225,7 +307,7 @@ async def delete_document_version(
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
 
     case = await session.get(CaseInstanceModel, doc.case_id)
-    is_admin = user.is_admin or user.has_role("admin")
+    is_admin = _hxguard.user_allows(user, "docs.files.delete")
     is_case_owner = case is not None and case.created_by == user.user_id
     if not (is_admin or is_case_owner):
         raise HTTPException(
@@ -246,8 +328,10 @@ async def delete_document_version(
 @router.get("/{document_id}/versions", response_model=list[DocumentVersionResponse])
 async def list_versions(
     document_id: uuid.UUID,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    await _authorize_document_read(session, request, document_id)
     versions = await service.list_versions(session, document_id)
     return [_ver_to_response(v) for v in versions]
 
@@ -256,7 +340,11 @@ async def list_versions(
 async def list_case_documents(
     case_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # No grant path here: a grant is bound to ONE document, and this lists a
+    # whole case. The portal has its own case-scoped listing endpoint.
+    await _hxguard.require_case(session, user, "case.read", case_id)
     docs = await service.list_by_case(session, case_id)
     return [_doc_to_response(d) for d in docs]
 
@@ -302,7 +390,6 @@ import io as _io
 import uuid as _uuid
 from datetime import date as _date
 
-from case_service import hxguard as _hxguard
 from case_service.db.models import DocumentModel as _DocModel, DocumentVerificationModel as _DocVerif
 from sqlalchemy import select as _select
 

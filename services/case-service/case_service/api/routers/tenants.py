@@ -17,10 +17,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
+from case_service import hxguard
 from case_service.db.session import get_session
 from case_service.tenancy import repository as tenant_repo
 
-router = APIRouter(prefix="/tenants", tags=["tenants"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(prefix="/tenants", tags=["tenants"], dependencies=[Depends(hxguard.guard("platform.tenants.access"))])
 
 
 class TenantCreate(BaseModel):

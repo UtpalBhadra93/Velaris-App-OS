@@ -48,8 +48,11 @@ async def websocket_endpoint(
     if token:
         try:
             settings = get_settings()
+            # public_key or this verifies HS256 only — see hxstream.py. On an
+            # RS256 deployment the decode raised and every socket closed 4001.
             claims = decode_jwt_token(token, secret=settings.auth_secret,
-                                      issuer=settings.auth_issuer, audience=settings.auth_audience)
+                                      issuer=settings.auth_issuer, audience=settings.auth_audience,
+                                      public_key=settings.auth_rsa_public_key or "")
             authenticated_user_id = claims.get("sub", user_id)
         except Exception:
             await websocket.close(code=4001, reason="Invalid token")

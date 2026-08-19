@@ -5,11 +5,12 @@
 import React, { useState, useEffect } from "react";
 import { useTheme } from "@/theme/ThemeContext";
 import { VoiceInput, appendTranscript } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/graph";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {

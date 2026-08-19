@@ -19,6 +19,64 @@ function authHeaders(token?: string): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+/** Open or save a document through an authenticated request.
+ *
+ * A plain `<a href="/api/v1/documents/{id}/download">` cannot be used: browser
+ * navigation does not send the `Authorization` header, and since 2026-08-15
+ * those routes require either a Bearer token (operators) or a signed grant
+ * (portal customers). Before that they were unauthenticated, which is exactly
+ * why the anchors worked — and why every document in the deployment was
+ * readable by UUID.
+ *
+ * Portal code must NOT use this: it has no token, and the server already hands
+ * it a `download_url` carrying a grant. Use that URL as-is.
+ */
+export async function openDocument(
+  documentId: string,
+  opts: { preview?: boolean; filename?: string } = {},
+): Promise<void> {
+  const path = opts.preview ? "preview" : "download";
+  const res = await fetch(`/api/v1/documents/${documentId}/${path}`, {
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw await errorFromResponse(res, `Document ${path} failed (${res.status})`);
+
+  const url = URL.createObjectURL(await res.blob());
+  try {
+    if (opts.preview) {
+      window.open(url, "_blank", "noreferrer");
+    } else {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = opts.filename || "document";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  } finally {
+    // Give the browser a moment to start the download/tab before revoking.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+}
+
+/** Parse a success response, tolerating an empty body.
+ *
+ * A 204 has no body by definition, so `res.json()` on one always rejects with
+ * "Unexpected end of JSON input" — which surfaced as a *failed* delete even
+ * though the server had already deleted the row, leaving the caller's list
+ * stale and an error alert on screen. Every DELETE in this file returns 204.
+ */
+async function parseBody<T>(res: Response): Promise<T> {
+  if (res.status === 204) return null as T;
+  try {
+    return await res.json();
+  } catch {
+    // An empty 200 lands here too. Either way the caller wanted a value that
+    // is not there, and null says so better than a SyntaxError does.
+    return null as T;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   // ...options is spread FIRST: a caller passing its own `headers` must merge
   // with (not replace) the auth header — replacing it drops Authorization and
@@ -43,7 +101,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         const body = await retry.json().catch(() => ({ detail: retry.statusText }));
         throw new ApiError(retry.status, typeof body.detail === "object" ? JSON.stringify(body.detail) : (body.detail || retry.statusText), codedFrom(body));
       }
-      return retry.json();
+      return parseBody<T>(retry);
     }
     window.dispatchEvent(new Event("velaris:unauthorized"));
     throw new ApiError(401, "Session expired. Please log in again.");
@@ -54,7 +112,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(res.status, typeof body.detail === 'object' ? JSON.stringify(body.detail) : (body.detail || res.statusText), codedFrom(body));
   }
 
-  return res.json();
+  return parseBody<T>(res);
 }
 
 export class ApiError extends Error {
@@ -239,10 +297,24 @@ import type {
 
 const CASE_BASE = "/api/v1";
 
+/**
+ * Join a caller-supplied path onto CASE_BASE, tolerating a path that already
+ * carries the prefix.
+ *
+ * Callers are meant to pass `/risk/packs`, not `/api/v1/risk/packs`. Passing the
+ * full path used to produce `/api/v1/api/v1/risk/packs` — a plain routing 404
+ * that screens then misread as "feature not enabled", because HxSentinel's
+ * dark-mode gate answers 404 by design and the two are indistinguishable by
+ * status alone. Normalising here makes both spellings correct.
+ */
+function caseUrl(path: string): string {
+  return path.startsWith(`${CASE_BASE}/`) ? path : `${CASE_BASE}${path}`;
+}
+
 async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
   // Same spread order as request(): options first, headers last — a caller's
   // `headers` must never replace the merged object and drop Authorization.
-  const res = await fetch(`${CASE_BASE}${path}`, {
+  const res = await fetch(caseUrl(path), {
     ...options,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...options?.headers },
   });
@@ -250,7 +322,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
   if (res.status === 401) {
     const newToken = await attemptRefresh();
     if (newToken) {
-      const retry = await fetch(`${CASE_BASE}${path}`, {
+      const retry = await fetch(caseUrl(path), {
         ...options,
         headers: { "Content-Type": "application/json", ...authHeaders(newToken), ...options?.headers },
       });
@@ -262,7 +334,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
         const body = await retry.json().catch(() => ({ detail: retry.statusText }));
         throw new ApiError(retry.status, body.detail || retry.statusText, codedFrom(body));
       }
-      return retry.json();
+      return parseBody<T>(retry);
     }
     window.dispatchEvent(new Event("velaris:unauthorized"));
     throw new ApiError(401, "Session expired. Please log in again.");
@@ -273,7 +345,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(res.status, body.detail || res.statusText, codedFrom(body));
   }
 
-  return res.json();
+  return parseBody<T>(res);
 }
 
 /* ── HxStream ──────────────────────────────────────────────────── */
@@ -468,7 +540,7 @@ export async function completeStep(
   caseId: string,
   stepId: string,
   body: { stage_id: string; step_type: string; status: string; data: Record<string, unknown> }
-): Promise<{ auto_advanced: boolean; status: string; [k: string]: unknown }> {
+): Promise<{ auto_advanced: boolean; advance_held_by_risk?: boolean; status: string; [k: string]: unknown }> {
   return caseRequest(`/cases/${caseId}/steps/${stepId}/complete`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -1102,6 +1174,231 @@ export async function listWebhookEvents(): Promise<{ events: string[] }> {
 
 export async function deleteWebhook(id: string): Promise<void> {
   await caseRequest(`/webhooks/${id}`, { method: "DELETE" });
+}
+
+// ── SSO providers (Admin Console → SSO) ──────────────────────────────────────
+// The admin listing is a different endpoint from the one the login page calls:
+// that one is anonymous and withholds tenant_id, config and disabled rows.
+export interface SamlCertHealth {
+  fingerprint: string;
+  not_after: string | null;
+  days_remaining: number | null;
+  expired: boolean;
+}
+
+export interface SsoProviderAdmin {
+  id: string;
+  provider: string;
+  client_id: string;
+  enabled: boolean;
+  tenant_id: string | null;
+  config: Record<string, any>;
+  has_secret: boolean;
+  created_at: string | null;
+  /** SAML rows only. Certificate expiry is computed server-side — it means
+   *  parsing DER, and the screen that warns about an expiring certificate must
+   *  not be the thing that breaks when one cannot be read. */
+  saml_health?: {
+    certs: SamlCertHealth[];
+    metadata_sync: {
+      last_checked?: string; last_error?: string | null; last_error_at?: string;
+      certs_added?: number; drift?: Record<string, { configured: string; published: string }> | null;
+    } | null;
+    /** The SP's own key pair — a summary, never the key. */
+    sp_key: (SamlCertHealth & { created_at: string | null }) | null;
+  };
+}
+
+/** Create (or replace) the SP key pair. Returns the certificate to hand the IdP. */
+export async function generateSamlSpKey(tenant: string, regenerate = false): Promise<{
+  certificate: string;
+  summary: (SamlCertHealth & { created_at: string | null }) | null;
+  next_step: string;
+}> {
+  return caseRequest(`/auth/saml/${encodeURIComponent(tenant)}/sp-key`,
+    { method: "POST", body: JSON.stringify({ regenerate }) });
+}
+
+export interface SamlMetadata {
+  idp_entity_id: string;
+  idp_sso_url: string;
+  idp_slo_url: string | null;
+  idp_x509_certs: string[];
+  name_id_format: string | null;
+  certs: SamlCertHealth[];
+  source: "url" | "xml";
+}
+
+/** Read an IdP's federation metadata. Returns the fields; saves nothing. */
+export async function parseSamlMetadata(body: { url?: string; xml?: string }): Promise<SamlMetadata> {
+  return caseRequest("/auth/saml/metadata/parse", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function listSsoProvidersAdmin(): Promise<SsoProviderAdmin[]> {
+  const d = await caseRequest<{ providers: SsoProviderAdmin[] }>("/auth/real/sso/providers/manage");
+  return d.providers ?? [];
+}
+
+export async function createSsoProvider(body: {
+  provider: string; client_id: string; client_secret: string;
+  tenant_id?: string | null; config?: Record<string, any>;
+}): Promise<SsoProviderAdmin> {
+  return caseRequest("/auth/real/sso/providers", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Omit `client_secret` (or send it blank) to keep the stored one. */
+export async function updateSsoProvider(
+  id: string,
+  body: Partial<{
+    client_id: string; client_secret: string; enabled: boolean;
+    tenant_id: string | null; config: Record<string, any>;
+  }>,
+): Promise<SsoProviderAdmin> {
+  return caseRequest(`/auth/real/sso/providers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function deleteSsoProvider(id: string): Promise<void> {
+  await caseRequest(`/auth/real/sso/providers/${id}`, { method: "DELETE" });
+}
+
+/* ── Enterprise identity (SAML + SCIM) ───────────────────────────── */
+
+export interface ScimToken {
+  id: string; name: string; tenant_id: string | null; created_by: string;
+  created_at: string | null; last_used_at: string | null;
+  expires_at: string | null; revoked_at: string | null;
+}
+
+export async function listScimTokens(): Promise<ScimToken[]> {
+  const d = await caseRequest<{ tokens: ScimToken[] }>("/scim/tokens");
+  return d.tokens ?? [];
+}
+
+/** The response carries the plaintext token, and it is the only time it exists
+ *  anywhere outside the IdP — the server stores a SHA-256 and cannot show it
+ *  again. */
+export async function createScimToken(body: {
+  name: string; tenant_id?: string | null; expires_at?: string | null;
+}): Promise<{ id: string; name: string; token: string; warning: string }> {
+  return caseRequest("/scim/tokens", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function revokeScimToken(id: string): Promise<void> {
+  await caseRequest(`/scim/tokens/${id}`, { method: "DELETE" });
+}
+
+export interface IdentityGroupMapping {
+  id: string; tenant_id: string; source: string; external_group: string;
+  access_group_id: string; access_group_name: string | null;
+  priority: number; created_by: string; created_at: string | null;
+}
+
+export async function listGroupMappings(params?: { tenant?: string; source?: string }):
+  Promise<IdentityGroupMapping[]> {
+  const q = new URLSearchParams();
+  if (params?.tenant) q.set("tenant", params.tenant);
+  if (params?.source) q.set("source", params.source);
+  const suffix = q.toString() ? `?${q}` : "";
+  const d = await caseRequest<{ mappings: IdentityGroupMapping[] }>(
+    `/identity/provisioning/group-mappings${suffix}`);
+  return d.mappings ?? [];
+}
+
+export async function createGroupMapping(body: {
+  tenant: string; source: string; external_group: string;
+  access_group_id: string; priority?: number;
+}): Promise<IdentityGroupMapping> {
+  return caseRequest("/identity/provisioning/group-mappings",
+    { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function deleteGroupMapping(id: string): Promise<void> {
+  await caseRequest(`/identity/provisioning/group-mappings/${id}`, { method: "DELETE" });
+}
+
+export interface ProvisionLogEntry {
+  id: string; tenant_id: string | null; source: string;
+  external_id: string | null; username: string | null;
+  action: string; result: string; detail: Record<string, any>;
+  created_at: string | null;
+}
+
+export async function listProvisionLog(params?: {
+  source?: string; username?: string; action?: string; limit?: number;
+}): Promise<ProvisionLogEntry[]> {
+  const q = new URLSearchParams();
+  if (params?.source) q.set("source", params.source);
+  if (params?.username) q.set("username", params.username);
+  if (params?.action) q.set("action", params.action);
+  if (params?.limit) q.set("limit", String(params.limit));
+  const suffix = q.toString() ? `?${q}` : "";
+  const d = await caseRequest<{ entries: ProvisionLogEntry[] }>(
+    `/identity/provisioning/log${suffix}`);
+  return d.entries ?? [];
+}
+
+/** An account and the IdP identity bound to it, if any. */
+export interface AccountLink {
+  user_id: string; username: string; email: string;
+  display_name: string | null; external_id: string | null;
+  /** OIDC keys on this pair and never reads `external_id`. */
+  sso_provider: string | null; sso_subject: string | null;
+  is_active: boolean; has_password: boolean;
+}
+
+/** Accounts bound to an IdP identity — or, with `linked_only: false`, any
+ *  account matching the search, which is how an admin finds the one to link. */
+export async function listAccountLinks(params?: {
+  q?: string; linked_only?: boolean; limit?: number;
+}): Promise<AccountLink[]> {
+  const query = new URLSearchParams();
+  if (params?.q) query.set("q", params.q);
+  if (params?.linked_only === false) query.set("linked_only", "false");
+  if (params?.limit) query.set("limit", String(params.limit));
+  const suffix = query.toString() ? `?${query}` : "";
+  const d = await caseRequest<{ links: AccountLink[] }>(
+    `/identity/provisioning/links${suffix}`);
+  return d.links ?? [];
+}
+
+/** Bind an existing account to the identity its IdP asserts.
+ *
+ *  A SAML login refuses to adopt an account it matches only by email address —
+ *  an assertion naming an address is not proof of owning the account that holds
+ *  it. This is how the link gets made deliberately instead. */
+export async function linkAccount(identifier: string, binding: {
+  external_id?: string; sso_provider?: string; sso_subject?: string;
+}): Promise<AccountLink> {
+  return caseRequest("/identity/provisioning/links", {
+    method: "POST", body: JSON.stringify({ identifier, ...binding }),
+  });
+}
+
+export async function unlinkAccount(identifier: string): Promise<AccountLink> {
+  return caseRequest("/identity/provisioning/links/unlink", {
+    method: "POST", body: JSON.stringify({ identifier }),
+  });
+}
+
+export async function listUnmappedGroups():
+  Promise<{ source: string; external_group: string; seen: number }[]> {
+  const d = await caseRequest<{ unmapped: { source: string; external_group: string; seen: number }[] }>(
+    "/identity/provisioning/unmapped-groups");
+  return d.unmapped ?? [];
+}
+
+/** Dry-run a pasted assertion. Issues nothing, provisions nobody, and does not
+ *  consume the assertion id — an admin can paste the same capture repeatedly
+ *  while fixing an attribute map. */
+export async function testSamlAssertion(tenant: string, samlResponse: string): Promise<any> {
+  return caseRequest(`/auth/saml/${encodeURIComponent(tenant)}/test`,
+    { method: "POST", body: JSON.stringify({ saml_response: samlResponse }) });
+}
+
+/** Access groups, as the mapping editor's target list. */
+export async function listAccessGroupsBrief():
+  Promise<{ id: string; name: string; tenant_id: string }[]> {
+  return caseRequest("/access-groups");
 }
 
 export async function createCalendar(body: {
@@ -1762,11 +2059,11 @@ export async function apiFetch(path: string, options?: RequestInit): Promise<Res
     ...authHeaders(),
     ...(options?.headers as Record<string, string> | undefined),
   };
-  const res = await fetch(`${CASE_BASE}${path}`, { ...options, headers });
+  const res = await fetch(caseUrl(path), { ...options, headers });
   if (res.status === 401) {
     const newToken = await attemptRefresh();
     if (newToken) {
-      const retry = await fetch(`${CASE_BASE}${path}`, {
+      const retry = await fetch(caseUrl(path), {
         ...options,
         headers: { ...headers, ...authHeaders(newToken) },
       });
@@ -1775,4 +2072,146 @@ export async function apiFetch(path: string, options?: RequestInit): Promise<Res
     window.dispatchEvent(new Event("velaris:unauthorized"));
   }
   return res;
+}
+
+/* ── Omnichannel (SMS / WhatsApp / voice) ────────────────────────── */
+
+export interface ChannelConversation {
+  id: string; endpoint_id: string; endpoint_address: string | null;
+  tenant_id: string; peer_address: string; case_id: string | null;
+  status: string; assigned_to: string | null; unread_count: number;
+  last_message_at: string | null; window_expires_at: string | null;
+}
+
+export interface ChannelMessage {
+  id: string; direction: string; channel: string; author: string | null;
+  peer_address: string; body: string; media: unknown[];
+  template_name: string | null; status: string; error: string | null;
+  is_read: boolean; created_at: string | null;
+}
+
+export interface WhatsAppTemplate {
+  id: string; endpoint_id: string; name: string; language: string;
+  provider_template_id: string | null; body_params: string[];
+  approval_status: string;
+}
+
+export async function listChannelConversations(params?: {
+  status?: string; case_id?: string; unread_only?: boolean;
+}): Promise<ChannelConversation[]> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.unread_only) q.set("unread_only", "true");
+  const suffix = q.toString() ? `?${q}` : "";
+  const d = await caseRequest<{ conversations: ChannelConversation[] }>(
+    `/channels/conversations${suffix}`);
+  return d.conversations ?? [];
+}
+
+export async function getChannelConversation(id: string):
+  Promise<{ conversation: ChannelConversation; messages: ChannelMessage[] }> {
+  return caseRequest(`/channels/conversations/${id}`);
+}
+
+/** Refused with a specific code when the number opted out (403) or the
+ *  WhatsApp 24-hour window has closed without a template (409). */
+export async function replyToConversation(id: string, body: {
+  body: string; template_name?: string; template_params?: string[];
+}): Promise<ChannelMessage> {
+  return caseRequest(`/channels/conversations/${id}/reply`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateChannelConversation(id: string, body: {
+  case_id?: string; assigned_to?: string; status?: string;
+}): Promise<ChannelConversation> {
+  return caseRequest(`/channels/conversations/${id}`,
+    { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function listChannelTemplates(endpointId?: string):
+  Promise<WhatsAppTemplate[]> {
+  const suffix = endpointId ? `?endpoint_id=${encodeURIComponent(endpointId)}` : "";
+  const d = await caseRequest<{ templates: WhatsAppTemplate[] }>(
+    `/channels/templates${suffix}`);
+  return d.templates ?? [];
+}
+
+export async function listCaseConversations(caseId: string):
+  Promise<ChannelConversation[]> {
+  const d = await caseRequest<{ conversations: ChannelConversation[] }>(
+    `/channels/cases/${caseId}/conversations`);
+  return d.conversations ?? [];
+}
+
+/* ── RPA bots ────────────────────────────────────────────────────── */
+
+export interface BotDefinition {
+  id: string; tenant_id: string; name: string; description: string;
+  image: string; digest: string; signature_verified: boolean;
+  credential_refs: string[]; granted_domains: string[];
+  timeout_seconds: number; max_concurrency: number; resource_profile: string;
+  status: string; created_by: string; approved_by: string | null;
+  approved_at: string | null;
+}
+
+export interface BotJob {
+  id: string; bot_id: string; case_id: string | null; trigger: string;
+  requested_by: string | null; status: string; attempt: number;
+  error: string | null; output: Record<string, unknown> | null;
+  queued_at: string | null; started_at: string | null; ended_at: string | null;
+}
+
+export interface BotProposal {
+  job_id: string; case_id: string | null; checksum: string;
+  changes: { field: string; current: unknown; proposed: unknown }[];
+}
+
+export async function listBots(): Promise<BotDefinition[]> {
+  const d = await caseRequest<{ bots: BotDefinition[] }>("/bots");
+  return d.bots ?? [];
+}
+
+/** Refused (409) when the approver is the bot's own author — approval IS the
+ *  review, and reviewing your own container image is not one. */
+export async function approveBot(id: string): Promise<BotDefinition> {
+  return caseRequest(`/bots/${id}/approve`, { method: "POST" });
+}
+
+export async function listBotJobs(params?: {
+  status?: string; case_id?: string; bot_id?: string;
+}): Promise<BotJob[]> {
+  const q = new URLSearchParams();
+  if (params?.status) q.set("status", params.status);
+  if (params?.case_id) q.set("case_id", params.case_id);
+  if (params?.bot_id) q.set("bot_id", params.bot_id);
+  const suffix = q.toString() ? `?${q}` : "";
+  const d = await caseRequest<{ jobs: BotJob[] }>(`/bots/jobs${suffix}`);
+  return d.jobs ?? [];
+}
+
+export async function runBot(id: string, body: {
+  input?: Record<string, unknown>; case_id?: string; step_id?: string;
+}): Promise<BotJob> {
+  return caseRequest(`/bots/${id}/run`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function cancelBotJob(id: string): Promise<BotJob> {
+  return caseRequest(`/bots/jobs/${id}/cancel`, { method: "POST" });
+}
+
+export async function getBotProposal(id: string): Promise<BotProposal> {
+  return caseRequest(`/bots/jobs/${id}/proposal`);
+}
+
+/** The checksum is the concurrency guard: a case that changed while the diff
+ *  was open answers 409 rather than being silently overwritten. */
+export async function acceptBotProposal(
+  id: string, expectedChecksum: string, fields?: string[],
+): Promise<{ applied: string[] }> {
+  return caseRequest(`/bots/jobs/${id}/accept`, {
+    method: "POST",
+    body: JSON.stringify({ expected_checksum: expectedChecksum, fields }),
+  });
 }

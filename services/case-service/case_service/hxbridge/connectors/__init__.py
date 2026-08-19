@@ -7,6 +7,7 @@ from . import docusign_connector    # noqa: F401  — P49 e-sign
 from . import salesforce_connector  # noqa: F401  — P50 CRM
 from . import xero_connector        # noqa: F401  — P50 accounting
 from . import twilio_connector      # noqa: F401  — P51 SMS
+from . import meta_whatsapp_connector  # noqa: F401  — omnichannel P2 (WhatsApp Cloud)
 from . import slack_connector       # noqa: F401  — P51 Slack
 from . import docling_connector     # noqa: F401  — P52 doc extraction
 from . import s3_connector          # noqa: F401  — P52 cloud storage

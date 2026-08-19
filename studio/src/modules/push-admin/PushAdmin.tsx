@@ -1,5 +1,6 @@
 // HELIX P27 — Push Notifications Admin
 import React, { useEffect, useState } from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Device = {
   id: string;
@@ -33,7 +34,7 @@ type TestSendForm = {
 type Tab = "devices" | "logs" | "test";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

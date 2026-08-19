@@ -27,6 +27,22 @@ from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.config import get_settings
+from case_service.core.error_codes import (
+    MEET_ASR_501,
+    MEET_CONSENT_409,
+    MEET_DRIVER_501,
+    MEET_INVITE_404,
+    MEET_KYC_501,
+    MEET_NORECORDING_404,
+    MEET_NOTFOUND_404,
+    MEET_OPTIN_400,
+    MEET_PROVIDER_502,
+    MEET_RATE_429,
+    MEET_RECORDING_501,
+    MEET_STATE_409,
+    MEET_TAMPER_409,
+    coded,
+)
 from case_service.db import repository as repo
 from case_service.db.models import CaseSessionModel
 from case_service.db.session import get_session
@@ -46,10 +62,10 @@ async def _authorized_case(session, user, case_id: str, action: str):
     try:
         cid = uuid.UUID(case_id)
     except ValueError:
-        raise HTTPException(404, "Case not found")
+        raise coded(404, MEET_NOTFOUND_404, "Case not found")
     case = await repo.get_case_instance(session, cid)
     if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
-        raise HTTPException(404, "Case not found")
+        raise coded(404, MEET_NOTFOUND_404, "Case not found")
     await hxguard.require_case(session, user, action, cid)
     return case
 
@@ -116,9 +132,9 @@ async def start_session(
     driver = await meet.resolve_driver(session, _tenant(user))
     if driver == "embedded":
         if not livekit.configured():
-            raise HTTPException(501, "Embedded driver is not configured (LiveKit url/key/secret)")
+            raise coded(501, MEET_DRIVER_501, "Embedded driver is not configured (LiveKit url/key/secret)")
         if body.record and not meet.recording_available():
-            raise HTTPException(501, "Recording is not configured (egress recordings dir)")
+            raise coded(501, MEET_RECORDING_501, "Recording is not configured (egress recordings dir)")
         row = await meet.start_embedded_session(
             session, case_id=case.id, case_type_id=case.case_type_id,
             tenant_id=_tenant(user), started_by=user.user_id, title=body.title,
@@ -128,7 +144,7 @@ async def start_session(
     if body.record:
         raise HTTPException(400, "Recording intent applies to the embedded driver only")
     if driver != "off_platform":
-        raise HTTPException(501, f"Session driver '{driver}' is not available yet")
+        raise coded(501, MEET_DRIVER_501, f"Session driver '{driver}' is not available yet")
 
     connector_id = None
     if body.connector_id:
@@ -151,7 +167,7 @@ async def start_session(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:
-        raise HTTPException(502, f"Meeting provider error: {exc}")
+        raise coded(502, MEET_PROVIDER_502, f"Meeting provider error: {exc}")
     return _session_view(row)
 
 
@@ -175,12 +191,12 @@ async def end_session(
     try:
         sid = uuid.UUID(session_id)
     except ValueError:
-        raise HTTPException(404, "Session not found")
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
     row = (await session.execute(
         select(CaseSessionModel).where(CaseSessionModel.id == sid)
     )).scalar_one_or_none()
     if row is None or (row.tenant_id is not None and row.tenant_id != _tenant(user)):
-        raise HTTPException(404, "Session not found")
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
     case = await _authorized_case(session, user, str(row.case_id), "meet.start")
     if row.status in ("ended", "cancelled"):
         return _session_view(row)
@@ -198,12 +214,12 @@ async def _visible_session(
     try:
         sid = uuid.UUID(session_id)
     except ValueError:
-        raise HTTPException(404, "Session not found")
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
     row = (await session.execute(
         select(CaseSessionModel).where(CaseSessionModel.id == sid)
     )).scalar_one_or_none()
     if row is None or (row.tenant_id is not None and row.tenant_id != _tenant(user)):
-        raise HTTPException(404, "Session not found")
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
     return row
 
 
@@ -211,9 +227,9 @@ def _require_active_embedded(row: CaseSessionModel) -> None:
     if row.driver != "embedded":
         raise HTTPException(400, "Not an embedded session")
     if row.status != "active":
-        raise HTTPException(409, "Session is not active")
+        raise coded(409, MEET_STATE_409, "Session is not active")
     if not livekit.configured():
-        raise HTTPException(501, "Embedded driver is not configured (LiveKit url/key/secret)")
+        raise coded(501, MEET_DRIVER_501, "Embedded driver is not configured (LiveKit url/key/secret)")
 
 
 @router.post("/sessions/{session_id}/token")
@@ -313,11 +329,11 @@ async def guest_token(
 ):
     allowed, _retry = _guest_rate.is_allowed(request.client.host if request.client else "unknown")
     if not allowed:
-        raise HTTPException(429, "Too many attempts")
+        raise coded(429, MEET_RATE_429, "Too many attempts")
     try:
         return await meet.exchange_guest_invite(session, body.invite_token)
     except ValueError:
-        raise HTTPException(404, "Invite not found")
+        raise coded(404, MEET_INVITE_404, "Invite not found")
 
 
 # ── P3: sealed recording ─────────────────────────────────────────────────────
@@ -334,13 +350,16 @@ async def recording_start(
     await _authorized_case(session, user, str(row.case_id), "meet.start")
     _require_active_embedded(row)
     if not meet.recording_available():
-        raise HTTPException(501, "Recording is not configured (egress recordings dir)")
+        raise coded(501, MEET_RECORDING_501, "Recording is not configured (egress recordings dir)")
     try:
         return _session_view(await meet.start_recording(session, row=row, actor=user.user_id))
+    except meet.RecordingConsentMissing as exc:
+        # Checked before the bare ValueError: it is a subclass, so order decides.
+        raise coded(409, MEET_CONSENT_409, str(exc))
     except ValueError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MEET_STATE_409, str(exc))
     except RuntimeError as exc:
-        raise HTTPException(502, f"Egress error: {exc}")
+        raise coded(502, MEET_PROVIDER_502, f"Egress error: {exc}")
 
 
 @router.post("/sessions/{session_id}/recording/stop")
@@ -354,9 +373,9 @@ async def recording_stop(
     try:
         return _session_view(await meet.stop_recording(session, row=row, actor=user.user_id))
     except ValueError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MEET_STATE_409, str(exc))
     except RuntimeError as exc:
-        raise HTTPException(502, f"Egress error: {exc}")
+        raise coded(502, MEET_PROVIDER_502, f"Egress error: {exc}")
 
 
 async def _sealed_recording(session, user, session_id: str):
@@ -364,7 +383,7 @@ async def _sealed_recording(session, user, session_id: str):
     row = await _visible_session(session, user, session_id)
     await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
     if row.recording_status != "sealed" or row.recording_document_id is None:
-        raise HTTPException(404, "No sealed recording for this session")
+        raise coded(404, MEET_NORECORDING_404, "No sealed recording for this session")
     return row
 
 
@@ -393,7 +412,7 @@ async def recording_download(
     try:
         plaintext = vault.open_(dek, sealed, f"{meet.RECORDING_AAD_PREFIX}{row.id}".encode())
     except Exception:
-        raise HTTPException(409, "Recording unsealing failed (tampered or key mismatch)")
+        raise coded(409, MEET_TAMPER_409, "Recording unsealing failed (tampered or key mismatch)")
 
     # GDPR access log: every view of a sealed recording is a case audit event.
     from case_service.api.routers.cases import _audit
@@ -453,7 +472,7 @@ async def _sealed_transcript(session, user, session_id: str):
     row = await _visible_session(session, user, session_id)
     await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
     if row.transcript_status != "sealed" or row.transcript_document_id is None:
-        raise HTTPException(404, "No sealed transcript for this session")
+        raise coded(404, MEET_NORECORDING_404, "No sealed transcript for this session")
     return row
 
 
@@ -487,7 +506,7 @@ async def transcript_view(
     try:
         plaintext = await _unseal_transcript(session, row)
     except Exception:
-        raise HTTPException(409, "Transcript unsealing failed (tampered or key mismatch)")
+        raise coded(409, MEET_TAMPER_409, "Transcript unsealing failed (tampered or key mismatch)")
 
     from case_service.api.routers.cases import _audit
     await _audit(session, row.case_id, "transcript_viewed", actor_id=user.user_id,
@@ -539,11 +558,11 @@ async def guest_preview(
     recording notice BEFORE the consent act (the exchange). Uniform 404."""
     allowed, _retry = _guest_rate.is_allowed(request.client.host if request.client else "unknown")
     if not allowed:
-        raise HTTPException(429, "Too many attempts")
+        raise coded(429, MEET_RATE_429, "Too many attempts")
     try:
         return await meet.preview_guest_invite(session, body.invite_token)
     except ValueError:
-        raise HTTPException(404, "Invite not found")
+        raise coded(404, MEET_INVITE_404, "Invite not found")
 
 
 @router.post("/webhook/livekit")
@@ -589,16 +608,16 @@ async def intelligence_run(
     has_recording = row.recording_status == "sealed" and row.recording_document_id is not None
     has_transcript = row.transcript_status == "sealed" and row.transcript_document_id is not None
     if not has_recording and not has_transcript:
-        raise HTTPException(404, "No sealed recording for this session")
+        raise coded(404, MEET_NORECORDING_404, "No sealed recording for this session")
     if not await meet_intel.tenant_intelligence_enabled(session, row.tenant_id):
-        raise HTTPException(400, "Session intelligence is not enabled for this tenant")
+        raise coded(400, MEET_OPTIN_400, "Session intelligence is not enabled for this tenant")
     # Whisper is only needed when there's no sealed live transcript to reuse.
     if not has_transcript and not meet_intel.whisper_available():
-        raise HTTPException(501, "Transcription is not installed on this server (faster-whisper)")
+        raise coded(501, MEET_ASR_501, "Transcription is not installed on this server (faster-whisper)")
 
     intel = await session.get(CaseSessionIntelligenceModel, row.id)
     if intel is not None and intel.status == "running":
-        raise HTTPException(409, "Analysis is already running for this session")
+        raise coded(409, MEET_STATE_409, "Analysis is already running for this session")
     if intel is None:
         intel = CaseSessionIntelligenceModel(session_id=row.id, requested_by=user.user_id)
         session.add(intel)
@@ -744,11 +763,11 @@ async def challenges_issue(
     await _authorized_case(session, user, str(row.case_id), "meet.kyc.run")
     _require_active_embedded(row)
     if not await meet_kyc.tenant_kyc_enabled(session, row.tenant_id):
-        raise HTTPException(400, "Video-KYC is not enabled for this tenant")
+        raise coded(400, MEET_OPTIN_400, "Video-KYC is not enabled for this tenant")
     if not row.record_intent:
-        raise HTTPException(409, "Challenges require a record-intent session")
+        raise coded(409, MEET_STATE_409, "Challenges require a record-intent session")
     if row.recording_status != "recording":
-        raise HTTPException(409, "Challenges can only be issued while the recording is running")
+        raise coded(409, MEET_STATE_409, "Challenges can only be issued while the recording is running")
     kinds = body.kinds or list(meet_kyc.CHALLENGE_KINDS)
     unknown = [k for k in kinds if k not in meet_kyc.CHALLENGE_KINDS]
     if unknown:
@@ -789,15 +808,15 @@ async def kyc_analysis_run(
     has_recording = row.recording_status == "sealed" and row.recording_document_id is not None
     has_transcript = row.transcript_status == "sealed" and row.transcript_document_id is not None
     if not has_recording and not has_transcript:
-        raise HTTPException(404, "No sealed recording for this session")
+        raise coded(404, MEET_NORECORDING_404, "No sealed recording for this session")
     if not await meet_kyc.tenant_kyc_enabled(session, row.tenant_id):
-        raise HTTPException(400, "Video-KYC is not enabled for this tenant")
+        raise coded(400, MEET_OPTIN_400, "Video-KYC is not enabled for this tenant")
     if not (has_recording and meet_kyc.cv_available()) and not has_transcript:
-        raise HTTPException(501, "KYC analysis is not installed on this server (pip install .[kyc])")
+        raise coded(501, MEET_KYC_501, "KYC analysis is not installed on this server (pip install .[kyc])")
 
     signals = await session.get(CaseSessionKycSignalsModel, row.id)
     if signals is not None and signals.status == "running":
-        raise HTTPException(409, "KYC analysis is already running for this session")
+        raise coded(409, MEET_STATE_409, "KYC analysis is already running for this session")
     if signals is None:
         signals = CaseSessionKycSignalsModel(session_id=row.id, requested_by=user.user_id)
         session.add(signals)
@@ -848,5 +867,5 @@ async def challenge_result(
         session, row=row, challenge_id=challenge_id,
         result=body.result, notes=body.notes, actor=user.user_id)
     if challenge is None:
-        raise HTTPException(404, "Challenge not found")
+        raise coded(404, MEET_NOTFOUND_404, "Challenge not found")
     return meet_kyc.challenge_view(challenge)

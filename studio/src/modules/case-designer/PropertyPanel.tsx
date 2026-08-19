@@ -4,6 +4,7 @@ import { SLAPolicyTreeLink } from "./SLAPolicyTreeLink";
 import { Button } from "@shared/components";
 import { useApi } from "@shared/hooks";
 import { listForms } from "@shared/api/client";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    PropertyPanel — context-sensitive editor for stages, steps, SLAs
@@ -382,7 +383,7 @@ function ConnectorCallSection({
   const [connectors, setConnectors] = useState<any[]>([]);
 
   useEffect(() => {
-    const t = localStorage.getItem("helix_token");
+    const t = getAccessToken();
     const hdr: Record<string, string> = t ? { Authorization: `Bearer ${t}` } : {};
     fetch("/api/v1/hxbridge/connectors?enabled=true", { headers: hdr })
       .then(r => r.ok ? r.json() : { connectors: [] })
@@ -441,7 +442,7 @@ function SubprocessSection({
   const [defs, setDefs] = useState<any[]>([]);
 
   useEffect(() => {
-    const t = localStorage.getItem("helix_token");
+    const t = getAccessToken();
     const hdr: Record<string, string> = t ? { Authorization: `Bearer ${t}` } : {};
     fetch("/api/v1/fusion/definitions?status=active", { headers: hdr })
       .then(r => r.ok ? r.json() : [])

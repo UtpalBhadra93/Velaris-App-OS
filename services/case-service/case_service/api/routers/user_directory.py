@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import UserDirectoryModel, HelixUserModel
 from case_service.db.session import get_session
@@ -52,7 +53,7 @@ def _to_response(u: UserDirectoryModel) -> UserDirectoryResponse:
 async def create_entry(
     body: UserDirectoryEntry,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.write")),
 ):
     q = select(UserDirectoryModel).where(UserDirectoryModel.user_id == body.user_id)
     existing = (await session.execute(q)).scalar_one_or_none()
@@ -87,7 +88,7 @@ async def list_entries(
     active_only: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.read")),
 ):
     if user.tenant_id and "superadmin" not in (user.roles or []):
         tenant_id = user.tenant_id
@@ -129,6 +130,7 @@ async def list_entries(
 async def get_entry(
     user_id: str,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.read")),
 ):
     q = select(UserDirectoryModel).where(UserDirectoryModel.user_id == user_id)
     u = (await session.execute(q)).scalar_one_or_none()
@@ -151,7 +153,7 @@ async def update_entry(
     user_id: str,
     body: UserDirectoryEntry,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.write")),
 ):
     q = select(UserDirectoryModel).where(UserDirectoryModel.user_id == user_id)
     u = (await session.execute(q)).scalar_one_or_none()
@@ -177,7 +179,7 @@ async def update_entry(
 async def deactivate_entry(
     user_id: str,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.write")),
 ):
     q = select(UserDirectoryModel).where(UserDirectoryModel.user_id == user_id)
     u = (await session.execute(q)).scalar_one_or_none()
@@ -192,7 +194,7 @@ async def deactivate_entry(
 @router.post("/sync-from-db", status_code=200)
 async def sync_from_db(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("identity.directory.sync")),
 ):
     """Scan all DB tables for user IDs and create directory entries for any that are missing."""
     from sqlalchemy import text
@@ -260,32 +262,88 @@ async def sync_from_db(
 async def bulk_sync(
     entries: list[UserDirectoryEntry],
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.sync")),
 ):
-    """Upsert a batch of users (for SSO/LDAP sync)."""
-    created, updated = 0, 0
+    """Upsert a batch of users (for SSO/LDAP sync).
+
+    **Behaviour change (enterprise identity P0).** This endpoint used to write
+    `user_directory` and nothing else, while `sso_callback` wrote `velaris_users`
+    and nothing else — so a leaver deactivated here kept their login. It now goes
+    through `identity.provisioning`, the single writer that updates both records
+    in one transaction, alongside tenant membership and IdP-mapped access groups.
+
+    An entry with no email is still accepted and still creates a directory-only
+    row: this endpoint has always been able to record a person who has no
+    Velaris login (a manager named as an escalation target, a `portal:` id), and
+    refusing those would be a silent narrowing of a shipped API.
+    """
+    from case_service.identity import provisioning
+
+    created = updated = deactivated = rejected = 0
+    results: list[dict] = []
+
     for e in entries:
-        q = select(UserDirectoryModel).where(UserDirectoryModel.user_id == e.user_id)
-        existing = (await session.execute(q)).scalar_one_or_none()
-        if existing:
-            existing.email = e.email
-            existing.display_name = e.display_name
-            existing.manager_user_id = e.manager_user_id
-            existing.access_group_ids = e.access_group_ids
-            existing.roles = e.roles
-            existing.timezone = e.timezone
-            existing.tenant_id = e.tenant_id
-            existing.is_active = e.is_active
-            existing.metadata_json = e.metadata_json
-            updated += 1
-        else:
-            session.add(UserDirectoryModel(
-                user_id=e.user_id, email=e.email, display_name=e.display_name,
-                manager_user_id=e.manager_user_id,
-                access_group_ids=e.access_group_ids, roles=e.roles,
-                timezone=e.timezone, tenant_id=e.tenant_id, is_active=e.is_active,
-                metadata_json=e.metadata_json,
-            ))
+        res = None
+        if not e.is_active:
+            res = await provisioning.deactivate_principal(
+                session, source="bulk_sync",
+                username=e.user_id, email=e.email,
+                tenant_token=e.tenant_id, actor=user.username,
+                allow_directory_only=True,
+            )
+            # Deactivating somebody who does not exist yet used to create the row
+            # inactive, and a sync that leads with its leavers relies on that.
+            # Fall through to the upsert rather than reject.
+            if res.reason == "not_found":
+                res = None
+
+        if res is None:
+            res = await provisioning.upsert_principal(
+                session, source="bulk_sync",
+                username=e.user_id, email=e.email,
+                display_name=e.display_name,
+                tenant_token=e.tenant_id,
+                attributes={
+                    "manager": e.manager_user_id,
+                    "timezone": e.timezone,
+                    "metadata": e.metadata_json,
+                },
+                roles=e.roles,
+                active=e.is_active,
+                actor=user.username,
+                allow_directory_only=True,
+            )
+
+        # `roles` and `access_group_ids` on the directory row are deprecated
+        # columns the spine deliberately does not own — authorization lives in
+        # `operator_access_groups`. They are still written here because this
+        # endpoint has always written them and `list_entries` still filters on
+        # them; dropping them silently would break a caller mid-upgrade.
+        if res.ok and res.username and (e.roles or e.access_group_ids):
+            # res.username, not e.user_id: an entry matched by email can belong
+            # to an account renamed in Velaris, and the directory row is keyed on
+            # the account's real username.
+            row = (await session.execute(
+                select(UserDirectoryModel).where(UserDirectoryModel.user_id == res.username)
+            )).scalar_one_or_none()
+            if row is not None:
+                row.roles = e.roles
+                row.access_group_ids = e.access_group_ids
+
+        if res.action == "create":
             created += 1
+        elif res.action == "update":
+            updated += 1
+        elif res.action == "deactivate":
+            deactivated += 1
+        else:
+            rejected += 1
+            results.append({"user_id": e.user_id, "reason": res.reason})
+
     await session.flush()
-    return {"created": created, "updated": updated, "total": created + updated}
+    return {
+        "created": created, "updated": updated,
+        "deactivated": deactivated, "rejected": rejected,
+        "total": created + updated + deactivated,
+        "rejections": results,
+    }

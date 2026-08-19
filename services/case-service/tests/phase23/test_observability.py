@@ -27,6 +27,16 @@ def app() -> FastAPI:
     a.add_middleware(ObservabilityMiddleware)
     a.include_router(observability_router)
 
+    # The observability read endpoints require `platform.status.read` since the
+    # 2026-08-15 sweep (they served request volumes, recent traces and 125KB of
+    # health history to anonymous callers). This fixture builds its own bare app,
+    # so it overrides the identity itself rather than carrying a token; these
+    # tests are about the payload, and the 401 is covered where auth is the subject.
+    from case_service.auth.dependencies import get_current_user
+    from case_service.auth.models import AuthenticatedUser
+    a.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+        user_id="obs-test", username="obs-test", roles=["admin"])
+
     # Override the real PostgreSQL session dep to avoid needing a live DB
     from case_service.db.session import get_session as _real_get_session
     async def _noop_session():

@@ -349,10 +349,15 @@ echo ""
 fi
 
 # ── Step 4b: Sync release manifest ───────────────────────────────
-# Counts INSERT statements in releases/manifest.sql and compares against
-# rows in scheduled_releases. If they differ, new features have been added
-# since the last run — applies the manifest (ON CONFLICT DO NOTHING skips
-# existing rows, only inserts new ones).
+# Applies releases/manifest.sql on EVERY start. The file is an idempotent
+# upsert, so this is cheap and self-correcting.
+#
+# It used to run only when the INSERT count differed from the row count in
+# scheduled_releases. That made a version bump unreachable: adding a feature
+# changed the count and applied, but editing an existing feature's version left
+# the counts equal, so the manifest was never re-applied — and even if it had
+# been, ON CONFLICT DO NOTHING would have skipped the row. Both halves of that
+# are fixed; the count is now reported, not used as a gate.
 # MySQL uses the dialect sibling manifest.mysql.sql (UUID() / ON DUPLICATE KEY).
 if [ "$DB_FAMILY" = "mysql" ]; then
   MANIFEST_FILE="$VELARIS_DIR/releases/manifest.mysql.sql"
@@ -367,20 +372,20 @@ if [ -f "$MANIFEST_FILE" ]; then
     DB_COUNT=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
       -c "SELECT COUNT(*) FROM scheduled_releases;" 2>/dev/null | tr -d '[:space:]' || echo 0)
   fi
-  if [ "$MANIFEST_COUNT" -ne "$DB_COUNT" ]; then
-    echo "▶ Syncing release manifest ($DB_COUNT features in DB, $MANIFEST_COUNT in manifest)..."
-    if [ "$DB_FAMILY" = "mysql" ]; then
-      _man_ok=0; mysql_client "$DB_NAME" < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
-    else
-      _man_ok=0; docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
-    fi
-    if [ "$_man_ok" = "1" ]; then
+  echo "▶ Syncing release manifest ($DB_COUNT features in DB, $MANIFEST_COUNT in manifest)..."
+  if [ "$DB_FAMILY" = "mysql" ]; then
+    _man_ok=0; mysql_client "$DB_NAME" < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
+  else
+    _man_ok=0; docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
+  fi
+  if [ "$_man_ok" = "1" ]; then
+    if [ "$MANIFEST_COUNT" -gt "$DB_COUNT" ]; then
       green "  ✓ Release manifest synced — $((MANIFEST_COUNT - DB_COUNT)) new feature(s) activated"
     else
-      yellow "  ⚠ Release manifest sync had warnings:"; cat /tmp/manifest_err.log
+      green "  ✓ Release manifest synced ($MANIFEST_COUNT features, versions refreshed)"
     fi
   else
-    green "  ✓ Release manifest up to date ($DB_COUNT features)"
+    yellow "  ⚠ Release manifest sync had warnings:"; cat /tmp/manifest_err.log
   fi
   echo ""
 fi

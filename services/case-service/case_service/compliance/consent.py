@@ -238,6 +238,18 @@ async def has_consent(
 #: identified data subject at all.
 NO_SUBJECT = "no_subject"
 
+#: An erased case, refused. Distinct from NO_SUBJECT on purpose: both have a NULL
+#: submitter, but they mean opposite things. A staff-created case never had a
+#: subject, so there is nobody whose consent could be required. An anonymized case
+#: HAD one and erased them — treating that as "nobody to ask" would let erasure
+#: silently UNLOCK the AI and warehouse processing that consent had been gating.
+ANONYMIZED = "anonymized"
+
+
+def _is_anonymized(case) -> bool:
+    from case_service.compliance.retention import ANON_MARKER
+    return bool((getattr(case, "data", None) or {}).get(ANON_MARKER))
+
 
 async def allows_subject(
     session: AsyncSession, subject_ref: str | None, purpose: str,
@@ -287,9 +299,46 @@ async def allows_case_purpose(
     case = await session.get(CaseInstanceModel, case_id)
     if case is None:
         return False, "unknown_case"
+    return await allows_case(session, case, purpose, tenant_id=tenant_id)
+
+
+async def allows_case(
+    session: AsyncSession, case, purpose: str, *, tenant_id: str | None = None,
+) -> tuple[bool, str]:
+    """`allows_subject` for an ALREADY-LOADED case. The one place case-shaped
+    consent rules live, so a caller cannot accidentally skip one.
+
+    Every gate used to read `case.portal_submitter_email` and hand it to
+    `allows_subject` itself, which meant the anonymized-case rule had to be
+    repeated at each site — and the warehouse-sync gate did not have it.
+
+    **Scoped to the case's own tenant** when the caller names none.
+    `current_state` applies no tenant filter for a NULL `tenant_id`, so the old
+    `allows_case_purpose` — whose only caller (`core.ai_action`) passes none —
+    was satisfied by a grant recorded in ANY tenant. `require_case_purpose`
+    already fell back to `case.tenant_id`; the two entry points simply
+    disagreed. This is the stricter of the two, and it is the correct one: one
+    tenant's consent record is not a lawful basis for another tenant's case.
+    """
+    if _is_anonymized(case):
+        return False, ANONYMIZED               # see ANONYMIZED
     return await allows_subject(
-        session, case.portal_submitter_email, purpose, tenant_id=tenant_id,
+        session, getattr(case, "portal_submitter_email", None), purpose,
+        tenant_id=_tenant_key(tenant_id or getattr(case, "tenant_id", None)),
     )
+
+
+def _tenant_key(tenant_id) -> str | None:
+    """Coerce a tenant to the ledger's own spelling before comparing.
+
+    `consent_records.tenant_id` is `String(64)`; `case_instances.tenant_id` is a
+    `GUID()` and comes back as a `uuid.UUID`. Filtering the string column by a
+    UUID object matches nothing, so `require_case_purpose` — which has fallen
+    back to `case.tenant_id` since long before this helper existed — silently
+    found no grant for ANY tenanted case and refused it. Fail-closed, so it read
+    as "the customer never consented" rather than as a bug.
+    """
+    return str(tenant_id) if tenant_id else None
 
 
 async def require_case_purpose(
@@ -305,8 +354,8 @@ async def require_case_purpose(
     """
     subject = getattr(case, "portal_submitter_email", None)
     try:
-        allowed, reason = await allows_subject(
-            session, subject, purpose,
+        allowed, reason = await allows_case(
+            session, case, purpose,
             tenant_id=tenant_id or getattr(case, "tenant_id", None),
         )
     except Exception as exc:  # noqa: BLE001

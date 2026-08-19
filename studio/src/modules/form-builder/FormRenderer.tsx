@@ -1,9 +1,10 @@
 import React, { useState, useCallback } from "react";
 import { Button, Spinner, VoiceFillPanel, VoiceInput, appendTranscript } from "@shared/components";
 import type { FormFieldDef, FormSectionDef } from "./FormBuilder";
+import { getAccessToken } from "@/auth/tokenManager";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
@@ -602,7 +603,7 @@ function FileUploadField({ value, onChange, readOnly, caseId }: {
       fd.append("file", file);
       const r = await fetch("/api/v1/documents/upload", {
         method: "POST", body: fd,
-        headers: localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {},
+        headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {},
       });
       if (!r.ok) throw new Error(`Upload failed: ${r.status}`);
       const doc = await r.json();

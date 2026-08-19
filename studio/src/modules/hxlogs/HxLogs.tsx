@@ -6,9 +6,10 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API  = "/api/v1/hxlogs";
-const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` });
+const AUTH = () => ({ Authorization: `Bearer ${getAccessToken() ?? ""}` });
 
 // Single source of truth for column widths — header + rows both reference this
 const LOG_COLS = "148px 54px 90px 1fr";

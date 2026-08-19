@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import SystemConfigModel
 from case_service.db.session import get_session
@@ -84,7 +85,7 @@ async def get_permissions(
 async def update_permissions(
     body: PermissionsMap,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.permissions.write")),
 ):
     # Get-or-create via the ORM (dialect-portable; PortableJSON serializes the
     # dict per-dialect, updated_at via the model's default/onupdate).

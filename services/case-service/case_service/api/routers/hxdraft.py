@@ -27,7 +27,21 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
+from case_service.core.error_codes import (
+    DRAFT_AI_503,
+    DRAFT_BADID_400,
+    DRAFT_EXISTS_409,
+    DRAFT_GENERATE_400,
+    DRAFT_KIND_400,
+    DRAFT_NOTFOUND_404,
+    DRAFT_RATE_429,
+    DRAFT_ROLE_403,
+    DRAFT_STALE_409,
+    DRAFT_VALIDATION_400,
+    coded,
+)
 from case_service.auth.models import AuthenticatedUser
 from case_service.db import repository as repo
 from case_service.db.models import CopilotConversationModel, CopilotMessageModel
@@ -60,9 +74,7 @@ def _checksum(d: dict | None) -> str:
 def _can_apply_rule(user: AuthenticatedUser) -> bool:
     # Signed-off decision: rule Apply = admin + designer. Gated HERE — the /rules
     # endpoint's authenticated-only posture is neither relied on nor widened.
-    roles = user.roles or []
-    return (user.has_privilege("*", "*") or "admin" in roles
-            or "superadmin" in roles or "designer" in roles)
+    return hxguard.user_allows(user, "design.draft.apply")
 
 
 # ── draft generation ────────────────────────────────────────────────────────────
@@ -84,13 +96,15 @@ async def create_draft(
     from case_service.api.routers.hxnexus import chat_rate_limiter
     allowed, retry = chat_rate_limiter.is_allowed(str(user.user_id))
     if not allowed:
-        raise HTTPException(429, f"Rate limit reached. Try again in {retry}s.",
+        raise coded(429, DRAFT_RATE_429,
+                    f"Rate limit reached. Try again in {retry}s.",
                             headers={"Retry-After": str(retry)})
     if body.target_id:
         if body.kind not in _MODIFY_KINDS:
-            raise HTTPException(400, f"Modify drafts support {list(_MODIFY_KINDS)}")
+            raise coded(400, DRAFT_KIND_400,
+                        f"Modify drafts support {list(_MODIFY_KINDS)}")
     elif body.kind not in _KINDS:
-        raise HTTPException(400, f"kind must be one of {list(_KINDS)}")
+        raise coded(400, DRAFT_KIND_400, f"kind must be one of {list(_KINDS)}")
     try:
         validate_message_length(body.description)
     except ValueError as exc:
@@ -150,7 +164,7 @@ async def create_draft(
         else:
             built = await case_type_builder.build_from_description(body.description)
             if built.get("error"):
-                raise HTTPException(503, built["error"])
+                raise coded(503, DRAFT_AI_503, built["error"])
             result = {"kind": "case_type", "source": built.get("source", "llm"),
                       "errors": [],
                       "draft": {"name": built.get("name", "Drafted case type"),
@@ -161,7 +175,9 @@ async def create_draft(
             sla_builder.SLADraftError, modify_builder.ModifyDraftError,
             user_builder.UserDraftError, escalation_builder.EscalationDraftError,
             routing_builder.RoutingDraftError) as exc:
-        raise HTTPException(503 if "unavailable" in str(exc) else 400, str(exc))
+        if "unavailable" in str(exc):
+            raise coded(503, DRAFT_AI_503, str(exc))
+        raise coded(400, DRAFT_GENERATE_400, str(exc))
 
     await _append_to_conversation(session, user, body.conversation_id,
                                   body.kind, body.description, result)
@@ -231,7 +247,8 @@ async def apply_draft(
             return await _apply_escalation_modify(body.draft, session)
         if body.kind == "routing":
             return await _apply_routing(body.draft, background_tasks, session, user)
-        raise HTTPException(400, f"Modify apply supports {list(_MODIFY_KINDS)}")
+        raise coded(400, DRAFT_KIND_400,
+                    f"Modify apply supports {list(_MODIFY_KINDS)}")
     if body.kind == "rule":
         return await _apply_rule(body.draft, background_tasks, session, user)
     if body.kind == "case_type":
@@ -244,7 +261,7 @@ async def apply_draft(
         return await _apply_user(body.draft, session, user)
     if body.kind == "escalation":
         return await _apply_escalation(body.draft, session, user)
-    raise HTTPException(400, f"kind must be one of {list(_KINDS)}")
+    raise coded(400, DRAFT_KIND_400, f"kind must be one of {list(_KINDS)}")
 
 
 async def _apply_escalation(draft: dict, session: AsyncSession,
@@ -258,7 +275,8 @@ async def _apply_escalation(draft: dict, session: AsyncSession,
         case_type_id=draft.get("case_type_id"))
     errors = escalation_builder.validate_escalation_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     ct_id = None
     if clean["scope"] == "case_type":
@@ -282,14 +300,16 @@ async def _apply_escalation_modify(draft: dict, session: AsyncSession):
     activation are never changed by a modify draft."""
     tree = await _get_tree_or_404(session, draft.get("target_id"))
     if draft.get("base_checksum") != _checksum(tree.tree_json):
-        raise HTTPException(409, "Escalation tree changed since this draft was "
-                                 "generated — re-draft against the current tree")
+        raise coded(409, DRAFT_STALE_409,
+                    "Escalation tree changed since this draft was generated "
+                    "— re-draft against the current tree")
 
     clean = escalation_builder.normalize_escalation_draft(
         {"name": tree.name, "levels": (draft.get("tree_json") or {}).get("levels")})
     errors = escalation_builder.validate_escalation_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     tree.tree_json = clean["tree_json"]
     await session.commit()
@@ -305,13 +325,15 @@ async def _apply_routing(draft: dict, background_tasks: BackgroundTasks,
     from case_service.api.routers.case_types import _assert_can_write_case_type
     _assert_can_write_case_type(user, ct.tenant_id, action="update")
     if draft.get("base_checksum") != _checksum(ct.definition_json):
-        raise HTTPException(409, "Case type changed since this draft was generated "
-                                 "— re-draft against the current definition")
+        raise coded(409, DRAFT_STALE_409,
+                    "Case type changed since this draft was generated "
+                    "— re-draft against the current definition")
 
     clean = routing_builder.normalize_routing_draft(draft)
     errors = routing_builder.validate_routing_draft(clean, ct.definition_json or {})
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     ct.definition_json = routing_builder.patch_step_assignment(
         ct.definition_json or {}, clean)
@@ -328,15 +350,16 @@ async def _apply_user(draft: dict, session: AsyncSession, user: AuthenticatedUse
     """Create a login user — the same posture as the admin-only /auth/register
     path, under the caller's own token. The temp password is generated HERE
     (never by the LLM), returned exactly once, and must be changed on first login."""
-    roles = user.roles or []
-    if not (user.is_admin or "admin" in roles or "superadmin" in roles
-            or user.has_privilege("*", "*")):
-        raise HTTPException(403, "Applying a drafted user requires admin")
+    if not hxguard.user_allows(user, "identity.users.write"):
+        raise coded(403, DRAFT_ROLE_403,
+                    "Applying a drafted user requires identity.users.write — the same "
+                    "privilege the /auth/register path it mirrors demands")
 
     clean = user_builder.normalize_user_draft(draft)
     errors = user_builder.validate_user_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     from case_service.db.models import HelixUserModel
     existing = (await session.execute(
@@ -345,7 +368,7 @@ async def _apply_user(draft: dict, session: AsyncSession, user: AuthenticatedUse
             | (HelixUserModel.email == clean["email"]))
     )).scalar_one_or_none()
     if existing:
-        raise HTTPException(409, "Username or email already in use.")
+        raise coded(409, DRAFT_EXISTS_409, "Username or email already in use.")
 
     import secrets
     from case_service.api.routers.auth_real import _hash_password
@@ -389,10 +412,10 @@ async def _get_tree_or_404(session: AsyncSession, tree_id: str | None):
     try:
         tid = uuid.UUID(str(tree_id))
     except ValueError:
-        raise HTTPException(400, f"Invalid escalation tree id {tree_id!r}")
+        raise coded(400, DRAFT_BADID_400, f"Invalid escalation tree id {tree_id!r}")
     tree = await session.get(EscalationTreeModel, tid)
     if tree is None:
-        raise HTTPException(404, "Escalation tree not found")
+        raise coded(404, DRAFT_NOTFOUND_404, "Escalation tree not found")
     return tree
 
 
@@ -408,7 +431,7 @@ async def _generate_modification(body: DraftRequest, session: AsyncSession) -> d
     if body.kind == "rule":
         rule = await _get_rule_or_404(session, body.target_id)
         if rule.rule_type != "when":
-            raise HTTPException(400, "Only WHEN rules can be modified by draft")
+            raise coded(400, DRAFT_KIND_400, "Only WHEN rules can be modified by draft")
         out = await modify_builder.generate_rule_modification(
             body.description, current_name=rule.name,
             current_definition=rule.definition_json or {},
@@ -489,10 +512,10 @@ async def _get_rule_or_404(session: AsyncSession, rule_id: str | None):
     try:
         rid = uuid.UUID(str(rule_id))
     except ValueError:
-        raise HTTPException(400, f"Invalid rule id {rule_id!r}")
+        raise coded(400, DRAFT_BADID_400, f"Invalid rule id {rule_id!r}")
     rule = await repo.get_rule(session, rid)
     if rule is None:
-        raise HTTPException(404, "Rule not found")
+        raise coded(404, DRAFT_NOTFOUND_404, "Rule not found")
     return rule
 
 
@@ -501,10 +524,10 @@ async def _get_form_or_404(session: AsyncSession, form_id: str | None):
     try:
         fid = uuid.UUID(str(form_id))
     except ValueError:
-        raise HTTPException(400, f"Invalid form id {form_id!r}")
+        raise coded(400, DRAFT_BADID_400, f"Invalid form id {form_id!r}")
     form = await session.get(FormDefinitionModel, fid)
     if form is None:
-        raise HTTPException(404, "Form not found")
+        raise coded(404, DRAFT_NOTFOUND_404, "Form not found")
     return form
 
 
@@ -513,10 +536,10 @@ async def _get_connector_or_404(session: AsyncSession, connector_id: str | None)
     try:
         cid = uuid.UUID(str(connector_id))
     except ValueError:
-        raise HTTPException(400, f"Invalid connector id {connector_id!r}")
+        raise coded(400, DRAFT_BADID_400, f"Invalid connector id {connector_id!r}")
     connector = await session.get(ConnectorRegistryModel, cid)
     if connector is None:
-        raise HTTPException(404, "Connector not found")
+        raise coded(404, DRAFT_NOTFOUND_404, "Connector not found")
     return connector
 
 
@@ -524,10 +547,10 @@ async def _get_case_type_or_404(session: AsyncSession, case_type_id: str):
     try:
         ct_id = uuid.UUID(str(case_type_id))
     except ValueError:
-        raise HTTPException(400, f"Invalid case_type_id {case_type_id!r}")
+        raise coded(400, DRAFT_BADID_400, f"Invalid case_type_id {case_type_id!r}")
     ct = await repo.get_case_type(session, ct_id)
     if ct is None:
-        raise HTTPException(404, "Case type not found")
+        raise coded(404, DRAFT_NOTFOUND_404, "Case type not found")
     return ct
 
 
@@ -541,8 +564,9 @@ async def _apply_sla(draft: dict, background_tasks: BackgroundTasks,
     _assert_can_write_case_type(user, ct.tenant_id, action="update")
 
     if draft.get("base_checksum") != _checksum(ct.definition_json):
-        raise HTTPException(409, "Case type changed since this draft was generated "
-                                 "— re-draft against the current definition")
+        raise coded(409, DRAFT_STALE_409,
+                    "Case type changed since this draft was generated "
+                    "— re-draft against the current definition")
 
     # Re-normalize + re-validate against the CURRENT definition (client untrusted).
     # A replace draft validates against the definition minus the policy it replaces.
@@ -552,15 +576,17 @@ async def _apply_sla(draft: dict, background_tasks: BackgroundTasks,
     replaces = draft.get("replaces_policy_id")
     if replaces:
         if not any(p.get("id") == replaces for p in policies):
-            raise HTTPException(409, f"Policy {replaces!r} no longer exists on this "
-                                     f"case type — re-draft")
+            raise coded(409, DRAFT_STALE_409,
+                        f"Policy {replaces!r} no longer exists on this "
+                        f"case type — re-draft")
         if clean["id"] != replaces:
             raise HTTPException(400, "A replace draft must keep the policy id")
         policies = [p for p in policies if p.get("id") != replaces]
     errors = sla_builder.validate_sla_draft(
         {"policy": clean}, {**definition, "sla_policies": policies})
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     definition["sla_policies"] = [*policies, clean]
     ct.definition_json = definition
@@ -583,15 +609,17 @@ async def _assert_rule_name_free(session: AsyncSession, name: str, version: str)
                                           RuleDefinitionModel.version == version)
     )).scalar_one_or_none()
     if existing:
-        raise HTTPException(409, f"A rule named '{name}' v{version} already exists — "
-                                 f"re-draft with a different name or modify the "
-                                 f"existing rule instead")
+        raise coded(409, DRAFT_EXISTS_409,
+                    f"A rule named '{name}' v{version} already exists — "
+                    f"re-draft with a different name or modify the "
+                    f"existing rule instead")
 
 
 async def _apply_rule(draft: dict, background_tasks: BackgroundTasks,
                       session: AsyncSession, user: AuthenticatedUser):
     if not _can_apply_rule(user):
-        raise HTTPException(403, "Applying a drafted rule requires admin or designer")
+        raise coded(403, DRAFT_ROLE_403,
+                    "Applying a drafted rule requires admin or designer")
 
     # Re-normalize from the submitted draft (client copy untrusted) then re-gate.
     d = draft.get("definition_json") or {}
@@ -601,7 +629,8 @@ async def _apply_rule(draft: dict, background_tasks: BackgroundTasks,
         scope_target_id=draft.get("scope_target_id"))
     errors = rule_builder.validate_rule_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
     await _assert_rule_name_free(session, clean["name"], clean["version"])
 
     rule = await repo.create_rule(session, data={
@@ -630,7 +659,8 @@ async def _apply_case_type(draft: dict, session: AsyncSession, user: Authenticat
     if not name or not isinstance(definition, dict) or not definition.get("stages"):
         raise HTTPException(400, "Draft needs a name and a definition with stages")
     if await repo.get_case_type_by_name(session, name, version):
-        raise HTTPException(409, f"Case type '{name}' v{version} already exists")
+        raise coded(409, DRAFT_EXISTS_409,
+                    f"Case type '{name}' v{version} already exists")
 
     ct = await repo.create_case_type(session, data={
         "name": name, "version": version, "tenant_id": None,
@@ -648,13 +678,15 @@ async def _apply_case_type(draft: dict, session: AsyncSession, user: Authenticat
 async def _apply_rule_modify(draft: dict, background_tasks: BackgroundTasks,
                              session: AsyncSession, user: AuthenticatedUser):
     if not _can_apply_rule(user):
-        raise HTTPException(403, "Applying a rule modification requires admin or designer")
+        raise coded(403, DRAFT_ROLE_403,
+                    "Applying a rule modification requires admin or designer")
     rule = await _get_rule_or_404(session, draft.get("target_id"))
     if rule.rule_type != "when":
-        raise HTTPException(400, "Only WHEN rules can be modified by draft")
+        raise coded(400, DRAFT_KIND_400, "Only WHEN rules can be modified by draft")
     if draft.get("base_checksum") != _checksum(rule.definition_json):
-        raise HTTPException(409, "Rule changed since this draft was generated — "
-                                 "re-draft against the current definition")
+        raise coded(409, DRAFT_STALE_409,
+                    "Rule changed since this draft was generated — "
+                    "re-draft against the current definition")
 
     d = draft.get("definition_json") or {}
     # name/scope immutable in modify mode — parity with the manual rules PATCH
@@ -664,7 +696,8 @@ async def _apply_rule_modify(draft: dict, background_tasks: BackgroundTasks,
         scope_target_id=rule.scope_target_id)
     errors = rule_builder.validate_rule_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     await repo.update_rule(session, rule.id, values={
         "definition_json": {**clean["definition_json"],
@@ -681,13 +714,15 @@ async def _apply_case_type_modify(draft: dict, background_tasks: BackgroundTasks
     from case_service.api.routers.case_types import _assert_can_write_case_type
     _assert_can_write_case_type(user, ct.tenant_id, action="update")
     if draft.get("base_checksum") != _checksum(ct.definition_json):
-        raise HTTPException(409, "Case type changed since this draft was generated "
-                                 "— re-draft against the current definition")
+        raise coded(409, DRAFT_STALE_409,
+                    "Case type changed since this draft was generated "
+                    "— re-draft against the current definition")
 
     definition = draft.get("definition_json")
     errors = modify_builder.validate_case_type_definition(definition)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     ct.definition_json = definition
     await session.commit()
@@ -703,15 +738,17 @@ async def _apply_form_modify(draft: dict, session: AsyncSession):
     # parity with PATCH /forms (authenticated)
     form = await _get_form_or_404(session, draft.get("target_id"))
     if draft.get("base_checksum") != _checksum(form.definition_json):
-        raise HTTPException(409, "Form changed since this draft was generated — "
-                                 "re-draft against the current definition")
+        raise coded(409, DRAFT_STALE_409,
+                    "Form changed since this draft was generated — "
+                    "re-draft against the current definition")
 
     clean = form_builder.normalize_form_draft(
         {"name": form.name,
          "fields": (draft.get("definition_json") or {}).get("fields")})
     errors = form_builder.validate_form_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     # replace the fields, preserve every other definition key (layout etc.)
     from datetime import datetime, timezone
@@ -727,20 +764,21 @@ async def _apply_connector_modify(draft: dict, background_tasks: BackgroundTasks
                                   session: AsyncSession, user: AuthenticatedUser):
     # gated in HxDraft (matching the rotate-credentials posture) — the PUT
     # endpoint's authenticated-only posture is neither relied on nor widened
-    if not (user.is_admin or "integration" in (user.roles or [])
-            or "admin" in (user.roles or []) or "superadmin" in (user.roles or [])
-            or user.has_privilege("*", "*")):
-        raise HTTPException(403, "Applying a connector config change requires "
-                                 "admin or the integration role")
+    if not hxguard.user_allows(user, "integration.connectors.rotate"):
+        raise coded(403, DRAFT_ROLE_403,
+                    "Applying a connector config change requires "
+                    "the integration.connectors.rotate privilege")
     connector = await _get_connector_or_404(session, draft.get("target_id"))
     if draft.get("base_checksum") != _checksum(connector.config):
-        raise HTTPException(409, "Connector changed since this draft was generated "
-                                 "— re-draft against the current config")
+        raise coded(409, DRAFT_STALE_409,
+                    "Connector changed since this draft was generated "
+                    "— re-draft against the current config")
 
     config = draft.get("config")
     errors = modify_builder.validate_connector_config(config)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     # config ONLY — name/enabled/credentials are never touched by a draft
     from datetime import datetime, timezone
@@ -776,13 +814,14 @@ async def stage_draft(
     from case_service.api.routers.hxnexus import chat_rate_limiter
     allowed, retry = chat_rate_limiter.is_allowed(str(user.user_id))
     if not allowed:
-        raise HTTPException(429, f"Rate limit reached. Try again in {retry}s.",
+        raise coded(429, DRAFT_RATE_429,
+                    f"Rate limit reached. Try again in {retry}s.",
                             headers={"Retry-After": str(retry)})
     if body.kind == "escalation":
         return await _stage_escalation(body.draft, session, user)
     if body.kind != "rule":
-        raise HTTPException(400, "Only rule and escalation drafts can be staged "
-                                 "in HxBranch")
+        raise coded(400, DRAFT_KIND_400,
+                    "Only rule and escalation drafts can be staged in HxBranch")
 
     # Same tamper posture as Apply: the client copy is never trusted.
     d = body.draft.get("definition_json") or {}
@@ -792,7 +831,8 @@ async def stage_draft(
         scope_target_id=body.draft.get("scope_target_id"))
     errors = rule_builder.validate_rule_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
     await _assert_rule_name_free(session, clean["name"], clean["version"])
 
     rule = await repo.create_rule(session, data={
@@ -847,7 +887,8 @@ async def _stage_escalation(draft: dict, session: AsyncSession,
         case_type_id=draft.get("case_type_id"))
     errors = escalation_builder.validate_escalation_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
 
     ct_id = None
     if clean["scope"] == "case_type":
@@ -902,7 +943,8 @@ async def _apply_form(draft: dict, session: AsyncSession):
         clean["definition_json"]["description"] = desc
     errors = form_builder.validate_form_draft(clean)
     if errors:
-        raise HTTPException(400, "Draft failed validation: " + "; ".join(errors))
+        raise coded(400, DRAFT_VALIDATION_400,
+                    "Draft failed validation: " + "; ".join(errors))
     form = await repo.create_form(session, data={
         "name": clean["name"], "version": clean["version"],
         "definition_json": clean["definition_json"],

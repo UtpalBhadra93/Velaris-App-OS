@@ -1,9 +1,46 @@
-export const ACCESS_KEY  = "helix_token";
-const REFRESH_KEY = "helix_refresh_token";
+export const ACCESS_KEY  = "velaris_token";
+const REFRESH_KEY = "velaris_refresh_token";
 // Group J: id of this browser's auth_devices row. Survives logout on purpose —
 // the next login reuses the same device record instead of growing a new row
 // per login. The server re-validates ownership + user-agent before reuse.
-const DEVICE_KEY  = "helix_device_id";
+const DEVICE_KEY  = "velaris_device_id";
+
+/* ── One-time carry-over from the pre-rebrand key names ───────────
+   These are `localStorage` keys in this app only — the server never sees them,
+   it reads the `Authorization` header — so renaming them is cosmetic *except*
+   that a browser holding a live session under the old names would silently be
+   logged out by the new build. So the old names are read once and rewritten,
+   then removed.
+
+   Removal is the point, not tidiness: `clearTokens()` only clears the keys it
+   knows about, so a leftover `helix_refresh_token` would survive a sign-out and
+   leave a usable refresh token sitting in the browser. Runs at module load,
+   before any accessor can be called, because every consumer reaches storage
+   through this module. */
+const LEGACY_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["helix_token",         ACCESS_KEY],
+  ["helix_refresh_token", REFRESH_KEY],
+  ["helix_device_id",     DEVICE_KEY],
+];
+
+export function migrateLegacyKeys(): void {
+  try {
+    for (const [legacy, current] of LEGACY_KEYS) {
+      const value = localStorage.getItem(legacy);
+      if (value === null) continue;
+      // Never overwrite a value this build already wrote: a second tab on the
+      // old build can rewrite the legacy key after this one has moved on, and
+      // adopting that stale pair would revoke the live session.
+      if (localStorage.getItem(current) === null) localStorage.setItem(current, value);
+      localStorage.removeItem(legacy);
+    }
+  } catch {
+    // Storage disabled or full. Nothing here is worth breaking startup for —
+    // the worst case is one extra sign-in.
+  }
+}
+
+migrateLegacyKeys();
 
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_KEY);
@@ -11,6 +48,16 @@ export function getAccessToken(): string | null {
 
 export function getRefreshToken(): string | null {
   return localStorage.getItem(REFRESH_KEY);
+}
+
+/** Set the access token alone.
+ *
+ * The portal's own sign-in issues an access token and no refresh token, so it
+ * cannot go through `setTokens`. Deliberately does not arm the proactive
+ * refresh: there is no refresh token to rotate.
+ */
+export function setAccessToken(access: string): void {
+  localStorage.setItem(ACCESS_KEY, access);
 }
 
 export function setTokens(access: string, refresh: string): void {
@@ -22,6 +69,10 @@ export function setTokens(access: string, refresh: string): void {
 export function clearTokens(): void {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  // A tab still running the pre-rename build can rewrite the legacy keys after
+  // startup migrated them. Signing out must not leave that copy behind.
+  localStorage.removeItem("helix_token");
+  localStorage.removeItem("helix_refresh_token");
   cancelProactiveRefresh();
 }
 

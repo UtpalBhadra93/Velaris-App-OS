@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from "r
 import { useAuth } from "./AuthContext";
 import { setTokens, getDeviceId, setDeviceId } from "./tokenManager";
 import { passkeysSupported, getAssertion } from "./webauthn";
+import { beginSso } from "./sso";
 import { Button, Spinner } from "@shared/components";
 import { BRAND, THEME_STORAGE_KEY } from "@/branding";
 
@@ -10,7 +11,17 @@ import { BRAND, THEME_STORAGE_KEY } from "@/branding";
    ═══════════════════════════════════════════════════════════════════ */
 
 type Stage = "login" | "mfa" | "forgot" | "reset" | "change_required";
-type SsoProvider = { id: string; provider: string; client_id: string };
+type SsoProvider = {
+  id: string; provider: string; client_id: string;
+  /** SAML only: where the SP-initiated sign-in starts. SAML is not an OAuth
+   *  redirect — the tenant is in the path, so the server supplies the URL. */
+  login_url?: string;
+  /** Branding from the provider's config. `saml` on its own tells a user
+   *  nothing about which door they are being sent to, so an administrator
+   *  names it — and supplies the IdP's own mark, which we never draw. */
+  display_name?: string;
+  icon_url?: string;
+};
 type LoginThemePref = "dark" | "light" | "system";
 
 /* ── Theme context (login-page scoped) ─────────────────────────── */
@@ -87,6 +98,71 @@ function Logo() {
         Sign in to your account
       </div>
     </div>
+  );
+}
+
+/* ── Password input with a show/hide toggle ────────────────────────
+   One component for every password field on this page (login, reset,
+   first-login change) so the reveal affordance is identical everywhere.
+   `type` flips between "password" and "text"; the eye button carries an
+   aria-label and aria-pressed so it is usable without sight of the icon. */
+function PasswordInput({
+  value, onChange, onKeyDown, placeholder, autoFocus, isDark, style,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onKeyDown?: (e: React.KeyboardEvent) => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+  isDark: boolean;
+  style?: React.CSSProperties;
+}) {
+  const [shown, setShown] = useState(false);
+  const IS = inputStyle(isDark);
+  return (
+    <div style={{ position: "relative", ...style }}>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        type={shown ? "text" : "password"}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        /* Leave room for the toggle so long values do not run under it. */
+        style={{ ...IS, paddingRight: 44 }}
+      />
+      <button
+        type="button"
+        /* Keep the field focused — clicking the eye must not steal focus
+           or fire the field's Enter handler on the way out. */
+        onMouseDown={e => e.preventDefault()}
+        onClick={() => setShown(s => !s)}
+        aria-label={shown ? "Hide password" : "Show password"}
+        aria-pressed={shown}
+        title={shown ? "Hide password" : "Show password"}
+        style={{
+          position: "absolute", top: 0, right: 0, height: "100%",
+          width: 42, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "none", border: "none", cursor: "pointer", padding: 0,
+          color: isDark ? "rgba(255,255,255,0.55)" : "#6b7280",
+        }}
+      >
+        <EyeIcon off={shown} />
+      </button>
+    </div>
+  );
+}
+
+/* Eye / eye-off, inheriting the button's `color` via currentColor. */
+function EyeIcon({ off }: { off: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+      {off && <line x1="3" y1="3" x2="21" y2="21" />}
+    </svg>
   );
 }
 
@@ -251,11 +327,11 @@ export default function LoginPage() {
   // Holds a short-lived token for the forced-change-password flow
   const pendingTokenRef = useRef<string | null>(null);
 
-  // Load SSO providers (non-blocking)
+  // Load SSO providers (non-blocking). No Authorization header: nobody on a
+  // login page has a token, and sending an empty bearer is what used to make
+  // this 401 and hide every SSO button.
   useEffect(() => {
-    fetch("/api/v1/auth/real/sso/providers", {
-      headers: { Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` },
-    })
+    fetch("/api/v1/auth/real/sso/providers")
       .then(r => r.ok ? r.json() : { providers: [] })
       .then(d => setSsoProviders(d.providers ?? []))
       .catch(() => {});
@@ -425,13 +501,23 @@ export default function LoginPage() {
   const handleSso = async (provider: SsoProvider) => {
     setBusy(true);
     try {
-      const redirect = `${window.location.origin}/auth/sso/callback`;
-      const r = await fetch(`/api/v1/auth/real/sso/${provider.provider}/auth-url?redirect_uri=${encodeURIComponent(redirect)}`, {
-        headers: { "Content-Type": "application/json" },
-      });
-      const d = await r.json();
-      if (d.auth_url) window.location.href = d.auth_url;
-    } catch { setBusy(false); }
+      if (provider.provider === "saml") {
+        // A full navigation: the response is a 302 carrying an AuthnRequest to
+        // the IdP, and the browser has to follow it. There is no `state` to
+        // stash — the assertion's signature is the credential, and the ACS
+        // hands back a single-use code that `ProtectedRoute` redeems.
+        if (!provider.login_url) {
+          throw new Error("This SAML provider is not fully configured.");
+        }
+        window.location.href = provider.login_url;
+        return;
+      }
+      // beginSso stores the state this tab must see come back — see auth/sso.ts.
+      await beginSso(provider.provider, `${window.location.origin}/auth/sso/callback`);
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Could not start SSO sign-in.", ok: false });
+      setBusy(false);
+    }
   };
 
   // Computed per-render so every stage picks up the current mode
@@ -485,10 +571,11 @@ export default function LoginPage() {
       <Msg msg={msg} />
       <input value={otp} onChange={e => setOtp(e.target.value)} placeholder="OTP code" maxLength={6}
         style={{ ...IS, marginBottom: 10, textAlign: "center", letterSpacing: "0.2em" }} />
-      <input value={newPass} onChange={e => setNewPass(e.target.value)} type="password" placeholder="New password (min 8 chars)"
-        style={{ ...IS, marginBottom: 10 }} />
-      <input value={confirmPass} onChange={e => setConfirmPass(e.target.value)} type="password" placeholder="Confirm new password"
-        onKeyDown={e => e.key === "Enter" && handleReset()} style={{ ...IS, marginBottom: 16 }} />
+      <PasswordInput value={newPass} onChange={setNewPass} isDark={isDark}
+        placeholder="New password (min 8 chars)" style={{ marginBottom: 10 }} />
+      <PasswordInput value={confirmPass} onChange={setConfirmPass} isDark={isDark}
+        placeholder="Confirm new password"
+        onKeyDown={e => e.key === "Enter" && handleReset()} style={{ marginBottom: 16 }} />
       <Button onClick={handleReset} disabled={busy || !otp || !newPass} style={{ width: "100%", justifyContent: "center" }}>
         {busy ? "Resetting…" : "Reset Password"}
       </Button>
@@ -505,11 +592,11 @@ export default function LoginPage() {
         This is your first login. Please set a new password before continuing.
       </div>
       <Msg msg={msg} />
-      <input value={newPass} onChange={e => setNewPass(e.target.value)} type="password"
-        placeholder="New password (min 8 chars)" autoFocus style={{ ...IS, marginBottom: 10 }} />
-      <input value={confirmPass} onChange={e => setConfirmPass(e.target.value)} type="password"
+      <PasswordInput value={newPass} onChange={setNewPass} isDark={isDark}
+        placeholder="New password (min 8 chars)" autoFocus style={{ marginBottom: 10 }} />
+      <PasswordInput value={confirmPass} onChange={setConfirmPass} isDark={isDark}
         placeholder="Confirm new password" onKeyDown={e => e.key === "Enter" && handleChangeRequired()}
-        style={{ ...IS, marginBottom: 16 }} />
+        style={{ marginBottom: 16 }} />
       <Button onClick={handleChangeRequired}
         disabled={busy || newPass.length < 8 || newPass !== confirmPass}
         style={{ width: "100%", justifyContent: "center" }}>
@@ -530,8 +617,18 @@ export default function LoginPage() {
             {ssoProviders.map(p => (
               <button key={p.id} onClick={() => handleSso(p)} disabled={busy}
                 style={{ padding: "10px 16px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", background: "var(--bg-elevated)", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10, color: "var(--text-primary)" }}>
-                <span style={{ fontWeight: 700, fontSize: 16, width: 20, textAlign: "center" }}>{PROVIDER_ICON[p.provider] ?? "🔒"}</span>
-                Continue with {PROVIDER_LABEL[p.provider] ?? p.provider}
+                {p.icon_url
+                  ? /* An SVG loaded through <img> is isolated — it cannot inherit
+                       `currentColor` — so a monochrome mark would stay black on the
+                       dark theme. Inverting follows the theme without the admin
+                       having to supply two files. */
+                    <img src={p.icon_url} alt="" aria-hidden="true"
+                         style={{ width: 20, height: 20, objectFit: "contain",
+                                  filter: isDark ? "invert(1)" : "none" }} />
+                  : <span style={{ fontWeight: 700, fontSize: 16, width: 20, textAlign: "center" }}>
+                      {PROVIDER_ICON[p.provider] ?? "🔒"}
+                    </span>}
+                Continue with {p.display_name || PROVIDER_LABEL[p.provider] || p.provider}
               </button>
             ))}
           </div>
@@ -558,9 +655,9 @@ export default function LoginPage() {
             Forgot password?
           </button>
         </div>
-        <input value={password} onChange={e => setPassword(e.target.value)} type="password"
+        <PasswordInput value={password} onChange={setPassword} isDark={isDark}
           onKeyDown={e => e.key === "Enter" && handleLogin()}
-          placeholder="••••••••" style={IS} />
+          placeholder="••••••••" />
       </div>
 
       {(authError || msg) && (

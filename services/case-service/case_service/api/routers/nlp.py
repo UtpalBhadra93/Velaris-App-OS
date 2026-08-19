@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.config import get_settings
+from case_service import hxguard
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 from case_service.hxnexus.factory import check_ai_available, get_ai_info
@@ -20,7 +21,7 @@ from case_service.nlp import case_type_builder
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/nlp", tags=["nlp"], dependencies=[Depends(require_role("designer", "admin"))])
+router = APIRouter(prefix="/nlp", tags=["nlp"], dependencies=[Depends(hxguard.guard("design.nlp.access"))])
 
 
 class GenerateRequest(BaseModel):

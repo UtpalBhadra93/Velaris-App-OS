@@ -138,11 +138,12 @@ async def try_advance(case_id: str) -> dict[str, Any]:
         ct = await repo.get_case_type(session, case.case_type_id)
         definition = (ct.definition_json if ct else {}) or {}
 
-        new_stage = await _auto_advance_if_complete(
+        new_stage, held_by_risk = await _auto_advance_if_complete(
             session, uuid.UUID(case_id), str(case.current_stage_id), definition,
         )
         await session.commit()
-        return {"advanced": new_stage is not None, "stage_id": new_stage}
+        return {"advanced": new_stage is not None, "stage_id": new_stage,
+                "held_by_risk": held_by_risk}
 
 
 @activity.defn

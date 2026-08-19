@@ -5,6 +5,7 @@
 //   <SLAPolicyTreeLink value={policy.escalation_tree_id}
 //                      onChange={(id) => setPolicy({...policy, escalation_tree_id: id, use_v2: !!id})} />
 import React, { useEffect, useState } from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Tree = { id: string; name: string; scope: string; is_active: boolean };
 
@@ -22,7 +23,7 @@ export function SLAPolicyTreeLink({
     (async () => {
       try {
         const r = await fetch("/api/v1/escalation-trees?active_only=true", {
-          headers: localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {},
+          headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {},
         });
         if (!r.ok) throw new Error(`${r.status}`);
         const all: Tree[] = await r.json();

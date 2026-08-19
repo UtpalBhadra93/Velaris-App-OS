@@ -31,6 +31,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     TenantModel,
@@ -488,7 +489,7 @@ async def admin_list_customers(
     q: str = "",
     limit: int = 50,
     offset: int = 0,
-    current_user: AuthenticatedUser = Depends(require_role("admin")),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.read")),
     session: AsyncSession = Depends(get_session),
 ):
     tenant = await _get_tenant_by_slug(slug, session)
@@ -529,7 +530,7 @@ async def admin_list_customers(
 async def admin_get_customer(
     slug: str,
     customer_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(require_role("admin")),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.read")),
     session: AsyncSession = Depends(get_session),
 ):
     tenant = await _get_tenant_by_slug(slug, session)
@@ -575,7 +576,7 @@ async def admin_get_customer(
 async def admin_delete_customer(
     slug: str,
     customer_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(require_role("admin")),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.erase")),
     session: AsyncSession = Depends(get_session),
 ):
     """GDPR Art. 17 — admin-initiated anonymisation."""

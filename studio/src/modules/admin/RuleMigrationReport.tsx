@@ -44,7 +44,7 @@ export default function RuleMigrationReport() {
 
   const load = useCallback(async () => {
     try {
-      const r = await apiFetch("/api/v1/rules/lint/report");
+      const r = await apiFetch("/rules/lint/report");
       if (!r.ok) throw new Error(await r.text());
       setData(await r.json());
       setError(null);

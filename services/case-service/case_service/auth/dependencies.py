@@ -58,25 +58,50 @@ async def _enrich_with_access_group(
 ) -> AuthenticatedUser:
     """Load the operator's active access group from the DB and enrich the user.
 
-    Falls back gracefully — if no access groups are assigned, the user object
-    is returned unchanged so all existing require_role() checks still work.
+    Falls back gracefully — if no access groups are assigned, the user object is
+    returned unchanged. Since Phase 4 step 1 it is returned unchanged in one
+    further respect: `user.roles` is never written here, so an access group can
+    add context but cannot add platform authority.
     """
     from case_service.db.models import (
         UserDirectoryModel, AccessGroupModel, AccessRoleModel,
         OperatorAccessGroupModel, PortalModel,
     )
 
-    # Load operator record
-    dir_row = (await session.execute(
-        select(UserDirectoryModel).where(UserDirectoryModel.user_id == user.user_id)
-    )).scalar_one_or_none()
+    # ── Identity resolution (fixed 2026-08-15) ────────────────────
+    #
+    # These two tables key on a free-text operator id, and what lands in it
+    # depends on who wrote the row: the SSO/LDAP sync and the admin CRUD screens
+    # write a **username or email**, while `auth_real._make_tokens` mints tokens
+    # with `sub = str(user.id)`, a **UUID**. So matching only on `user.user_id`
+    # found nothing for a normally-logged-in operator: no access group ever
+    # loaded, and `tenant_id` was never populated from the directory. P37 was
+    # inert for every staff login, silently, since it shipped.
+    #
+    # Resolution is by PRECEDENCE, not by `IN (...)`. Merging the three
+    # identifiers into one query would conflate two accounts the moment one
+    # user's username equals another's email — rare, but the failure mode is
+    # handing someone else's access group to the wrong person, so it is not a
+    # risk worth taking for one fewer round trip.
+    identifiers = [i for i in (user.user_id, user.username, user.email) if i]
 
-    # Load all access group memberships for this operator
-    oag_rows = (await session.execute(
-        select(OperatorAccessGroupModel).where(
-            OperatorAccessGroupModel.operator_id == user.user_id
-        )
-    )).scalars().all()
+    dir_row = None
+    for ident in identifiers:
+        dir_row = (await session.execute(
+            select(UserDirectoryModel).where(UserDirectoryModel.user_id == ident)
+        )).scalar_one_or_none()
+        if dir_row is not None:
+            break
+
+    oag_rows = []
+    for ident in identifiers:
+        oag_rows = (await session.execute(
+            select(OperatorAccessGroupModel).where(
+                OperatorAccessGroupModel.operator_id == ident
+            )
+        )).scalars().all()
+        if oag_rows:
+            break
 
     # Always populate tenant_id from user_directory regardless of access groups
     if dir_row and dir_row.tenant_id:
@@ -149,10 +174,19 @@ async def _enrich_with_access_group(
         allowed_queue_ids=ag.allowed_queue_ids or ["*"],
     )
 
-    # Merge role names into AuthenticatedUser.roles so require_role() keeps working
-    merged_roles = list(set(user.roles) | set(role_names))
-
-    user.roles = merged_roles
+    # Phase 4 step 1 (2026-08-15): access-role NAMES are no longer merged into
+    # `user.roles`. They were, from P37 until now, so that `require_role("admin")`
+    # kept working for operators whose access role happened to be named `admin` —
+    # which also meant *naming* an access role `admin` conferred platform
+    # administration. `require_role` has had zero call sites since Phase 3, so the
+    # bridge has nothing left to carry.
+    #
+    # The names are still published on `active_access_group.roles` (UI, and the
+    # case-level vocabulary in `core/access_control.py`); what they no longer do
+    # is answer a platform authorization question. An access group reaches a
+    # platform action only through a privilege entry naming the dotted namespace
+    # — see `hxguard/privileges.py::_crosses_into_platform_namespace`, which is
+    # load-bearing from this commit onward rather than merely defensive.
     user.active_access_group = active_ag
     user.available_access_groups = available
     return user
@@ -262,26 +296,48 @@ async def _security_check(
 
 
 def require_role(*roles: str) -> Callable:
-    """Dependency factory — require user to have at least one of the given roles.
+    """**RETIRED (Phase 4 step 2). Raises at import-of-use, deliberately.**
 
-    Superadmin bypasses all role checks unconditionally.
+    This was the platform's authorization gate: it passed for `superadmin`, for
+    anyone whose `is_admin` was true, or for any of the named roles — where
+    `has_role()` itself returned True for every role once admin was present.
+    Phase 3 replaced all 110 of its call sites with `hxguard.guard(action)`, and
+    Phase 3.5 did the same for the 56 that hid behind the `require_admin()`
+    alias.
+
+    It is kept as a loud failure rather than deleted outright because the
+    *symbol* is still imported (unused) by 25 routers, and a NameError at import
+    time in an unrelated deploy is a worse first signal than this message. A
+    reintroduced gate now fails when the route is built, not silently at request
+    time with role-name semantics nobody expects any more.
     """
-    async def _check(user: AuthenticatedUser = Depends(get_current_user)):
-        # Superadmin passes every gate
-        if "superadmin" in (user.roles or []):
-            return user
-        if user.is_admin:
-            return user
-        for role in roles:
-            if user.has_role(role):
-                return user
-        raise HTTPException(
-            status_code=403,
-            detail=f"Requires one of: {', '.join(roles)}",
-        )
-    return _check
+    raise RuntimeError(
+        "require_role() was retired in Phase 4 of privilege-based authorization. "
+        f"Use hxguard.guard('<action>') instead of require_role({roles!r}) — see "
+        "case_service/hxguard/actions.py for the registry, and "
+        "docs/Future/privilege-based-authorization.md for why."
+    )
+
+
+async def _shadow_compare(request, user, roles, allowed: bool) -> None:
+    """Phase-2 observation. Never raises, never alters the decision.
+
+    Nothing calls this now that `require_role` is retired. It stays, with
+    `hxguard/shadow.py`, because it is the harness a *future* migration reuses:
+    run the new decider alongside the old one and count disagreements before
+    changing any answer. Deleting it would mean rebuilding it.
+    """
+    try:
+        from case_service.config import get_settings
+        if not getattr(get_settings(), "hxguard_privilege_shadow", True):
+            return
+        from case_service.hxguard import shadow
+        await shadow.compare(request, user, roles, allowed)
+    except Exception:                       # observation must never break auth
+        pass
 
 
 def require_admin() -> Callable:
-    """Dependency — require admin role."""
+    """**RETIRED (Phase 4 step 2)** — the one-line alias that hid 56 gates from
+    the Phase-0 inventory. See `require_role`."""
     return require_role("admin")

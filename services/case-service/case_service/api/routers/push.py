@@ -25,6 +25,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     DeviceTokenModel,
@@ -175,7 +176,7 @@ async def admin_list_devices(
     active_only: bool = Query(True),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.push.read")),
     session: AsyncSession = Depends(get_session),
 ):
     q = select(DeviceTokenModel)
@@ -203,7 +204,7 @@ async def admin_delivery_logs(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.push.read")),
     session: AsyncSession = Depends(get_session),
 ):
     q = select(NotificationLogModel)
@@ -284,7 +285,7 @@ async def upsert_preference(
 @router.get("/case-types/{case_type_id}/overrides")
 async def get_ct_overrides(
     case_type_id: uuid.UUID,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.push.read")),
     session: AsyncSession = Depends(get_session),
 ):
     rows = await session.execute(
@@ -303,7 +304,7 @@ async def upsert_ct_override(
     case_type_id: uuid.UUID,
     event_type: str,
     body: OverrideIn,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.push.configure")),
     session: AsyncSession = Depends(get_session),
 ):
     override = await session.scalar(
@@ -343,7 +344,7 @@ async def vapid_public_key(
 @router.post("/test-send")
 async def test_send(
     body: TestSendIn,
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.push.operate")),
     session: AsyncSession = Depends(get_session),
 ):
     payload = PushPayload(title=body.title, body=body.body,

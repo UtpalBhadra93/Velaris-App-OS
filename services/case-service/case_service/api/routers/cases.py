@@ -45,6 +45,7 @@ from case_service.integrations.webhook_dispatcher import (
 from case_service.process_mining import event_logger
 from case_service.realtime.publisher import publish_case_event, publish_assignment_event
 from case_service.db.session import get_session
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.hxstream.emitter import emit_trace
@@ -80,8 +81,14 @@ async def _get_pii_fields(session: AsyncSession, case_type_id: uuid.UUID) -> set
 
 
 def _has_sensitive_access(user: AuthenticatedUser) -> bool:
-    """True if the user may see PII/sensitive case fields unredacted."""
-    return user.is_admin or "finance" in user.roles or "admin" in user.roles
+    """True if the user may see PII/sensitive case fields unredacted.
+
+    Phase 4 step 2: was `is_admin or "finance" in roles or "admin" in roles`.
+    Sync and boolean by design — the answer redacts a field, it does not refuse
+    a request, so it must not write an `authz_denied` event (one per field per
+    row would bury the real denials HxShield watches for).
+    """
+    return hxguard.user_allows(user, "finance.details.read")
 
 
 async def _redact_data(
@@ -436,7 +443,8 @@ async def list_cases(
     accessible_to_user = None
     from case_service.config import get_settings
     if (get_settings().hxguard_case_enforcement or "shadow").lower() == "enforce" \
-            and not (user.is_admin or "superadmin" in (user.roles or [])
+            and not (hxguard.user_allows(user, "casework.sensitive.read")
+                     or "superadmin" in (user.roles or [])
                      or "manager" in (user.roles or [])):
         from case_service.db.models import AccessGroupModel, OperatorAccessGroupModel
         allowed_lists = (await session.execute(
@@ -584,6 +592,12 @@ async def apply_status_change(
     await case_lifecycle.on_status_changed(
         session, case_id=case_id, old_status=prev, new_status=new_status
     )
+
+    # HxSentinel: a closing case is the moment its data and document
+    # verifications are final, so it is when its signals are worth extracting.
+    # No-ops with zero DB work when HxSentinel is off, and fails open.
+    from case_service.sentinel import extraction as _risk_extraction
+    await _risk_extraction.extract_on_close(session, case_id, new_status)
 
     # Phase 22: Real-time broadcast
     try:
@@ -1118,10 +1132,13 @@ async def _auto_advance_if_complete(
     case_id: uuid.UUID,
     stage_id: str,
     case_type_def: dict,
-) -> str | None:
+) -> tuple[str | None, bool]:
     """Check if all required steps in stage_id are complete; if so advance to next stage.
 
-    Returns the new stage_id if advanced, else None.
+    Returns ``(new_stage_id, held_by_risk)``: the new stage id if it advanced,
+    else None; and whether an open HxSentinel hold is what stopped it. The
+    caller needs those apart — "held" and "steps outstanding" are both a
+    non-advance, but only one of them is something a human must act on.
     """
     from sqlalchemy import select
     from case_service.db.models import CaseStepCompletionModel
@@ -1132,14 +1149,14 @@ async def _auto_advance_if_complete(
     )
     current_stage = next((s for s in stages if s["id"] == stage_id), None)
     if current_stage is None:
-        return None
+        return None, False
 
     required_step_ids = {
         s["id"] for s in current_stage.get("steps", [])
         if s.get("required", True) and s.get("step_type") != "automated"
     }
     if not required_step_ids:
-        return None  # no required steps → don't auto-advance (avoid infinite loops)
+        return None, False  # no required steps → don't auto-advance (avoid infinite loops)
 
     completed = (await session.execute(
         select(CaseStepCompletionModel).where(
@@ -1151,7 +1168,7 @@ async def _auto_advance_if_complete(
 
     completed_ids = {c.step_id for c in completed}
     if not required_step_ids.issubset(completed_ids):
-        return None  # not all required steps done yet
+        return None, False  # not all required steps done yet
 
     # HxSentinel verify gate (opt-in per tenant): an open risk hold blocks the
     # advance until a human clears it. Fails OPEN — a HxSentinel fault never
@@ -1160,12 +1177,12 @@ async def _auto_advance_if_complete(
     if await _risk_engine.advance_blocked(session, case_id):
         await _audit(session, case_id, "stage_advance_held_by_risk",
                      new_value={"stage_id": stage_id})
-        return None
+        return None, True
 
     # Find the next stage
     current_idx = next((i for i, s in enumerate(stages) if s["id"] == stage_id), -1)
     if current_idx < 0 or current_idx >= len(stages) - 1:
-        return None  # already at last stage
+        return None, False  # already at last stage
 
     next_stage_id = stages[current_idx + 1]["id"]
     await repo.update_case_instance(session, case_id, values={"current_stage_id": next_stage_id})
@@ -1208,7 +1225,7 @@ async def _auto_advance_if_complete(
             tenant_id="default",
         )
 
-    return next_stage_id
+    return next_stage_id, False
 
 
 @router.post("/{case_id}/steps/{step_id}/complete", response_model=StepCompletionResponse)
@@ -1330,8 +1347,9 @@ async def complete_step(
 
     # Auto-advance if all required steps are done
     auto_advanced = False
+    advance_held_by_risk = False
     if body.status == "completed" and ["open", "new", "reopened"].__contains__(case.status):
-        new_stage = await _auto_advance_if_complete(
+        new_stage, advance_held_by_risk = await _auto_advance_if_complete(
             session, case_id, body.stage_id, ct_def
         )
         auto_advanced = new_stage is not None
@@ -1354,6 +1372,7 @@ async def complete_step(
         completed_by=completion.completed_by,
         completed_at=completion.completed_at.isoformat(),
         auto_advanced=auto_advanced,
+        advance_held_by_risk=advance_held_by_risk,
     )
 
 

@@ -129,8 +129,11 @@ async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
             # no artefact anywhere in the run.
             if dest.consent_gated:
                 try:
-                    allowed, reason = await consent_svc.allows_subject(
-                        session, case.portal_submitter_email, consent_svc.DATA_SHARING,
+                    # allows_case, not allows_subject: an anonymized case has a
+                    # NULL submitter, which on its own reads as "no data subject"
+                    # and would let an erased row sync out to the warehouse.
+                    allowed, reason = await consent_svc.allows_case(
+                        session, case, consent_svc.DATA_SHARING,
                         tenant_id=dest.tenant_id,
                     )
                 except Exception as exc:  # noqa: BLE001

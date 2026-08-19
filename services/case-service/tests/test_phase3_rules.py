@@ -496,7 +496,7 @@ class TestFormsAPI:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Rules API — HxGuard rules.write gate (was auth-only; HxDraft backlog)
+# Rules API — HxGuard rules.definitions.write gate (was auth-only; HxDraft backlog)
 # ═══════════════════════════════════════════════════════════════════
 
 

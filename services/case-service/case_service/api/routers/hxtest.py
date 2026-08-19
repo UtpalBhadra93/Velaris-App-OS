@@ -26,12 +26,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_admin
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import TestSuiteModel, CaseTypeModel, MarketplaceInstallModel
 from case_service.db.session import get_session
 from case_service.hxtest import generator
 from case_service.testsuite import dsl
+
+from case_service.hxguard import service as hxguard
 
 router = APIRouter(prefix="/hxtest", tags=["hxtest"])
 
@@ -73,7 +75,7 @@ class GenerateReq(BaseModel):
 @router.post("/generate")
 async def generate(
     body: GenerateReq,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.hxtest.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -132,7 +134,7 @@ class RegisterBundledReq(BaseModel):
 @router.post("/register-bundled")
 async def register_bundled(
     body: RegisterBundledReq,
-    _admin=Depends(require_admin()),
+    _admin=Depends(hxguard.guard("platform.hxtest.write")),
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):

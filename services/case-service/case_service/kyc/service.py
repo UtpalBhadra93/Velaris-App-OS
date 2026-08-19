@@ -158,10 +158,23 @@ async def handle_onfido_webhook(session: AsyncSession, payload: bytes, sig_heade
             from case_service.hxbridge.connectors.onfido_connector import OnfidoConnector
             creds = decrypt_credentials(reg.credentials)
             verified = OnfidoConnector(config=reg.config or {}, credentials=creds).verify_webhook(payload, sig_header)
-    elif not sig_header:
-        verified = True  # dev/test
+    # FAIL CLOSED (2026-08-15). This used to read:
+    #
+    #     elif not sig_header:
+    #         verified = True          # dev/test
+    #     if not verified and sig_header:
+    #         return {{"status": "rejected", ...}}
+    #
+    # so a caller who sent NO signature header at all was treated as verified,
+    # and the rejection could only fire for someone who had bothered to send a
+    # (bad) signature. Proven exploitable anonymously: an unsigned POST to
+    # /api/v1/payments/webhooks/stripe marked a real payment request
+    # `succeeded`, completed its workflow step and posted to the ledger.
+    #
+    # Unsigned is now simply unverified. The tests already sign their webhooks,
+    # so nothing legitimate depended on the shortcut.
 
-    if not verified and sig_header:
+    if not verified:
         return {"status": "rejected", "reason": "invalid_signature"}
 
     if iv and action == "check.completed":
@@ -260,10 +273,23 @@ async def handle_docusign_webhook(session: AsyncSession, payload: bytes, sig_hea
             from case_service.hxbridge.connectors.docusign_connector import DocuSignConnector
             creds = decrypt_credentials(reg.credentials)
             verified = DocuSignConnector(config=reg.config or {}, credentials=creds).verify_webhook(payload, sig_header)
-    elif not sig_header:
-        verified = True
+    # FAIL CLOSED (2026-08-15). This used to read:
+    #
+    #     elif not sig_header:
+    #         verified = True          # dev/test
+    #     if not verified and sig_header:
+    #         return {{"status": "rejected", ...}}
+    #
+    # so a caller who sent NO signature header at all was treated as verified,
+    # and the rejection could only fire for someone who had bothered to send a
+    # (bad) signature. Proven exploitable anonymously: an unsigned POST to
+    # /api/v1/payments/webhooks/stripe marked a real payment request
+    # `succeeded`, completed its workflow step and posted to the ledger.
+    #
+    # Unsigned is now simply unverified. The tests already sign their webhooks,
+    # so nothing legitimate depended on the shortcut.
 
-    if not verified and sig_header:
+    if not verified:
         return {"status": "rejected", "reason": "invalid_signature"}
 
     if es and event == "envelope-completed":

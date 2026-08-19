@@ -3,12 +3,13 @@
  * ENH-11: Full visual redesign — professional, mobile-first, customer-facing
  * Route: /portal/:slug  ·  Standalone — no sidebar, no AppLayout.
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { BRAND } from "@/branding";
 import { useFeatureFlags } from "@/app/FeatureFlagsContext";
 import CaseDetail from "./CaseDetail";
 import { clearCustomerToken, setNotifyEmail, slideSession } from "./portalApi";
+import { portalErrorText } from "./portalError";
 import { flushPending, listPending, onQueueChange, queueSubmission, registerPortalPwa } from "./portalOffline";
 import { PortalFormField, getCaseTypeForm, postAskFeedback } from "./portalApi";
 
@@ -55,6 +56,7 @@ type SLAInfo = {
 // Shared visual vocabulary (C, STATUS_CFG, StatusBadge, date helpers) lives in
 // portalUi.tsx — imported below so CaseDetail and future views stay consistent.
 import { C, STATUS_CFG, StatusBadge, sl, fmtDate, fmtDateTime, darken } from "./portalUi";
+import { setAccessToken } from "@/auth/tokenManager";
 
 const STATUS_RAIL = ["new", "open", "in_progress", "pending", "resolved"];
 
@@ -279,7 +281,7 @@ export default function Portal() {
       if (authMode === "register") { body.display_name = authName.trim(); if (authPhone.trim()) body.phone = authPhone.trim(); }
       const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.detail ?? "Request failed");
+      if (!r.ok) throw new Error(portalErrorText(d, "Request failed"));
       setAuthStep("otp");
     } catch (e: any) { setAuthErr(e.message); }
     finally { setAuthBusy(false); }
@@ -293,7 +295,7 @@ export default function Portal() {
         body: JSON.stringify({ email: authEmail.trim(), otp: authOtp.trim() }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.detail ?? "Invalid code");
+      if (!r.ok) throw new Error(portalErrorText(d, "Invalid code"));
       localStorage.setItem(`helix_cust_${slug}`, d.customer_token);
       setCustToken(d.customer_token);
       setCustProfile(d.customer);
@@ -487,7 +489,7 @@ export default function Portal() {
       );
       if (!r.ok) {
         const d = await r.json().catch(() => ({})) as Record<string, unknown>;
-        setBdErr(typeof d.detail === "string" ? d.detail : "Could not save details. Check your code and try again.");
+        setBdErr(portalErrorText(d, "Could not save details. Check your code and try again."));
         return;
       }
       setBdStep(2);
@@ -1645,7 +1647,6 @@ export function PortalLogin() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [ssoProviders, setSsoProviders] = useState<{ id: string; provider: string; client_id: string }[]>([]);
   const brand = config?.brand_color ?? "#0d9488";
 
   useEffect(() => {
@@ -1654,11 +1655,6 @@ export function PortalLogin() {
     fetch(`/api/v1/portal/${slug}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setConfig(d))
-      .catch(() => {});
-    // Load SSO providers for this portal
-    fetch(`/api/v1/auth/real/sso/providers?slug=${slug}`)
-      .then(r => r.ok ? r.json() : { providers: [] })
-      .then(d => setSsoProviders(d.providers ?? []))
       .catch(() => {});
   }, [slug]);
 
@@ -1671,21 +1667,12 @@ export function PortalLogin() {
         body: JSON.stringify({ username: username.trim(), password }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.detail ?? "Login failed");
-      localStorage.setItem("helix_token", d.access_token);
+      if (!r.ok) throw new Error(portalErrorText(d, "Login failed"));
+      setAccessToken(d.access_token);
       window.location.href = `/portal/${slug}`;
     } catch (e: any) { setMsg(e.message || "Login failed"); }
     finally { setBusy(false); }
   };
-
-  const handleSso = async (provider: string) => {
-    const redirect = `${window.location.origin}/portal/${slug}`;
-    const r = await fetch(`/api/v1/auth/real/sso/${provider}/auth-url?redirect_uri=${encodeURIComponent(redirect)}`);
-    const d = await r.json();
-    if (d.auth_url) window.location.href = d.auth_url;
-  };
-
-  const PROVIDER_LABEL: Record<string, string> = { google: "Google", github: "GitHub", azure: "Microsoft", saml: "SSO" };
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f7fa", display: "flex", flexDirection: "column", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -1705,24 +1692,6 @@ export function PortalLogin() {
         <div style={{ width: "100%", maxWidth: 400, background: "#fff", borderRadius: 12, border: "1px solid #eaecf0", padding: 28, boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
           <div style={{ fontWeight: 800, fontSize: 18, color: "#111827", marginBottom: 4 }}>Sign in</div>
           <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 24 }}>Access your support portal</div>
-
-          {ssoProviders.length > 0 && (
-            <>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-                {ssoProviders.map(p => (
-                  <button key={p.id} onClick={() => handleSso(p.provider)}
-                    style={{ padding: "10px 16px", border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10 }}>
-                    Continue with {PROVIDER_LABEL[p.provider] ?? p.provider}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-                <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
-                <span style={{ fontSize: 11, color: "#9ca3af" }}>or</span>
-                <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
-              </div>
-            </>
-          )}
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>Email / Username</label>

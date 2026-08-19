@@ -7,6 +7,8 @@
  * abandoned session still dies within 24h (an expired token cannot refresh).
  */
 
+import { portalErrorText } from "./portalError";
+
 const tokenKey = (slug: string) => `helix_cust_${slug}`;
 
 export const getCustomerToken = (slug: string) => localStorage.getItem(tokenKey(slug));
@@ -31,7 +33,7 @@ async function custFetch<T>(slug: string, path: string, options?: RequestInit): 
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(typeof body.detail === "string" ? body.detail : res.statusText);
+    throw new Error(portalErrorText(body, res.statusText));
   }
   return res.json();
 }
@@ -205,7 +207,7 @@ export async function transcribeVoice(
     }
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(typeof body.detail === "string" ? body.detail : res.statusText);
+      throw new Error(portalErrorText(body, res.statusText));
     }
     return await res.json();
   } catch (e: any) {

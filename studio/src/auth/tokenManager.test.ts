@@ -14,6 +14,7 @@ import {
   getAccessToken,
   getDeviceId,
   getRefreshToken,
+  migrateLegacyKeys,
   setDeviceId,
   setTokens,
 } from "./tokenManager";
@@ -33,11 +34,12 @@ describe("token storage", () => {
   });
 
   it("stores the access token under the key the whole app reads", () => {
-    // Several modules hand-roll their auth header off this exact key.
-    // Renaming it silently unauthenticates them.
+    // Every consumer now reaches storage through this module's accessors, but
+    // the key name is still what a live browser session is stored under, so
+    // changing it logs everybody out unless migrateLegacyKeys carries it over.
     setTokens("a", "r");
     expect(localStorage.getItem(ACCESS_KEY)).toBe("a");
-    expect(ACCESS_KEY).toBe("helix_token");
+    expect(ACCESS_KEY).toBe("velaris_token");
   });
 
   it("clears both tokens on logout", () => {
@@ -126,5 +128,53 @@ describe("attemptRefresh", () => {
     const { attemptRefresh, setTokens: set } = await import("./tokenManager");
     set("old-a", "old-r");
     await expect(attemptRefresh()).resolves.toBeNull();
+  });
+});
+
+describe("carry-over from the pre-rebrand key names", () => {
+  it("adopts a session stored under the old names", () => {
+    // Without this the rename is a forced logout for every signed-in browser.
+    localStorage.setItem("helix_token", "old-access");
+    localStorage.setItem("helix_refresh_token", "old-refresh");
+    localStorage.setItem("helix_device_id", "old-device");
+    migrateLegacyKeys();
+    expect(getAccessToken()).toBe("old-access");
+    expect(getRefreshToken()).toBe("old-refresh");
+    expect(getDeviceId()).toBe("old-device");
+  });
+
+  it("removes the old keys, so a sign-out really signs out", () => {
+    // clearTokens() only clears the keys it knows about. A leftover legacy
+    // refresh token would survive logout and still be usable.
+    localStorage.setItem("helix_token", "old-access");
+    localStorage.setItem("helix_refresh_token", "old-refresh");
+    migrateLegacyKeys();
+    expect(localStorage.getItem("helix_token")).toBeNull();
+    expect(localStorage.getItem("helix_refresh_token")).toBeNull();
+  });
+
+  it("never overwrites a session this build already holds", () => {
+    // A second tab on the old build can rewrite the legacy keys at any time;
+    // adopting that stale pair would revoke the live session.
+    setTokens("current-access", "current-refresh");
+    localStorage.setItem("helix_token", "stale");
+    localStorage.setItem("helix_refresh_token", "stale");
+    migrateLegacyKeys();
+    expect(getAccessToken()).toBe("current-access");
+    expect(getRefreshToken()).toBe("current-refresh");
+    expect(localStorage.getItem("helix_token")).toBeNull();
+  });
+
+  it("does nothing when there is no old session", () => {
+    migrateLegacyKeys();
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+  });
+
+  it("clears a legacy pair a stale tab wrote back after startup", () => {
+    setTokens("a", "r");
+    localStorage.setItem("helix_refresh_token", "written-by-an-old-tab");
+    clearTokens();
+    expect(localStorage.getItem("helix_refresh_token")).toBeNull();
   });
 });

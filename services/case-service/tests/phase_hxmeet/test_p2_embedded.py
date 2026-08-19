@@ -87,10 +87,20 @@ class TestStartEmbedded:
         assert body["external_meeting_id"].endswith(body["id"])
 
     async def test_unconfigured_embedded_501(self, client):
-        get_settings().meet_driver = "embedded"              # no LiveKit keys set
-        case = await _case(client)
-        r = await client.post(f"{MEET}/cases/{case['id']}/sessions", json={})
+        s = get_settings()
+        # "no LiveKit keys set" used to be an assumption in a comment. On a box
+        # whose .env configures LiveKit it was false, the driver resolved fine
+        # and this got a 201. Clear them, and put them back.
+        prior = (s.meet_driver, s.livekit_url, s.livekit_api_key, s.livekit_api_secret)
+        s.meet_driver = "embedded"
+        s.livekit_url = s.livekit_api_key = s.livekit_api_secret = ""
+        try:
+            case = await _case(client)
+            r = await client.post(f"{MEET}/cases/{case['id']}/sessions", json={})
+        finally:
+            (s.meet_driver, s.livekit_url, s.livekit_api_key, s.livekit_api_secret) = prior
         assert r.status_code == 501
+        assert r.json()["error"]["code"] == "VEL-MEET-DRIVER-501"
 
     async def test_tenant_driver_overrides_platform_default(self, client, session, livekit_cfg):
         livekit_cfg.meet_driver = "off_platform"             # platform default stays P1

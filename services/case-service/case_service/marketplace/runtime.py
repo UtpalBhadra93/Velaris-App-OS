@@ -134,6 +134,9 @@ def provision_app_container(
     declared_env: dict | None = None,
     declared_command: list[str] | None = None,
     port: int | None = None,
+    pids_limit: int | None = None,
+    tmpfs: dict[str, str] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> str:
     """Start the publisher's container with the full hardening posture on the
     INTERNAL apps network (egress-DROP by construction — no route out).
@@ -142,6 +145,13 @@ def provision_app_container(
     gateway (a CONNECT proxy dual-homed on the apps network — see
     marketplace/egress.py). A domain grant without that path available is
     refused fail-closed, exactly as before the gateway existed.
+
+    `pids_limit` and `tmpfs` are overrides for the bot runner, whose browser
+    profile needs a higher process cap and larger writable scratch than an L2
+    app. **Defaults are unchanged**, so an existing app is unaffected, and the
+    override is deliberately not `read_only=False`: a browser needs writable
+    directories, not a writable root filesystem, and unlocking the rootfs to get
+    them would give up the immutability for the whole container.
 
     Returns the docker container id. Every failure raises Layer2Error.
     """
@@ -192,10 +202,10 @@ def provision_app_container(
         environment=env,
         mem_limit=settings.marketplace_l2_mem_limit,
         cpu_quota=settings.marketplace_l2_cpu_quota,
-        pids_limit=CONTAINER_PIDS_LIMIT,
+        pids_limit=pids_limit or CONTAINER_PIDS_LIMIT,
         user="65534",
         read_only=True,
-        tmpfs={"/tmp": "size=64m"},
+        tmpfs=tmpfs or {"/tmp": "size=64m"},
         cap_drop=DROPPED_CAPS,
         security_opt=security_opt,
         network=APPS_NETWORK,
@@ -204,6 +214,7 @@ def provision_app_container(
             "velaris.tenant":     tenant_id,
             "velaris.package":    package_id,
             "velaris.row_id":     row_id,
+            **(labels or {}),
         },
     )
     logger.info("Layer-2 app container %s running for %s/%s (%s) on %s",

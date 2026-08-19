@@ -31,7 +31,22 @@ from case_service.db.models import (
     HxWorkStoryModel,
 )
 from case_service.db.session import get_session
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
+from case_service.core.error_codes import (
+    BRANCH_ACTOR_403,
+    BRANCH_ARTIFACT_404,
+    BRANCH_CONFLICT_409,
+    BRANCH_ENV_400,
+    BRANCH_ENVAUTH_400,
+    BRANCH_LOCKED_423,
+    BRANCH_NOTFOUND_404,
+    BRANCH_REMOTE_502,
+    BRANCH_SOD_400,
+    BRANCH_STATE_400,
+    BRANCH_UNSUPPORTED_400,
+    coded,
+)
 from case_service.auth.models import AuthenticatedUser
 from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials
 
@@ -189,18 +204,18 @@ async def _log_event(
 async def _get_branch_or_404(session: AsyncSession, branch_id: uuid.UUID) -> ArtifactBranchModel:
     b = await session.get(ArtifactBranchModel, branch_id)
     if not b:
-        raise HTTPException(404, "Branch not found")
+        raise coded(404, BRANCH_NOTFOUND_404, "Branch not found")
     return b
 
 async def _get_env_or_404(session: AsyncSession, env_id: uuid.UUID) -> EnvironmentRegistryModel:
     e = await session.get(EnvironmentRegistryModel, env_id)
     if not e:
-        raise HTTPException(404, "Environment not found")
+        raise coded(404, BRANCH_NOTFOUND_404, "Environment not found")
     return e
 
 def _decrypt_token(env: EnvironmentRegistryModel) -> str:
     if not env.api_token_enc:
-        raise HTTPException(400, f"No API token configured for environment '{env.label}'. Set it in HxBranch → Connections.")
+        raise coded(400, BRANCH_ENV_400, f"No API token configured for environment '{env.label}'. Set it in HxBranch → Connections.")
     return decrypt_credentials(env.api_token_enc)["token"]
 
 def _compute_diff(base: dict, current: dict) -> dict:
@@ -233,15 +248,15 @@ def _detect_conflict(base_snapshot: dict, current_main: dict) -> bool:
 async def _fetch_remote(env: EnvironmentRegistryModel, path: str) -> Any:
     """Make an authenticated GET to a remote Helix environment."""
     if not env.url:
-        raise HTTPException(400, f"Environment '{env.label}' has no URL configured.")
+        raise coded(400, BRANCH_ENV_400, f"Environment '{env.label}' has no URL configured.")
     token = _decrypt_token(env)
     url = env.url.rstrip("/") + path
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
     if resp.status_code == 401:
-        raise HTTPException(400, f"API token for '{env.label}' is invalid or expired.")
+        raise coded(400, BRANCH_ENVAUTH_400, f"API token for '{env.label}' is invalid or expired.")
     if not resp.is_success:
-        raise HTTPException(502, f"Remote environment '{env.label}' returned {resp.status_code}: {resp.text[:200]}")
+        raise coded(502, BRANCH_REMOTE_502, f"Remote environment '{env.label}' returned {resp.status_code}: {resp.text[:200]}")
     return resp.json()
 
 async def _get_local_artifact(session: AsyncSession, artifact_type: str, artifact_id: str) -> dict:
@@ -291,7 +306,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         from case_service.db.models import CaseTypeModel
         ct = await session.get(CaseTypeModel, uuid.UUID(artifact_id))
         if not ct:
-            raise HTTPException(404, f"Case type {artifact_id} not found in dev — cannot merge.")
+            raise coded(404, BRANCH_ARTIFACT_404, f"Case type {artifact_id} not found in dev — cannot merge.")
         if "definition_json" in content:
             ct.definition_json = content["definition_json"]
         if "description" in content and content["description"]:
@@ -302,7 +317,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         from case_service.db.models import FormDefinitionModel
         f = await session.get(FormDefinitionModel, uuid.UUID(artifact_id))
         if not f:
-            raise HTTPException(404, f"Form {artifact_id} not found in dev — cannot merge.")
+            raise coded(404, BRANCH_ARTIFACT_404, f"Form {artifact_id} not found in dev — cannot merge.")
         if "definition_json" in content:
             f.definition_json = content["definition_json"]
         f.updated_at = now
@@ -311,7 +326,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         from case_service.db.models import RuleDefinitionModel
         r = await session.get(RuleDefinitionModel, uuid.UUID(artifact_id))
         if not r:
-            raise HTTPException(404, f"Rule {artifact_id} not found in dev — cannot merge.")
+            raise coded(404, BRANCH_ARTIFACT_404, f"Rule {artifact_id} not found in dev — cannot merge.")
         if "definition_json" in content:
             r.definition_json = content["definition_json"]
         if "enabled" in content:
@@ -322,7 +337,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         from case_service.db.models import ConnectorRegistryModel
         c = await session.get(ConnectorRegistryModel, uuid.UUID(artifact_id))
         if not c:
-            raise HTTPException(404, f"Connector {artifact_id} not found in dev — cannot merge.")
+            raise coded(404, BRANCH_ARTIFACT_404, f"Connector {artifact_id} not found in dev — cannot merge.")
         # NEVER write credentials — that would wipe encrypted live secrets
         if "config" in content:
             c.config = content["config"]
@@ -336,14 +351,14 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         from case_service.db.models import EscalationTreeModel
         e = await session.get(EscalationTreeModel, uuid.UUID(artifact_id))
         if not e:
-            raise HTTPException(404, f"Escalation tree {artifact_id} not found in dev — cannot merge.")
+            raise coded(404, BRANCH_ARTIFACT_404, f"Escalation tree {artifact_id} not found in dev — cannot merge.")
         if "tree_json" in content:
             e.tree_json = content["tree_json"]
         if "is_active" in content:
             e.is_active = content["is_active"]
         e.updated_at = now
         return
-    raise HTTPException(400, f"Merge not yet supported for artifact_type='{artifact_type}'.")
+    raise coded(400, BRANCH_UNSUPPORTED_400, f"Merge not yet supported for artifact_type='{artifact_type}'.")
 
 
 async def _queue_rule_regen(
@@ -467,7 +482,7 @@ async def update_branch(
 ):
     b = await _get_branch_or_404(session, branch_id)
     if b.status in ("merged", "closed"):
-        raise HTTPException(400, f"Cannot edit a branch with status '{b.status}'.")
+        raise coded(400, BRANCH_STATE_400, f"Cannot edit a branch with status '{b.status}'.")
     if body.name is not None:   b.name = body.name
     if body.description is not None: b.description = body.description
     if body.status is not None:
@@ -494,14 +509,19 @@ async def update_branch_content(
     """
     b = await _get_branch_or_404(session, branch_id)
 
-    # Admins bypass ownership check; regular users must be the owner
-    if not user.is_admin and b.owner_id and b.owner_id != user.user_id:
-        raise HTTPException(403, "Only the branch owner may edit its content.")
+    # Ownership, with a named override (Phase 4 step 2). The old spelling was
+    # `not user.is_admin and ...` — the *ownership* half is the real rule here
+    # and is untouched; only the bypass changed from a role name to a privilege.
+    # Rewriting the whole condition into one action would have been the wrong
+    # migration: it would grant edit rights to anyone holding the action, and
+    # revoke them from the owner.
+    if not hxguard.user_allows(user, "design.branches.override") and b.owner_id and b.owner_id != user.user_id:
+        raise coded(403, BRANCH_ACTOR_403, "Only the branch owner may edit its content.")
 
     if b.status == "pending_review":
-        raise HTTPException(423, "Branch is locked for review. Recall the branch first to make changes.")
+        raise coded(423, BRANCH_LOCKED_423, "Branch is locked for review. Recall the branch first to make changes.")
     if b.status in ("merged", "closed", "approved"):
-        raise HTTPException(400, f"Cannot edit a branch with status '{b.status}'.")
+        raise coded(400, BRANCH_STATE_400, f"Cannot edit a branch with status '{b.status}'.")
 
     b.content_snapshot = body.content_snapshot
     b.updated_at = datetime.now(timezone.utc)
@@ -569,7 +589,7 @@ async def pull_branch_from_env(
         data = await _fetch_remote(env, "/api/v1/apps/packages")
         packages = data if isinstance(data, list) else data.get("packages", [])
         if not packages:
-            raise HTTPException(404, "No app packages found in remote environment.")
+            raise coded(404, BRANCH_NOTFOUND_404, "No app packages found in remote environment.")
         # Take the latest published package
         content_snapshot = packages[0] if packages else {}
 
@@ -588,7 +608,7 @@ async def pull_branch_from_env(
         }
         path = path_map.get(body.artifact_type)
         if not path:
-            raise HTTPException(400, f"Pull not supported for artifact_type='{body.artifact_type}'")
+            raise coded(400, BRANCH_UNSUPPORTED_400, f"Pull not supported for artifact_type='{body.artifact_type}'")
         content_snapshot = await _fetch_remote(env, path)
     else:
         raise HTTPException(400, "branch_type must be 'app' or 'artifact'")
@@ -654,16 +674,16 @@ async def submit_for_review(
     b = await _get_branch_or_404(session, branch_id)
 
     if b.status != "open":
-        raise HTTPException(400, f"Branch must be 'open' to submit for review (current: '{b.status}').")
+        raise coded(400, BRANCH_STATE_400, f"Branch must be 'open' to submit for review (current: '{b.status}').")
 
     # Ownership check — only the owner (or admin) may submit
-    if not user.is_admin and b.owner_id and b.owner_id != user.user_id:
-        raise HTTPException(403, "Only the branch owner may submit it for review.")
+    if not hxguard.user_allows(user, "design.branches.override") and b.owner_id and b.owner_id != user.user_id:
+        raise coded(403, BRANCH_ACTOR_403, "Only the branch owner may submit it for review.")
 
     # SOD: reviewer must differ from the owner
     owner = b.owner_id or user.user_id
     if body.assigned_reviewer_id == owner:
-        raise HTTPException(400, "Separation of duties: the reviewer must be a different person from the branch owner.")
+        raise coded(400, BRANCH_SOD_400, "Separation of duties: the reviewer must be a different person from the branch owner.")
 
     reviewer_name = await _resolve_username(session, body.assigned_reviewer_id)
     b.status = "pending_review"
@@ -711,11 +731,11 @@ async def post_review(
 
     b = await _get_branch_or_404(session, branch_id)
     if b.status != "pending_review":
-        raise HTTPException(400, f"Branch must be 'pending_review' to post a review (current: '{b.status}').")
+        raise coded(400, BRANCH_STATE_400, f"Branch must be 'pending_review' to post a review (current: '{b.status}').")
 
     # Only the assigned reviewer (or admin) may decide
-    if not user.is_admin and b.assigned_reviewer_id and b.assigned_reviewer_id != user.user_id:
-        raise HTTPException(403, "Only the assigned reviewer may post a review decision.")
+    if not hxguard.user_allows(user, "design.branches.override") and b.assigned_reviewer_id and b.assigned_reviewer_id != user.user_id:
+        raise coded(403, BRANCH_ACTOR_403, "Only the assigned reviewer may post a review decision.")
 
     now = datetime.now(timezone.utc)
 
@@ -733,8 +753,8 @@ async def post_review(
         if b.artifact_type and b.artifact_id:
             current_main = await _get_local_artifact(session, b.artifact_type, b.artifact_id)
             if _detect_conflict(b.base_snapshot, current_main):
-                raise HTTPException(
-                    409,
+                raise coded(
+                    409, BRANCH_CONFLICT_409,
                     "Conflict detected: dev main has changed since this branch was created. "
                     "The owner must recall the branch, rebase, and resubmit.",
                 )
@@ -855,11 +875,11 @@ async def recall_branch(
     """Owner recalls a pending-review branch back to open for further editing."""
     b = await _get_branch_or_404(session, branch_id)
 
-    if not user.is_admin and b.owner_id and b.owner_id != user.user_id:
-        raise HTTPException(403, "Only the branch owner may recall a branch.")
+    if not hxguard.user_allows(user, "design.branches.override") and b.owner_id and b.owner_id != user.user_id:
+        raise coded(403, BRANCH_ACTOR_403, "Only the branch owner may recall a branch.")
 
     if b.status != "pending_review":
-        raise HTTPException(400, f"Only 'pending_review' branches can be recalled (current: '{b.status}').")
+        raise coded(400, BRANCH_STATE_400, f"Only 'pending_review' branches can be recalled (current: '{b.status}').")
 
     b.status = "open"
     b.assigned_reviewer_id = None
@@ -880,11 +900,11 @@ async def revert_to_base(
     """Reset branch content_snapshot to the immutable base_snapshot captured at creation."""
     b = await _get_branch_or_404(session, branch_id)
 
-    if not user.is_admin and b.owner_id and b.owner_id != user.user_id:
-        raise HTTPException(403, "Only the branch owner may revert to base.")
+    if not hxguard.user_allows(user, "design.branches.override") and b.owner_id and b.owner_id != user.user_id:
+        raise coded(403, BRANCH_ACTOR_403, "Only the branch owner may revert to base.")
 
     if b.status not in ("open",):
-        raise HTTPException(400, f"Revert to base only works on 'open' branches (current: '{b.status}'). Recall the branch first.")
+        raise coded(400, BRANCH_STATE_400, f"Revert to base only works on 'open' branches (current: '{b.status}'). Recall the branch first.")
 
     b.content_snapshot = b.base_snapshot
     b.updated_at = datetime.now(timezone.utc)
@@ -903,12 +923,14 @@ async def merge_branch(
     user:      AuthenticatedUser = Depends(get_current_user),
 ):
     """Admin-only emergency merge. Normal flow: approval in POST /reviews auto-merges."""
-    if not user.is_admin:
-        raise HTTPException(403, "Only admins may trigger a manual merge. Use the review approval flow instead.")
+    if not hxguard.user_allows(user, "design.branches.override"):
+        raise coded(403, BRANCH_ACTOR_403,
+                    "Only holders of design.branches.override may trigger a manual merge. "
+                    "Use the review approval flow instead.")
 
     b = await _get_branch_or_404(session, branch_id)
     if b.status in ("merged", "closed"):
-        raise HTTPException(400, f"Branch already '{b.status}'.")
+        raise coded(400, BRANCH_STATE_400, f"Branch already '{b.status}'.")
 
     current_main: dict = {}
     if b.artifact_type and b.artifact_id:
@@ -970,7 +992,7 @@ async def test_env_connection(
     """Live-test the connection to a remote Helix environment."""
     env = await _get_env_or_404(session, env_id)
     if not env.url:
-        raise HTTPException(400, "Environment has no URL configured.")
+        raise coded(400, BRANCH_ENV_400, "Environment has no URL configured.")
     token = _decrypt_token(env)
 
     import time

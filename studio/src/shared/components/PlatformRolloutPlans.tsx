@@ -75,10 +75,10 @@ export function PlatformRolloutPlans() {
   const load = useCallback(async () => {
     try {
       const [pr, er, sr, str] = await Promise.all([
-        apiFetch("/api/v1/platform/update/plans"),
-        apiFetch("/api/v1/platform/update/environments"),
-        apiFetch("/api/v1/platform/update/settings"),
-        apiFetch("/api/v1/platform/update/status"),
+        apiFetch("/platform/update/plans"),
+        apiFetch("/platform/update/environments"),
+        apiFetch("/platform/update/settings"),
+        apiFetch("/platform/update/status"),
       ]);
       if (!pr.ok) return; // non-admin — stay hidden
       setVisible(true);
@@ -144,7 +144,7 @@ export function PlatformRolloutPlans() {
     if (!stepUp) return;
     try {
       const { getAssertion } = await import("@/auth/webauthn");
-      const optR = await apiFetch("/api/v1/auth/real/webauthn/stepup/options", { method: "POST" });
+      const optR = await apiFetch("/auth/real/webauthn/stepup/options", { method: "POST" });
       if (!optR.ok) {
         const d = await optR.json().catch(() => ({}));
         setError(d.detail ?? "No passkeys registered — use password instead.");
@@ -167,7 +167,7 @@ export function PlatformRolloutPlans() {
   const saveSettings = async (next: { mode?: string; default_soak_hours?: number }) => {
     setBusy("settings");
     try {
-      const r = await apiFetch("/api/v1/platform/update/settings", {
+      const r = await apiFetch("/platform/update/settings", {
         method: "PUT",
         body: JSON.stringify(next),
       });

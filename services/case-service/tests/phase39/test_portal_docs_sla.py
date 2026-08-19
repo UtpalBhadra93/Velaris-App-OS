@@ -23,7 +23,7 @@ from case_service.db.models import (
     DocumentVersionModel,
     TenantModel,
 )
-from case_service.auth.dependencies import get_current_user, require_role
+from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.main import app
 
@@ -33,12 +33,15 @@ def _admin():
     return AuthenticatedUser(user_id="staff-1", roles=["admin"])
 
 def _override(user):
+    # Only `get_current_user`. The `require_role("admin")` override was a no-op
+    # even before Phase 4 retired the function: the factory returns a NEW closure
+    # per call, so this key could never match the object the route was built
+    # with. Authorization follows the roles on the overridden user, which is what
+    # `hxguard.guard(...)` reads.
     app.dependency_overrides[get_current_user] = lambda: user
-    app.dependency_overrides[require_role("admin")] = lambda: user
 
 def _clear():
     app.dependency_overrides.pop(get_current_user, None)
-    app.dependency_overrides.pop(require_role("admin"), None)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

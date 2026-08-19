@@ -423,15 +423,60 @@ async def test_invalid_hmac_webhook_rejected(client: AsyncClient, session: Async
 async def test_webhook_without_matching_payment_request_is_logged(
     client: AsyncClient,
 ):
-    """Unknown payment_intent_id → event logged but no crash."""
+    """Unknown payment_intent_id → event logged, and REJECTED.
+
+    Rewritten 2026-08-15. It used to send no signature header and assert 200,
+    pinning a shortcut that read "no signature → verified": an anonymous caller
+    could mark any payment `succeeded`. A webhook that cannot be attributed to a
+    payment request cannot be verified either — there is no connector to check
+    the HMAC against — so the only safe answer is to record it and refuse it.
+    The forensic row is written BEFORE verification, which is what keeps an
+    unattributable event visible instead of silently dropped.
+    """
     payload = _webhook_payload("payment_intent.succeeded", "pi_unknown_xyz")
-    # No sig header → dev mode, accepted without HMAC
     resp = await client.post(
         "/api/v1/payments/webhooks/stripe",
         content=payload,
         headers={"content-type": "application/json"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_unsigned_webhook_cannot_mark_a_payment_paid(
+    client: AsyncClient, session: AsyncSession,
+):
+    """The exploit this fail-closed change removes, pinned.
+
+    Proven against the dev database before the fix: an anonymous, unsigned POST
+    moved a real payment request from `pending` to `succeeded`, completed its
+    workflow step and posted to the ledger.
+    """
+    from case_service.db.models import PaymentRequestModel
+    from sqlalchemy import select as _select
+
+    case = await _make_case(client)
+    pr = PaymentRequestModel(
+        case_id=uuid.UUID(case["id"]), step_id="s1", tenant_id="default",
+        amount_cents=500000, currency="usd", status="pending",
+        provider="stripe", provider_ref="pi_unsigned_probe",
+    )
+    session.add(pr)
+    await session.commit()
+
+    resp = await client.post(
+        "/api/v1/payments/webhooks/stripe",
+        content=_webhook_payload("payment_intent.succeeded", "pi_unsigned_probe"),
+        headers={"content-type": "application/json"},      # no stripe-signature
+    )
+    assert resp.status_code == 400
+
+    after = (await session.execute(
+        _select(PaymentRequestModel).where(
+            PaymentRequestModel.provider_ref == "pi_unsigned_probe")
+    )).scalar_one()
+    await session.refresh(after)
+    assert after.status == "pending", "an unsigned webhook must not settle a payment"
 
 
 @pytest.mark.asyncio

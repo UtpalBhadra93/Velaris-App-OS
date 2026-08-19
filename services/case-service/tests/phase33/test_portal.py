@@ -13,7 +13,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from case_service.db.models import CaseTypeModel, CaseInstanceModel, TenantModel
-from case_service.auth.dependencies import get_current_user, require_role
+from case_service.auth.dependencies import get_current_user
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

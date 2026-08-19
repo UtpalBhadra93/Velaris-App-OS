@@ -176,12 +176,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return user.roles.includes(role);
   }, [user]);
 
-  // Mirrors the backend's has_privilege: admin/superadmin get everything;
-  // otherwise the active access group's privilege list is checked, honouring
-  // the "*" wildcard for both resource and action.
+  // Mirrors the backend's has_privilege (auth/models.py). Superadmin gets
+  // everything; otherwise the active access group's privilege list is checked,
+  // honouring the "*" wildcard for both resource and action.
+  //
+  // Phase 4 step 3 removed `is_admin` from the backend's version, so it is gone
+  // from here too. Leaving it would be worse than a cosmetic mismatch: the UI
+  // would keep offering controls to an admin that the API now refuses, turning
+  // a clean "you don't have this privilege" into a 403 on click.
   const hasPrivilege = useCallback((resource: string, action: string) => {
     if (!user) return false;
-    if (user.is_admin || user.roles.includes("superadmin")) return true;
+    if (user.roles.includes("superadmin")) return true;
     const privs = user.active_access_group?.privileges ?? [];
     return privs.some(p =>
       (p.resource === "*" || p.resource === resource) &&

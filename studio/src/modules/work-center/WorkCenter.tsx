@@ -50,7 +50,7 @@ import {
 } from "@shared/api/client";
 
 function deployAuthHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
 }
 import {
@@ -61,6 +61,7 @@ import {
   TimeAgo,
   Stat,
 } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 import FormRenderer from "../form-builder/FormRenderer";
 import type { CaseAssignment, WorkQueueSummary, QueueStats } from "@shared/types";
 

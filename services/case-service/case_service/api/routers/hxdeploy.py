@@ -607,17 +607,31 @@ async def deploy_callback(
     if run.status not in ("triggered", "deploying"):
         raise HTTPException(400, f"Run is in unexpected status: {run.status}")
 
-    # Verify HMAC if the environment has a webhook_secret
+    # Verify HMAC when the environment has a webhook_secret.
+    #
+    # FAIL CLOSED (2026-08-15). The condition used to be
+    # `if env and env.webhook_secret and x_deploy_signature:` — so the signature
+    # was verified only when the caller chose to send one. Omitting the header
+    # skipped verification entirely and fell through to the status update below,
+    # letting an anonymous caller who knows a run id mark a deployment
+    # `deployed` or `failed`. Same shape as the Stripe/Onfido/DocuSign webhooks
+    # fixed the same day: a missing signature is not an absent requirement.
+    #
+    # An environment with NO webhook_secret configured stays unverified — that
+    # is the documented design for an unconfigured environment, not an oversight,
+    # and it is recorded in `tests/phase_authz/test_ungated_routes.py`.
     if run.to_env_id:
         env = await session.get(EnvironmentRegistryModel, run.to_env_id)
-        if env and env.webhook_secret and x_deploy_signature:
+        if env and env.webhook_secret:
+            if not x_deploy_signature:
+                raise HTTPException(401, "Missing webhook signature")
             raw_body = await request.body()
             expected = "sha256=" + hmac.new(
                 env.webhook_secret.encode(), raw_body, hashlib.sha256
             ).hexdigest()
             if not hmac.compare_digest(expected, x_deploy_signature):
                 raise HTTPException(401, "Invalid webhook signature")
-            if env and body.status == "deployed":
+            if body.status == "deployed":
                 env.current_version   = body.deployed_version or run.deployed_at and str(run.deployed_at)[:10] or "unknown"
                 env.last_deployed_at  = service._utcnow()
 

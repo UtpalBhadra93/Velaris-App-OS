@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
     EmailAccountModel, EmailTemplateModel, EmailMessageModel, CaseInstanceModel,
@@ -130,7 +131,7 @@ def _msg_to_dict(m):
 async def create_account(
     body: AccountIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     a = EmailAccountModel(**body.model_dump())
     if body.is_default_outbound:
@@ -147,6 +148,7 @@ async def create_account(
 async def list_accounts(
     active_only: bool = Query(False),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
     q = select(EmailAccountModel).order_by(EmailAccountModel.created_at.desc())
     if active_only:
@@ -160,7 +162,7 @@ async def update_account(
     account_id: uuid.UUID, body: AccountIn,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     a = await session.get(EmailAccountModel, account_id)
     if a is None:
@@ -189,7 +191,7 @@ async def update_account(
 async def deactivate_account(
     account_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     a = await session.get(EmailAccountModel, account_id)
     if a is None:
@@ -203,7 +205,7 @@ async def deactivate_account(
 async def delete_account(
     account_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     a = await session.get(EmailAccountModel, account_id)
     if a is not None:
@@ -217,6 +219,7 @@ async def delete_account(
 @router.post("/templates", status_code=201)
 async def create_template(
     body: TemplateIn, session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     if body.scope == "case_type" and body.case_type_id is None:
         raise HTTPException(400, "case_type_id required when scope='case_type'")
@@ -231,6 +234,7 @@ async def list_templates(
     case_type_id: Optional[uuid.UUID] = Query(None),
     active_only: bool = Query(True),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
     q = select(EmailTemplateModel).order_by(EmailTemplateModel.updated_at.desc())
     if active_only:
@@ -248,6 +252,7 @@ async def list_templates(
 async def update_template(
     tpl_id: uuid.UUID, body: TemplateIn,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     t = await session.get(EmailTemplateModel, tpl_id)
     if t is None:
@@ -261,6 +266,7 @@ async def update_template(
 @router.delete("/templates/{tpl_id}", status_code=204)
 async def delete_template(
     tpl_id: uuid.UUID, session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     t = await session.get(EmailTemplateModel, tpl_id)
     if t is not None:
@@ -271,7 +277,10 @@ async def delete_template(
 
 
 @router.post("/templates/render-preview")
-async def render_preview(body: TemplateRenderIn):
+async def render_preview(
+    body: TemplateRenderIn,
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
+):
     try:
         return {
             "subject": render_template(body.subject, body.ctx, body.engine),
@@ -348,6 +357,7 @@ async def list_messages(
     unmatched_only: bool = Query(False),
     limit: int = Query(50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
     q = select(EmailMessageModel).order_by(EmailMessageModel.created_at.desc()).limit(limit)
     if case_id:
@@ -365,6 +375,7 @@ async def list_messages(
 @router.get("/messages/{msg_id}")
 async def get_message(
     msg_id: uuid.UUID, session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
     m = await session.get(EmailMessageModel, msg_id)
     if m is None:
@@ -376,6 +387,7 @@ async def get_message(
 async def mark_read(
     msg_id: uuid.UUID, read: bool = Query(True),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     m = await session.get(EmailMessageModel, msg_id)
     if m is None:
@@ -389,6 +401,7 @@ async def mark_read(
 async def assign_to_case(
     msg_id: uuid.UUID, case_id: uuid.UUID = Query(...),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
     m = await session.get(EmailMessageModel, msg_id)
     if m is None:
@@ -404,7 +417,10 @@ async def assign_to_case(
 
 
 @router.get("/inbox/stats")
-async def inbox_stats(session: AsyncSession = Depends(get_session)):
+async def inbox_stats(
+    session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
+):
     q_unread = select(func.count()).select_from(EmailMessageModel).where(
         EmailMessageModel.direction == "inbound",
         EmailMessageModel.is_read.is_(False),
@@ -471,7 +487,7 @@ async def simulate_inbound(
 async def poll_now(
     account_id: Optional[uuid.UUID] = Query(None),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.operate")),
 ):
     from case_service.mail.worker import poll_one_account
     from case_service.db.session import get_session_factory
@@ -497,7 +513,7 @@ async def poll_now(
 async def test_connection(
     account_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.operate")),
 ):
     """Test SMTP and IMAP connectivity for an account and return a plain-English status."""
     import smtplib

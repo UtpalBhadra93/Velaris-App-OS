@@ -80,6 +80,11 @@ from case_service.api.routers.intake   import router as intake_router     # Proc
 from case_service.api.routers.commits   import router as commits_router    # P61 Commit pattern
 from case_service.api.routers.hxlogs   import router as hxlogs_router     # P63 HxLogs
 from case_service.api.routers.auth_real import router as auth_real_router  # P64 Real Auth
+from case_service.api.routers.auth_saml import router as auth_saml_router  # Enterprise identity P1
+from case_service.api.routers.scim import router as scim_router  # Enterprise identity P2
+from case_service.api.routers.identity_admin import router as identity_admin_router  # P3
+from case_service.api.routers.channels import router as channels_router  # Omnichannel inbound
+from case_service.api.routers.bots import router as bots_router  # RPA bot runner
 from case_service.api.routers.permissions import router as permissions_router
 from case_service.api.routers.marketplace import router as marketplace_router  # Marketplace
 from case_service.api.routers.broker import router as broker_router  # Marketplace Layer-2 data broker
@@ -244,6 +249,22 @@ async def lifespan(app: FastAPI):
                         logger.info("Seeded built-in role: %s", role_def["name"])
     except Exception as _seed_err:
         logger.warning("Built-in role seed failed (non-fatal): %s", _seed_err)
+
+    # ── Phase 4 step 1: report access roles that used to grant by name ─────────
+    # The merge that made an access role named `admin` a platform admin is gone.
+    # Where a deployment relied on it, the loss is silent at the request path —
+    # a denial for a missing privilege is indistinguishable from a correct one —
+    # so it is announced here instead. Own `try`: this is a report, and a report
+    # that can cancel the rest of startup is worse than no report at all.
+    try:
+        from case_service.db.session import get_session_factory
+        from case_service.hxguard.role_names import warn_on_collisions
+
+        factory = get_session_factory()
+        async with factory() as _collision_session:
+            await warn_on_collisions(_collision_session)
+    except Exception as _collision_err:
+        logger.debug("access-role name collision check skipped: %s", _collision_err)
 
     # ── HxVault (#19): warm per-tenant DEK cache so sync decrypt stays sync ──────
     try:
@@ -434,18 +455,76 @@ async def lifespan(app: FastAPI):
         import logging; logging.getLogger(__name__).warning("Email poll loop unavailable: %s", _e)
     # <<< P25 email poll loop
 
-    # >>> SD-6 credential expiry monitor
+    # >>> Background schedulers
+    # One try/except EACH, deliberately. These tasks are unrelated, and grouping
+    # them behind a single import meant a failure in the first silently cancelled
+    # the rest: an ImportError in credential_monitor never scheduled release_cron,
+    # which left `_ENABLED_VERSIONS` empty, which makes is_feature_enabled() return
+    # False for EVERY feature platform-wide — reported only as "Credential expiry
+    # monitor unavailable". Each scheduler now fails alone.
     import asyncio as _asyncio
+
     try:
         from case_service.security.credential_monitor import credential_expiry_monitor
         _asyncio.create_task(credential_expiry_monitor())
-        _asyncio.create_task(release_cron())
-        from case_service.hxevolve.pipeline import hxevolve_cron
-        _asyncio.create_task(hxevolve_cron())
         logger.info("Credential expiry monitor started")
     except Exception as _e:
         logger.warning("Credential expiry monitor unavailable: %s", _e)
-    # <<< SD-6 credential expiry monitor
+
+    try:
+        _asyncio.create_task(release_cron())
+        logger.info("Release/feature-flag cron scheduled")
+    except Exception as _e:
+        # Loud: without this cron every feature flag reads as off.
+        logger.error("Release cron unavailable — ALL feature flags will read as "
+                     "disabled: %s", _e)
+
+    try:
+        from case_service.hxevolve.pipeline import hxevolve_cron
+        _asyncio.create_task(hxevolve_cron())
+        logger.info("HxEvolve cron scheduled")
+    except Exception as _e:
+        logger.warning("HxEvolve cron unavailable: %s", _e)
+    # <<< Background schedulers
+
+    # >>> SAML IdP metadata refresh
+    # Own try/except, same reason as the rest. If it never starts, providers keep
+    # the certificates they already have and sign-in is unaffected — the sweep
+    # only ever *adds* a rollover certificate early, so its absence costs an
+    # outage at the next rollover, not now.
+    try:
+        from case_service.identity.saml_metadata import saml_metadata_cron
+        _asyncio.create_task(saml_metadata_cron())
+        logger.info("SAML metadata refresh scheduled")
+    except Exception as _e:
+        logger.warning("SAML metadata refresh unavailable, certificates will not "
+                       "auto-renew: %s", _e)
+    # <<< SAML IdP metadata refresh
+
+    # >>> HxSentinel periodic signal extraction (P1)
+    # Deliberately its own try/except rather than joining the block above: these
+    # tasks are unrelated, and a failed import in one must not silently cancel
+    # the scheduling of another.
+    try:
+        from case_service.sentinel.extraction import signal_extraction_cron
+        _asyncio.create_task(signal_extraction_cron())
+        logger.info("HxSentinel signal extraction sweep scheduled")
+    except Exception as _e:
+        logger.warning("HxSentinel signal extraction unavailable: %s", _e)
+    # <<< HxSentinel periodic signal extraction
+
+    # >>> Phase 6: role → privilege store cache
+    # Own try/except, same reason as above. If this never starts, the cache stays
+    # empty and every role falls back to its seeded privileges — i.e. exactly the
+    # pre-Phase-6 behaviour, which is why the store is additive rather than a
+    # replacement. Nobody is locked out by a cron that failed to schedule.
+    try:
+        from case_service.hxguard.role_store import role_privileges_cron
+        _asyncio.create_task(role_privileges_cron())
+        logger.info("Role privilege store refresh scheduled")
+    except Exception as _e:
+        logger.warning("Role privilege store unavailable, seeded privileges only: %s", _e)
+    # <<< Phase 6 role privilege store
 
     # >>> Group I: daily RFC-3161 anchoring of the audit chain
     try:
@@ -456,6 +535,18 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning("Audit anchor loop unavailable: %s", _e)
     # <<< Group I audit anchoring
+
+    # >>> RPA bot runner
+    # Default OFF: this loop starts containers on the host, so it is opt-in per
+    # deployment. Its own `start()` checks the flag and logs when disabled, so a
+    # deployment that has not enabled it says so rather than being silent.
+    _bot_runner = None
+    try:
+        from case_service.bots.runner import runner as _bot_runner
+        _bot_runner.start()
+    except Exception as _e:
+        logger.warning("Bot runner unavailable: %s", _e)
+    # <<< RPA bot runner
 
     # >>> C1 outbox relay
     _outbox_relay = None
@@ -589,6 +680,11 @@ async def lifespan(app: FastAPI):
         _pii_scanner.stop()
     if _retention_runner is not None:
         _retention_runner.stop()
+    if _bot_runner is not None:
+        # Awaited, unlike the others: a bot job that is mid-flight holds a
+        # credential lease and a running container, and both need the teardown
+        # path rather than a cancelled task.
+        await _bot_runner.stop()
     # <<< C1 outbox relay stop
 
     # >>> PUO Phase 2 stop
@@ -651,6 +747,7 @@ def create_app() -> FastAPI:
 
     from case_service.hxvault import DekNotLoadedError
     from case_service.hxvault.keyring import KeyShreddedError
+    from case_service.identity.scim import ScimError
 
     # VEL-DOC-UUID-422: FastAPI rejects a malformed path UUID before any
     # handler runs, so the code cannot be raised from a route — it has to be
@@ -688,6 +785,24 @@ def create_app() -> FastAPI:
             status_code=exc.status_code,
             content=error_payload(exc.code, exc.detail),
             headers=getattr(exc, "headers", None),
+        )
+
+    # SCIM speaks its own error shape (RFC 7644 §3.12) and its clients parse it:
+    # Entra and Okta surface `detail` and `scimType` to the administrator and
+    # branch on `status`. A refusal raised deep in the SCIM dependency chain —
+    # the bearer-token check especially — must arrive in that shape rather than
+    # as the platform's generic error body, or the IdP shows its operator a
+    # blank failure.
+    @app.exception_handler(ScimError)
+    async def _scim_error_handler(request, exc: ScimError):  # noqa: ANN001
+        logging.getLogger("case_service.errors").warning(
+            "%s %s -> scim %s %s", request.method, request.url.path,
+            exc.status, exc.scim_type or "",
+        )
+        return JSONResponse(
+            status_code=exc.status,
+            content=exc.body(),
+            media_type="application/scim+json",
         )
 
     # HxVault and database faults reached the client as bare 500s: both are
@@ -879,6 +994,11 @@ def create_app() -> FastAPI:
     app.include_router(intake_router,    prefix=prefix)   # Process-Case integration
     app.include_router(hxlogs_router,   prefix=prefix)   # P63 HxLogs
     app.include_router(auth_real_router, prefix=prefix)  # P64 Real Auth
+    app.include_router(auth_saml_router, prefix=prefix)  # Enterprise identity P1 (SAML SP)
+    app.include_router(scim_router, prefix=prefix)       # Enterprise identity P2 (SCIM 2.0)
+    app.include_router(identity_admin_router, prefix=prefix)  # P3 (mappings + log)
+    app.include_router(channels_router, prefix=prefix)        # Omnichannel inbound
+    app.include_router(bots_router, prefix=prefix)            # RPA bot runner
     app.include_router(permissions_router, prefix=prefix)
     app.include_router(marketplace_router, prefix=prefix)  # Marketplace
     app.include_router(broker_router, prefix=prefix)  # Layer-2 scoped data broker (container-only surface)

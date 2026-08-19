@@ -46,6 +46,67 @@ def _is_local_url(url: str) -> bool:
     return any(h in (url or "") for h in ("localhost", "127.0.0.1", "[::1]", "0.0.0.0"))
 
 
+def detect_provider_misconfig(s) -> dict[str, str] | None:
+    """Is the configured external provider missing something it cannot work without?
+
+    Returns ``{"provider", "missing", "detail"}`` describing the fault, or
+    ``None`` when the configuration is usable.
+
+    This exists because the failure it catches is silent and expensive. Setting
+    ``AI_PROVIDER`` without ``AI_API_KEY`` used to build a fully-formed external
+    backend holding an empty key: every completion then failed at the provider
+    with a 401, which reads like a model outage rather than a typo in `.env`,
+    while the status screen reported the provider as configured and a working
+    local Ollama was never consulted.
+
+    Deliberately a **pure function** of settings rather than a flag stashed on
+    the module: the resolver and the status endpoint must not be able to
+    disagree about whether the platform is misconfigured, and module-level
+    mutable state between them is exactly how they would.
+    """
+    provider = (s.ai_provider or "").lower().strip()
+    if not provider or provider == "ollama":
+        return None
+
+    base_url = (s.ai_base_url or PROVIDER_URLS.get(provider, "")).strip()
+
+    # `custom` is the local-runtime escape hatch (LM Studio, vLLM, llama.cpp).
+    # It needs an address, not a credential — requiring a key here would break
+    # the keyless local servers it exists to support.
+    if provider == "custom":
+        if not base_url:
+            return {
+                "provider": provider,
+                "missing": "VELARIS_CASE_AI_BASE_URL",
+                "detail": "provider 'custom' has no built-in address, so a base URL must be given.",
+            }
+        return None
+
+    if not (s.ai_api_key or "").strip():
+        return {
+            "provider": provider,
+            "missing": "VELARIS_CASE_AI_API_KEY",
+            "detail": f"provider '{provider}' is external and cannot authenticate without a key.",
+        }
+
+    # Anthropic ships its own SDK and knows its own endpoint; everyone else is
+    # resolved through PROVIDER_URLS. An unrecognised name lands here with no
+    # address — and must not be allowed to proceed, because OpenAIBackend would
+    # fall back to its own default and post the key to api.openai.com under
+    # some other provider's name.
+    if provider != "anthropic" and not base_url:
+        return {
+            "provider": provider,
+            "missing": "VELARIS_CASE_AI_BASE_URL",
+            "detail": (
+                f"'{provider}' is not a known provider, so its address cannot be resolved. "
+                "Set a base URL explicitly, or correct the provider name."
+            ),
+        }
+
+    return None
+
+
 class EgressGuardedBackend:
     """Wraps an external backend so embeddings never leave the platform.
 
@@ -246,6 +307,19 @@ def _resolve_llm_backend():
     # ── 1. Universal provider vars ────────────────────────────────────────────
     provider = (s.ai_provider or "").lower().strip()
     if provider and provider not in ("", "ollama"):
+        # A provider that cannot possibly work is not used. Falling back keeps
+        # AI answering from the local model instead of 401-ing at every call
+        # site; raising here would turn one wrong env var into a 500 on every
+        # page that touches AI, since this resolver sits on the request path.
+        fault = detect_provider_misconfig(s)
+        if fault:
+            log.error(
+                "VELARIS_CASE_AI_PROVIDER=%s but %s is not set — %s "
+                "Falling back to the local Ollama backend.",
+                fault["provider"], fault["missing"], fault["detail"],
+            )
+            return _local_backend(s)
+
         api_key   = s.ai_api_key
         model     = s.ai_model
         embed_model = s.ai_embed_model
@@ -258,10 +332,9 @@ def _resolve_llm_backend():
             b.is_external = True
             return _apply_egress_policy(b, s)
 
-        # All other known providers use the OpenAI-compatible API
+        # All other known providers use the OpenAI-compatible API.
+        # `base_url` is guaranteed non-empty here by detect_provider_misconfig.
         base_url = s.ai_base_url or PROVIDER_URLS.get(provider, "")
-        if not base_url and provider == "custom":
-            log.warning("VELARIS_CASE_AI_PROVIDER=custom but VELARIS_CASE_AI_BASE_URL is not set")
 
         b = OpenAIBackend()
         b._api_key     = api_key
@@ -400,11 +473,18 @@ def get_ai_info() -> dict:
     from case_service.config import get_settings
     s = get_settings()
     llm = get_llm_backend()
+    # Surfaced, not merely logged: the whole failure mode this guards against is
+    # a status screen that reports a provider as configured while every call to
+    # it fails. `backend` below correctly reads "ollama" after a fallback, which
+    # tells an operator what is answering but not that their intended provider
+    # was dropped, or why.
+    fault = detect_provider_misconfig(s)
     return {
         "backend": llm.backend_name,
         "egress_policy": (s.ai_egress_policy or "minimized").lower().strip(),
         "is_external": getattr(llm, "is_external", False),
         "embeddings_local": getattr(llm, "embeddings_local", not getattr(llm, "is_external", False)),
+        "misconfigured": fault,
         "config": {
             "ai_backend": s.ai_backend,
             "ollama_url": s.ai_ollama_url,

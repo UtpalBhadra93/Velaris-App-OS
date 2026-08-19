@@ -2,6 +2,7 @@
 // Unified: Access Groups, Access Roles, User Directory, Portals
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import UserDirectory from "@modules/user-directory/UserDirectory";
+import { getAccessToken } from "@/auth/tokenManager";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -28,12 +29,12 @@ type Member = {
   assigned_by: string | null; assigned_at: string;
 };
 
-type Tab = "groups" | "roles" | "users" | "portals";
+type Tab = "groups" | "roles" | "users" | "portals" | "platform";
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
@@ -80,6 +81,7 @@ const TAB_LABELS: Record<Tab, string> = {
   roles:  "Access Roles",
   users:  "User Directory",
   portals: "Portals",
+  platform: "Platform Roles",
 };
 
 export default function AccessGroupAdmin() {
@@ -92,7 +94,7 @@ export default function AccessGroupAdmin() {
         display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)",
         border: "1px solid var(--border-subtle)", marginBottom: "var(--space-xl)", flexShrink: 0,
       }}>
-        {(["groups", "roles", "users", "portals"] as Tab[]).map((t) => (
+        {(["groups", "roles", "users", "portals", "platform"] as Tab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: "8px 18px", fontSize: 12, fontWeight: 500,
             fontFamily: "var(--font-mono)", textTransform: "uppercase",
@@ -110,6 +112,7 @@ export default function AccessGroupAdmin() {
       {tab === "roles"   && <RolesTab />}
       {tab === "users"   && <UserDirectory embedded />}
       {tab === "portals" && <PortalsTab />}
+      {tab === "platform" && <PlatformRolesTab />}
     </div>
   );
 }
@@ -1239,3 +1242,247 @@ const smallBtnStyle: React.CSSProperties = {
   border: "1px solid var(--border-default)", background: "var(--bg-elevated)",
   color: "var(--text-secondary)", fontSize: 11, cursor: "pointer", fontFamily: "var(--font-mono)",
 };
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Platform role privileges — Phase 6.
+
+   The other tabs edit ACCESS roles, which are the case-level concept and
+   only reach a user who is in a group. This tab edits what a PLATFORM role
+   (`velaris_users.roles`) may do, which until now came only from
+   `SEEDED_ROLE_PRIVILEGES` — derived in code from each action's
+   `legacy_roles`, i.e. the parity oracle. Changing it meant a deploy.
+
+   Entries are ADDED to the seed, never a replacement, so the three columns
+   below are genuinely different questions. An admin who cannot see the seed
+   re-grants what the role already holds, or tries to remove it by deleting a
+   row that never existed.
+   ═══════════════════════════════════════════════════════════════════ */
+
+interface RolePrivRow {
+  role: string;
+  seeded: Record<string, any>[];
+  stored: Record<string, any>[];
+  effective: Record<string, any>[];
+}
+
+function privLabel(p: Record<string, any>): string {
+  const deny = String(p.effect || "allow").toLowerCase() === "deny";
+  return `${deny ? "DENY " : ""}${p.resource}: ${(p.actions || []).join(", ")}`;
+}
+
+function PlatformRolesTab() {
+  const [rows, setRows] = useState<RolePrivRow[]>([]);
+  const [catalog, setCatalog] = useState<any[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Record<string, any>[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [r, c] = await Promise.all([
+        api("/role-privileges"),
+        api("/access-roles/catalog"),
+      ]);
+      setRows(r.roles || []);
+      // Only the platform half is grantable here; the legacy case-level
+      // resources belong to access roles and are evaluated by a different code
+      // path entirely. Offering them would be an invitation to grant `case.read`
+      // and wonder why a platform screen stayed shut.
+      setCatalog((c.resources || []).filter((x: any) => x.platform));
+    } catch (e: any) { setErr(e.message); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const startEdit = (row: RolePrivRow) => {
+    setEditing(row.role);
+    setDraft(row.stored.map((p) => ({ ...p })));
+    setErr(null); setNote(null);
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    setBusy(true); setErr(null); setNote(null);
+    try {
+      await api(`/role-privileges/${editing}`, {
+        method: "PUT", body: JSON.stringify({ privileges: draft }),
+      });
+      setNote(`${editing} updated. Other workers pick this up within a minute.`);
+      setEditing(null);
+      await load();
+    } catch (e: any) {
+      // The lockout refusal (409) arrives here. Show it as-is: it names the
+      // action that would have been left unheld, which is the only useful thing
+      // to say.
+      setErr(e.message);
+    } finally { setBusy(false); }
+  };
+
+  const addEntry = (resource: string, action: string, effect: string) => {
+    setDraft((d) => {
+      const hit = d.find((p) => p.resource === resource &&
+        String(p.effect || "allow") === effect);
+      if (hit) {
+        if (!hit.actions.includes(action)) hit.actions = [...hit.actions, action];
+        return [...d];
+      }
+      const entry: Record<string, any> = { resource, actions: [action] };
+      if (effect === "deny") entry.effect = "deny";
+      return [...d, entry];
+    });
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 900 }}>
+        What a <strong>platform role</strong> may do, stored as data. Entries here are
+        <strong> added to</strong> the built-in defaults — they never replace them, so an
+        empty list means "exactly the defaults". To take a default away, add the same
+        resource with effect <code>deny</code>: deny always wins, and a revocation that is
+        a row somebody wrote is easier to explain than one that is an absence.
+      </div>
+      {err && <div style={{ color: "var(--status-failed)", fontSize: 13 }}>{err}</div>}
+      {note && <div style={{ color: "var(--text-secondary)", fontSize: 13,
+        borderLeft: "2px solid var(--accent)", paddingLeft: 10 }}>{note}</div>}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 11,
+              textTransform: "uppercase" }}>
+              <th style={{ padding: "6px 8px" }}>Role</th>
+              <th style={{ padding: "6px 8px" }}>Built-in</th>
+              <th style={{ padding: "6px 8px" }}>Granted here</th>
+              <th style={{ padding: "6px 8px" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.role} style={{ borderTop: "1px solid var(--border-subtle)" }}>
+                <td style={{ padding: "8px", fontWeight: 600 }}>{r.role}</td>
+                <td style={{ padding: "8px", color: "var(--text-muted)" }}>
+                  {r.seeded.length === 1 && r.seeded[0].resource === "*"
+                    ? "everything"
+                    : `${r.seeded.length} default${r.seeded.length === 1 ? "" : "s"}`}
+                </td>
+                <td style={{ padding: "8px" }}>
+                  {r.stored.length === 0
+                    ? <span style={{ color: "var(--text-muted)" }}>—</span>
+                    : r.stored.map((p, i) => (
+                        <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                          {privLabel(p)}
+                        </div>
+                      ))}
+                </td>
+                <td style={{ padding: "8px", textAlign: "right" }}>
+                  <button onClick={() => startEdit(r)} style={{
+                    fontSize: 12, padding: "4px 10px", borderRadius: 6, cursor: "pointer",
+                    border: "1px solid var(--border-default)", background: "transparent",
+                    color: "var(--text-primary)" }}>Edit</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <div style={{ border: "1px solid var(--border-default)", borderRadius: 8,
+          padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>Granting to “{editing}”</div>
+
+          {draft.length === 0
+            ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Nothing granted beyond the defaults.
+              </div>
+            : draft.map((p, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <code style={{ fontSize: 11 }}>{privLabel(p)}</code>
+                  <button onClick={() => setDraft((d) => d.filter((_, j) => j !== i))}
+                    style={{ fontSize: 11, border: "none", background: "transparent",
+                      color: "var(--status-failed)", cursor: "pointer" }}>remove</button>
+                </div>
+              ))}
+
+          <AddPrivilegeRow catalog={catalog} onAdd={addEntry} />
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={save} disabled={busy} style={{
+              fontSize: 12, padding: "6px 14px", borderRadius: 6, border: "none",
+              background: "var(--accent)", color: "#fff", cursor: "pointer" }}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button onClick={() => setEditing(null)} style={{
+              fontSize: 12, padding: "6px 12px", borderRadius: 6,
+              border: "1px solid var(--border-default)", background: "transparent",
+              color: "var(--text-muted)", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/** Resource → action → effect picker.
+
+    State-driven rather than read off the DOM: the action list has to follow the
+    selected resource, and a resource whose verbs do not include the stale
+    selection would otherwise submit an action that resource does not have — a
+    grant that saves cleanly and matches nothing.
+ */
+function AddPrivilegeRow({ catalog, onAdd }: {
+  catalog: any[];
+  onAdd: (resource: string, action: string, effect: string) => void;
+}) {
+  const [resource, setResource] = useState("");
+  const [action, setAction] = useState("");
+  const [effect, setEffect] = useState("allow");
+
+  const current = catalog.find((c) => c.id === resource) || catalog[0];
+  const actions: any[] = current?.actions || [];
+
+  useEffect(() => {
+    if (!resource && catalog.length) setResource(catalog[0].id);
+  }, [catalog, resource]);
+
+  useEffect(() => {
+    // Keep the action valid for the chosen resource.
+    if (actions.length && !actions.some((a) => a.id === action)) {
+      setAction(actions[0].id);
+    }
+  }, [actions, action]);
+
+  const sel = { fontSize: 12, padding: "5px 8px", borderRadius: 6,
+    border: "1px solid var(--border-default)", background: "var(--bg-secondary)",
+    color: "var(--text-primary)" } as const;
+
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <select value={resource} onChange={(e) => setResource(e.target.value)} style={sel}>
+        {catalog.map((r) => <option key={r.id} value={r.id}>{r.id}</option>)}
+      </select>
+      <select value={action} onChange={(e) => setAction(e.target.value)} style={sel}>
+        {actions.map((a: any) => <option key={a.id} value={a.id}>{a.id}</option>)}
+      </select>
+      <select value={effect} onChange={(e) => setEffect(e.target.value)} style={sel}>
+        <option value="allow">allow</option>
+        <option value="deny">deny</option>
+      </select>
+      <button
+        onClick={() => resource && action && onAdd(resource, action, effect)}
+        disabled={!resource || !action}
+        style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6,
+          border: "1px solid var(--border-default)", background: "transparent",
+          color: "var(--text-primary)", cursor: "pointer" }}>Add</button>
+      {current?.actions?.find((a: any) => a.id === action)?.description && (
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          {current.actions.find((a: any) => a.id === action).description}
+        </span>
+      )}
+    </div>
+  );
+}

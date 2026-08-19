@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from case_service import hxguard
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +85,9 @@ async def list_trees(
 
 
 @router.get("/escalation-trees/{tree_id}", response_model=EscalationTreeResponse)
-async def get_tree(tree_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+async def get_tree(
+    tree_id: uuid.UUID, session: AsyncSession = Depends(get_session), _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.read")),
+):
     t = await session.get(EscalationTreeModel, tree_id)
     if t is None:
         raise HTTPException(404, "Tree not found")
@@ -96,6 +99,7 @@ async def update_tree(
     tree_id: uuid.UUID,
     body: EscalationTreeUpdate,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
 ):
     t = await session.get(EscalationTreeModel, tree_id)
     if t is None:
@@ -109,7 +113,9 @@ async def update_tree(
 
 
 @router.delete("/escalation-trees/{tree_id}", status_code=204)
-async def delete_tree(tree_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+async def delete_tree(
+    tree_id: uuid.UUID, session: AsyncSession = Depends(get_session), _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
+):
     t = await session.get(EscalationTreeModel, tree_id)
     if t:
         t.is_active = False
@@ -123,6 +129,7 @@ async def delete_tree(tree_id: uuid.UUID, session: AsyncSession = Depends(get_se
 @router.post("/escalation-trees/preview")
 async def preview_tree(
     body: EscalationPreviewRequest,
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
 ):
     try:
         started = (
@@ -205,6 +212,7 @@ async def manual_escalate(
     policy_id: str,
     level: int = Query(..., ge=1),
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
 ):
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,
@@ -229,6 +237,7 @@ async def get_schedule(
     case_id: uuid.UUID,
     policy_id: str,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.read")),
 ):
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,

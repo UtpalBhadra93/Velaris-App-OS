@@ -119,13 +119,19 @@ class TestStartSession:
         from case_service.config import get_settings
         case = await _case(client)
         s = get_settings()
-        prior = s.meet_driver
+        # The credentials must be cleared explicitly, not assumed absent: a dev
+        # box with LiveKit in its .env configures the driver, `configured()`
+        # returns True, and the session is created — this asserted 501 and got
+        # 201 for exactly that reason.
+        prior = (s.meet_driver, s.livekit_url, s.livekit_api_key, s.livekit_api_secret)
         s.meet_driver = "embedded"
+        s.livekit_url = s.livekit_api_key = s.livekit_api_secret = ""
         try:
             r = await client.post(f"{MEET}/cases/{case['id']}/sessions", json={})
         finally:
-            s.meet_driver = prior
+            (s.meet_driver, s.livekit_url, s.livekit_api_key, s.livekit_api_secret) = prior
         assert r.status_code == 501
+        assert r.json()["error"]["code"] == "VEL-MEET-DRIVER-501"
 
     async def test_unknown_provider_400(self, client, teams_connector):
         case = await _case(client)

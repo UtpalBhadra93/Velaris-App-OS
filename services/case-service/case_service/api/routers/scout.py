@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.db.models import MigrationScanModel
+from case_service import hxguard
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 from case_service.scout import scanner
@@ -23,7 +24,7 @@ from case_service.scout.migration_planner import build_migration_plan
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/scout", tags=["scout"], dependencies=[Depends(require_role("devops", "admin"))])
+router = APIRouter(prefix="/scout", tags=["scout"], dependencies=[Depends(hxguard.guard("platform.scout.access"))])
 
 
 class ScanRequest(BaseModel):

@@ -36,6 +36,10 @@ _TYPE_MAP = {
     "startEvent":           "startEvent",
     "endEvent":             "endEvent",
     "serviceTask":          "serviceTask",
+    # RPA. A bot task is not a serviceTask: a connector call returns in
+    # milliseconds and a bot drives a browser for minutes, so the two need
+    # different execution semantics (see `_execute_node` — this one SUSPENDS).
+    "botTask":              "botTask",
     "userTask":             "userTask",
     "scriptTask":           "scriptTask",
     "callActivity":         "spawnCase",   # BPMN standard → Helix-native name (avoids clash with Pega "Activity")

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
@@ -75,7 +76,8 @@ def _mask_bank_ref(value: str | None) -> str | None:
 
 
 def _has_finance_access(user: AuthenticatedUser) -> bool:
-    return user.is_admin or "finance" in user.roles or "admin" in user.roles
+    """Phase 4 step 2 — same redaction question as `crm`/`cases`, same action."""
+    return hxguard.user_allows(user, "finance.details.read")
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 

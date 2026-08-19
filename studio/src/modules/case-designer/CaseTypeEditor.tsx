@@ -4,6 +4,7 @@ import { useApi, useCommit, useBranchMode, useCurrentUserGroups } from "@shared/
 import { getCaseType, listForms, createForm, updateForm as updateFormApi } from "@shared/api/client";
 import { Button, Spinner, CommitModal, CommitHistory, BranchModeBanner } from "@shared/components";
 import type { CommitRecord } from "@shared/components/CommitHistory";
+import { getAccessToken } from "@/auth/tokenManager";
 
 // ── Version Bump Modal ────────────────────────────────────────────────────────
 function VersionBumpModal({ caseType, onClose, onBumped }: { caseType: any; onClose: () => void; onBumped: (newId: string, newVersion: string) => void }) {
@@ -30,7 +31,7 @@ function VersionBumpModal({ caseType, onClose, onBumped }: { caseType: any; onCl
     const r = await fetch(`/api/v1/apps/case-types/${caseType.id}/bump-version`, {
       method: "POST", headers: {
         "Content-Type": "application/json",
-        ...(localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {}),
+        ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
       },
       body: JSON.stringify({ bump_type: bumpType, changelog }),
     });
@@ -258,7 +259,7 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}`,
+          Authorization: `Bearer ${getAccessToken() ?? ""}`,
         },
         body: JSON.stringify({ definition_json }),
       });
@@ -307,7 +308,7 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}`,
+          Authorization: `Bearer ${getAccessToken() ?? ""}`,
         },
         body: JSON.stringify({ definition_json }),
       });
@@ -415,7 +416,7 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
             <Button variant="secondary" size="sm" onClick={async () => {
               const r = await fetch(`/api/v1/apps/package/case-type/${caseTypeId}`, {
                 method: "POST",
-                headers: localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {},
+                headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {},
               });
               if (r.ok) {
                 const blob = new Blob([JSON.stringify(await r.json(), null, 2)], { type: "application/json" });
@@ -826,7 +827,7 @@ function MigrationHistoryPanel({ caseTypeId }: { caseTypeId: string }) {
   const [error, setError]     = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const token = localStorage.getItem("helix_token");
+    const token = getAccessToken();
     fetch(`/api/v1/case-types/${caseTypeId}/migration-history`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -943,7 +944,7 @@ function MigrationHistoryPanel({ caseTypeId }: { caseTypeId: string }) {
 
 function IntakeTriggerPanel({ caseType, caseTypeId }: { caseType: any; caseTypeId: string }) {
   const authHdr = (): Record<string, string> => {
-    const t = localStorage.getItem("helix_token");
+    const t = getAccessToken();
     const h: Record<string, string> = { "Content-Type": "application/json" };
     if (t) h["Authorization"] = `Bearer ${t}`;
     return h;
@@ -1100,7 +1101,7 @@ interface VarDef {
 const VAR_TYPES = ["str", "int", "float", "bool", "date", "datetime", "list", "dict", "any"];
 
 function vhdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

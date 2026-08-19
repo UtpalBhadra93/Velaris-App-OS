@@ -67,7 +67,7 @@ describe("codedFrom", () => {
 
 describe("request header merging", () => {
   it("keeps Authorization when the caller passes its own headers", async () => {
-    localStorage.setItem("helix_token", "tok");
+    localStorage.setItem("velaris_token", "tok");
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => ({
       ok: true, status: 200, json: async () => ({}),
     } as Response));

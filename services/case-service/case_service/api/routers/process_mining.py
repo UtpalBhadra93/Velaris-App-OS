@@ -14,6 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
+from case_service import hxguard
 # Read-replica session, not the operations pool (report §1.1 / §2.8).
 #
 # Every route here is a GET, the analyzer performs no writes, and the one
@@ -30,7 +31,7 @@ from case_service.auth.dependencies import require_role
 from case_service.db.session import get_replica_session as get_session
 from case_service.process_mining import analyzer
 
-router = APIRouter(prefix="/process-mining", tags=["process-mining"], dependencies=[Depends(require_role("designer", "admin"))])
+router = APIRouter(prefix="/process-mining", tags=["process-mining"], dependencies=[Depends(hxguard.guard("analytics.mining.access"))])
 
 
 class EventLogEntry(BaseModel):

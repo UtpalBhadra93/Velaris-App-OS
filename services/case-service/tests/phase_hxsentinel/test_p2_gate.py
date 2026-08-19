@@ -177,8 +177,11 @@ class TestGate:
                                             status="completed"))
         await session.commit()
 
-        advanced = await _auto_advance_if_complete(session, ca, "s1", ct_def)
+        advanced, held_by_risk = await _auto_advance_if_complete(session, ca, "s1", ct_def)
         assert advanced is None                       # gate held the advance
+        # The caller must be able to tell "held" from "steps outstanding" — both
+        # are a non-advance, and only one of them needs a human.
+        assert held_by_risk is True
         case = await session.get(CaseInstanceModel, ca)
         assert case.current_stage_id == "s1"          # did not move
         assert await risk_engine.list_holds(session, ca, status="open")  # hold persisted

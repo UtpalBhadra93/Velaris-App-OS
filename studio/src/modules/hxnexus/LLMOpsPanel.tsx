@@ -52,7 +52,7 @@ export default function LLMOpsPanel() {
     setLoading(true);
     try {
       const q = `group_by=${groupBy}${hours ? `&hours=${hours}` : ""}`;
-      const r = await apiFetch(`/api/v1/hxnexus/llmops/metrics?${q}`);
+      const r = await apiFetch(`/hxnexus/llmops/metrics?${q}`);
       if (r.status === 403 || r.status === 401) {
         setError("Admin access required — these metrics are platform-wide.");
         setErrObj(null);

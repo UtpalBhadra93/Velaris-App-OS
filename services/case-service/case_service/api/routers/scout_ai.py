@@ -15,6 +15,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.config import get_settings
+from case_service import hxguard
 from case_service.db.models import ArtifactAnalysisModel
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
@@ -23,7 +24,7 @@ from case_service.scout.ai import analyzer as ai_analyzer
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/scout-ai", tags=["scout-ai"], dependencies=[Depends(require_role("devops", "admin"))])
+router = APIRouter(prefix="/scout-ai", tags=["scout-ai"], dependencies=[Depends(hxguard.guard("platform.scout_ai.access"))])
 
 
 class AnalyzeRequest(BaseModel):

@@ -79,6 +79,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/hxanalytics":   withSparkleBox(HxAnalyticsIcon),
   "/documents":     DocumentsIcon,
   "/inbox":         InboxIcon,
+  "/channels":      ChannelInboxIcon,
 
   // Development
   "/case-designer":  CaseDesignerIcon,
@@ -101,7 +102,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/hxmigrate":      withSparkleBox(BpmImporterIcon),
   "/hxdbmigrate":    withSparkleBox(HxDBManagerIcon),
   "/hxreplay":       withSparkleBox(ProcessMiningIcon),
-  "/risk-review":    ComplianceIcon,
+  "/risk-review":    RiskGaugeIcon,
   "/scout":          ScoutIcon,
   "/scout-ai":       withSparkleBox(ScoutAIIcon),
   "/orchestrator":   withSparkleBox(OrchestratorIcon),
@@ -131,6 +132,9 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/email-admin":      EmailAdminIcon,
   "/push-admin":       PushAdminIcon,
   "/hxglobal":         withSparkleBox(HxGlobalIcon),
+
+  // Status
+  "/hxstatus":         StatusRingIcon,
 };
 
 /** Retrieve an icon component by route path; falls back to a generic box icon. */
@@ -310,6 +314,23 @@ function DocumentsIcon({ active, size = 16 }: NavIconProps) {
       <path d="M11.5 5.5V9H15" stroke={c} strokeWidth="1.3" strokeLinejoin="round" />
       {/* Document lines */}
       <path d="M9 11h4M9 12.5h2.5" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ChannelInboxIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Rounded speech bubble with a tail at the lower left — an inbound
+          message, not the generic box the route fell back to before. */}
+      <path
+        d="M8 2.2c3.6 0 6.3 2.1 6.3 4.9 0 2.8-2.7 4.9-6.3 4.9-.7 0-1.4-.08-2-.23l-3.1 1.9.75-2.65C2.4 10 1.7 8.7 1.7 7.1 1.7 4.3 4.4 2.2 8 2.2Z"
+        stroke={c} strokeWidth="1.3" strokeLinejoin="round"
+      />
+      {/* Message lines */}
+      <path d="M4.9 5.9h6.2" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M4.9 8.3h4.1" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -746,6 +767,61 @@ function ComplianceIcon({ active, size = 16 }: NavIconProps) {
         <path d="M4 11.3V15" stroke={c} strokeWidth="1.1" strokeLinecap="round" />
         <circle cx="4" cy="15" r="0.65" stroke={c} strokeWidth="0.9" fill="none" />
       </g>
+    </svg>
+  );
+}
+
+/**
+ * HxStatus — segmented health ring with a check breaking out through the gap.
+ *
+ * The ring is one arc (305°, not a full circle) so the opening in the upper
+ * right is where the tick escapes, rather than the tick being drawn on top of
+ * an unbroken ring — at 25px an overlap just reads as a smudge. `butt` caps
+ * keep the segment ends square; round caps blob together at this size.
+ *
+ * No sparkle box: HxStatus is a status page, not an AI-powered surface.
+ */
+function StatusRingIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Ring — centre (8,8) r=6, running counterclockwise from 75° to 20° */}
+      <path
+        d="M9.55 2.2A6 6 0 1 0 13.64 5.95"
+        stroke={c} strokeWidth="1.5" strokeLinecap="butt"
+        strokeDasharray="2.2 0.99"
+      />
+      {/* Check — starts inside the ring, exits through the gap */}
+      <path
+        d="M4.6 8.4L7.2 11L14.2 3.2"
+        stroke={c} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Risk Review (HxSentinel supervisor oversight) — a segmented risk meter.
+ *
+ * Deliberately NOT the ComplianceIcon it used to share: compliance is the
+ * gavel-and-person (rules and who broke them), risk is a graded dial. Reusing
+ * one icon for both made two different pages look like the same page.
+ */
+function RiskGaugeIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Dial — semicircle, centre (8,12), r=6 */}
+      <path d="M2 12A6 6 0 0 1 14 12" stroke={c} strokeWidth="1.4" strokeLinecap="round" />
+      {/* Band dividers — five graded segments, as on the reference meter */}
+      <path d="M4.6 9.53L3.15 8.47" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+      <path d="M6.7 8.01L6.15 6.29" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+      <path d="M9.3 8.01L9.85 6.29" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+      <path d="M11.4 9.53L12.85 8.47" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+      {/* Needle, resting in the upper-right band */}
+      <path d="M8 12L10.6 8.2" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+      {/* Hub */}
+      <circle cx="8" cy="12" r="1" fill={c} />
     </svg>
   );
 }

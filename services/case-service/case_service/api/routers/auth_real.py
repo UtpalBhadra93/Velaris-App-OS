@@ -13,12 +13,14 @@ record exists. Dev-mode fallback is preserved for local development.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import time as _time
 import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from urllib.parse import urlencode
 
 import bcrypt
 import pyotp
@@ -29,6 +31,7 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.db.models import HelixUserModel, AuthOtpModel, SsoProviderModel, RefreshTokenModel, RevokedSessionModel, HelixSettingModel
+from case_service import hxguard
 from case_service.db.session import get_auth_session as get_session
 from case_service.auth.dependencies import get_current_user, require_role
 from case_service.auth.models import AuthenticatedUser
@@ -55,14 +58,21 @@ from case_service.core.error_codes import (
     AUTH_EMAIL_TAKEN_409,
     AUTH_OTP_INVALID_400,
     AUTH_RATE_LIMIT_429,
+    AUTH_SSO_PROVISION_403,
     AUTH_SSO_REQUIRED_400,
+    AUTH_SSO_STATE_400,
     AUTH_SSO_UNCONFIGURED_404,
+    AUTH_SSO_UNVERIFIED_403,
     coded,
 )
 
 _login_rl    = rate_limit(max_calls=10, window_seconds=60,  name="login")
 _register_rl = rate_limit(max_calls=10, window_seconds=300, name="registration")
 _forgot_rl   = rate_limit(max_calls=5,  window_seconds=300, name="password-reset")
+# The SSO endpoints are unauthenticated like the ones above, and the callback
+# additionally makes two to three outbound calls per request — so without this
+# it is both brute-force surface and an amplifier pointed at the provider.
+_sso_rl      = rate_limit(max_calls=20, window_seconds=60,  name="sso")
 _reset_rl    = rate_limit(max_calls=5,  window_seconds=300, name="password-reset")
 
 # ── Refresh-endpoint rate limiter (sliding window, per-process) ───────────────
@@ -388,7 +398,7 @@ async def login_real(
 async def register_user(
     body:    RegisterRequest,
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(require_role("admin")),
+    user:    AuthenticatedUser = Depends(hxguard.guard("identity.users.write")),
 ):
     """Create a new Helix user (auth account). Admin only."""
     existing = (await session.execute(
@@ -427,7 +437,7 @@ def _assert_can_modify(actor: AuthenticatedUser, target: HelixUserModel) -> None
     """
     if getattr(target, "is_superadmin", False):
         raise HTTPException(403, "The superadmin account cannot be modified via the API.")
-    if not (actor.is_admin or _is_superadmin_user(actor)):
+    if not (hxguard.user_allows(actor, "identity.users.write") or _is_superadmin_user(actor)):
         raise HTTPException(403, "Only admins can modify user accounts.")
 
 
@@ -436,9 +446,8 @@ def _assert_can_modify(actor: AuthenticatedUser, target: HelixUserModel) -> None
 @router.get("/users")
 async def list_users(
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(get_current_user),
+    user:    AuthenticatedUser = Depends(hxguard.guard("identity.users.read")),
 ):
-    require_role("admin")(user)
     # Superadmin is hidden from all user management views
     rows = (await session.execute(
         select(HelixUserModel)
@@ -452,9 +461,8 @@ async def list_users(
 async def get_user(
     user_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(get_current_user),
+    user:    AuthenticatedUser = Depends(hxguard.guard("identity.users.read")),
 ):
-    require_role("admin")(user)
     u = await session.get(HelixUserModel, user_id)
     if not u or getattr(u, "is_superadmin", False):
         raise HTTPException(404, "User not found")
@@ -466,9 +474,8 @@ async def update_user(
     user_id: uuid.UUID,
     body:    UpdateUserRequest,
     session: AsyncSession = Depends(get_session),
-    actor:   AuthenticatedUser = Depends(get_current_user),
+    actor:   AuthenticatedUser = Depends(hxguard.guard("identity.users.write")),
 ):
-    require_role("admin")(actor)
     u = await session.get(HelixUserModel, user_id)
     if not u:
         raise HTTPException(404, "User not found")
@@ -494,9 +501,8 @@ async def update_user(
 async def delete_user(
     user_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    actor:   AuthenticatedUser = Depends(get_current_user),
+    actor:   AuthenticatedUser = Depends(hxguard.guard("identity.users.write")),
 ):
-    require_role("admin")(actor)
     u = await session.get(HelixUserModel, user_id)
     if not u:
         raise HTTPException(404, "User not found")
@@ -589,18 +595,57 @@ async def change_password(
 
 # ── Forgot / reset password ───────────────────────────────────────
 
+#: One answer for every outcome of `POST /forgot-password`: unknown address,
+#: federated account, real account. It has to mention SSO, because a federated
+#: user gets no code and would otherwise sit waiting for an email — but it must
+#: say so to *everybody*, or the wording itself discloses which addresses exist
+#: and which are SSO-only.
+_RESET_UNIFORM_MESSAGE = (
+    "If an account exists for this address, a code has been sent. If your "
+    "organisation uses single sign-on, sign in with your provider instead."
+)
+
+
 @router.post("/forgot-password", dependencies=[Depends(_forgot_rl)])
 async def forgot_password(
     body:    ForgotPasswordRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Send a 6-digit OTP to the user's email for password reset."""
+    """Send a 6-digit OTP to the user's email for password reset.
+
+    **A federated account gets no code.** Reset is the one flow that hands out a
+    local password without asking for the old one, so leaving it open lets an
+    SSO user mint a credential they never had — and that credential outlives
+    their IdP account. Revoking them at the identity provider would then stop
+    the SSO button working and change nothing else, which is precisely the
+    leaver case the provider is supposed to close. Change-password is not the
+    hole; it already requires a password the account does not have.
+
+    "Federated" is `password_hash IS NULL`: `create_user` always sets one, and
+    the JIT spine always writes `None`, so the column is the fact rather than a
+    second flag that can disagree with it.
+    """
     u = (await session.execute(
         select(HelixUserModel).where(HelixUserModel.email == body.email)
     )).scalar_one_or_none()
     # Always return 200 to avoid email enumeration
     if not u:
-        return {"ok": True, "message": "If that email exists, an OTP has been sent."}
+        return {"ok": True, "message": _RESET_UNIFORM_MESSAGE}
+
+    if not u.password_hash:
+        # Identical response and identical next screen — the client still walks
+        # on to "enter your code", where any code fails the same way an expired
+        # one does. Refusing visibly here, or skipping that step, would make the
+        # *flow* the oracle that the message was carefully written not to be.
+        from case_service.enterprise.security_events import log_security_event
+        await log_security_event(
+            session, event_type="password_reset_refused_federated", severity="low",
+            resource_type="user", resource_id=str(u.id),
+            action="forgot_password", outcome="denied",
+            details={"reason": "no_local_password"},
+        )
+        await session.commit()
+        return {"ok": True, "message": _RESET_UNIFORM_MESSAGE}
 
     otp_plain = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     otp_rec = AuthOtpModel(
@@ -630,7 +675,7 @@ async def forgot_password(
     except Exception:
         pass  # OTP is still saved; user can request again
 
-    return {"ok": True, "message": "If that email exists, an OTP has been sent."}
+    return {"ok": True, "message": _RESET_UNIFORM_MESSAGE}
 
 
 @router.post("/reset-password", dependencies=[Depends(_reset_rl)])
@@ -642,6 +687,15 @@ async def reset_password(
         select(HelixUserModel).where(HelixUserModel.email == body.email)
     )).scalar_one_or_none()
     if not u:
+        raise coded(400, AUTH_OTP_INVALID_400, "Invalid or expired OTP.")
+
+    # Checked here as well as at `/forgot-password`, and not as tidiness: an OTP
+    # minted while the account still had a password stays valid for its window,
+    # so an account federated (or stripped of its password) in between could
+    # have its credential restored by a code that predates the change. Same
+    # refusal as a bad OTP — the anti-enumeration answer is the right one here
+    # too.
+    if not u.password_hash:
         raise coded(400, AUTH_OTP_INVALID_400, "Invalid or expired OTP.")
 
     # Account lockout check — failed OTP attempts share the same counter as password failures.
@@ -763,49 +817,392 @@ async def mfa_disable(
 async def list_sso_providers(
     tenant_id: Optional[str] = None,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
 ):
+    """Which SSO buttons to render. Deliberately anonymous.
+
+    It used to require a bearer token, which no one has on a login page: the
+    Studio and portal sign-in screens both got a 401 here and rendered zero SSO
+    buttons, so the whole flow was unreachable. Nothing here is a secret — the
+    provider name and `client_id` are both visible in the authorize URL the
+    very next request builds. `tenant_id` is not returned, and was the only
+    field an anonymous caller had no business seeing.
+    """
     rows = (await session.execute(
         select(SsoProviderModel)
         .where(SsoProviderModel.enabled == True)  # noqa: E712
         .order_by(SsoProviderModel.provider)
     )).scalars().all()
+
+    # The parameter was accepted and then ignored, so a portal asking for its
+    # own providers was shown every tenant's. A NULL tenant_id stays visible to
+    # everyone (same_tenant's rule for platform-shared rows).
+    if tenant_id:
+        from case_service.tenancy.identity import same_tenant
+        rows = [r for r in rows if await same_tenant(session, r.tenant_id, tenant_id)]
+
+    def _login_url(row: SsoProviderModel) -> str | None:
+        """Where a SAML button has to send the browser.
+
+        SAML is not an OAuth redirect: the sign-in starts at
+        `/auth/saml/{tenant}/login`, and the tenant is in the path. The segment
+        is read out of the provider's configured **ACS URL** rather than from
+        `tenant_id`, which this endpoint deliberately does not disclose — the
+        ACS URL is already published in the SP metadata that the IdP
+        administrator pastes into their console, so it is public by design,
+        while `tenant_id` on an OAuth row is not.
+        """
+        if row.provider != "saml":
+            return None
+        from urllib.parse import urlsplit
+        acs = str((row.config or {}).get("acs_url") or "")
+        parts = [p for p in urlsplit(acs).path.split("/") if p]
+        # …/auth/saml/{tenant}/acs
+        if len(parts) < 2 or parts[-1] != "acs":
+            return None
+        return f"/api/v1/auth/saml/{parts[-2]}/login"
+
+    def _branding(row: SsoProviderModel) -> dict:
+        """What the sign-in button should say and show.
+
+        Both come from the provider's `config` because the answer is per
+        deployment: one customer's button says "Okta", another's says the name
+        of their own identity team, and `saml` on its own tells a user nothing
+        about which door they are being sent to. `icon_url` is a URL the
+        administrator supplies — the IdP's official mark, downloaded from their
+        brand page and served by us, or a `data:` URI. Nothing is a secret: the
+        login page is public, and so is the fact that it offers SSO.
+        """
+        cfg = dict(row.config or {})
+        out: dict[str, str] = {}
+        name = str(cfg.get("display_name") or "").strip()
+        if name:
+            out["display_name"] = name
+        icon = str(cfg.get("icon_url") or "").strip()
+        # Same-origin paths and data URIs only. An arbitrary remote URL on the
+        # sign-in page would tell a third party who is about to log in, and
+        # would break the moment that host does.
+        #
+        # `startswith("/")` was not enough on its own: a browser normalises `\`
+        # to `/` inside an http(s) URL and strips tab/newline before parsing, so
+        # `/\evil.com/x.png` and `/\t/evil.com` are fetched from evil.com while
+        # passing a leading-slash test. `is_safe_local_path` is the same rule the
+        # RelayState prefixes use.
+        from case_service.identity.saml import is_safe_local_path
+
+        if icon.startswith("data:image/") or is_safe_local_path(icon):
+            out["icon_url"] = icon
+        return out
+
     return {
         "providers": [
             {"id": str(r.id), "provider": r.provider, "client_id": r.client_id,
-             "enabled": r.enabled, "tenant_id": r.tenant_id}
+             "enabled": r.enabled,
+             **({"login_url": url} if (url := _login_url(r)) else {}),
+             **_branding(r)}
             for r in rows
         ]
     }
+
+
+#: The four endpoint keys a custom provider must supply on its `config`. The two
+#: presets above exist because they are the providers with quirks worth encoding
+#: (GitHub's separate verified-email endpoint); anything else is plain OIDC.
+_CUSTOM_ENDPOINT_KEYS = ("auth_url", "token_url", "userinfo", "scope")
+
+
+def _endpoints_for(p_row: SsoProviderModel) -> dict:
+    """Resolve a provider row to its OAuth endpoints.
+
+    A preset name wins, so an admin cannot repoint `google` at their own host by
+    editing `config`. Everything else comes from the row, which is what makes
+    the provider field free text rather than a two-item list.
+    """
+    if p_row.provider in OAUTH_ENDPOINTS:
+        return OAUTH_ENDPOINTS[p_row.provider]
+    cfg = dict(p_row.config or {})
+    return {
+        "auth_url":  str(cfg.get("auth_url") or ""),
+        "token_url": str(cfg.get("token_url") or ""),
+        "userinfo":  str(cfg.get("userinfo") or ""),
+        "emails":    str(cfg.get("emails") or "") or None,
+        "scope":     str(cfg.get("scope") or "openid email profile"),
+    }
+
+
+async def _assert_endpoints_safe(ep: dict) -> None:
+    """Every URL we are about to call must survive the SSRF guard.
+
+    Re-checked on the request path, not only on write: `config` is a plain JSON
+    column that a DBA or a migration can change without going through the API.
+    The client secret is POSTed to `token_url`, so a URL pointing at internal
+    infrastructure would hand that secret to it.
+    """
+    from case_service.hxbridge.security import validate_outbound_url
+
+    for key in ("auth_url", "token_url", "userinfo", "emails"):
+        url = ep.get(key)
+        if not url:
+            continue
+        if not str(url).lower().startswith("https://"):
+            raise HTTPException(400, f"SSO {key} must be an https:// URL.")
+        try:
+            await validate_outbound_url(str(url))
+        except ValueError as exc:
+            raise HTTPException(400, f"SSO {key} is not allowed: {exc}") from exc
+
+
+async def _validated_custom_provider(provider: str, config: dict) -> None:
+    """A non-preset provider is only usable once it carries its own endpoints."""
+    if provider in OAUTH_ENDPOINTS:
+        return
+    if provider == "saml":
+        # SAML rows live in this table for the tenant scoping, enable flag and
+        # admin CRUD, but they are not OAuth: there is no token_url to call and
+        # no client secret to send. `identity.saml.SamlConfig.missing()` is what
+        # validates them, on the request path where the config is used.
+        from case_service.identity.saml import (
+            MAX_CLOCK_SKEW_SECONDS, SamlConfig, is_safe_local_path,
+        )
+
+        gaps = SamlConfig.from_row(config).missing()
+        if gaps:
+            raise HTTPException(
+                400,
+                "A SAML provider needs its IdP details before it can be used. "
+                f"Missing: {', '.join(gaps)}.",
+            )
+        # `from_row` drops an unsafe prefix, so a provider saved with one would
+        # simply behave differently from what the admin typed. Refused here so
+        # the answer is "no", not a silent edit.
+        unsafe = [
+            str(p) for p in (config.get("allowed_relay_state_prefixes") or [])
+            if not is_safe_local_path(str(p))
+        ]
+        if unsafe:
+            raise HTTPException(
+                400,
+                "A landing path must be a path on this server, starting with a single "
+                f"'/' and containing no backslash or whitespace. Refused: {', '.join(unsafe)}.",
+            )
+        metadata_url = str(config.get("idp_metadata_url") or "").strip()
+        if metadata_url:
+            # Checked on write as well as before every scheduled fetch: a URL
+            # this server will GET on a timer is an SSRF primitive if it is only
+            # ever validated in one of those places.
+            if not metadata_url.lower().startswith("https://"):
+                raise HTTPException(400, "The metadata URL must be https://.")
+            try:
+                await validate_outbound_url(metadata_url)
+            except ValueError as exc:
+                raise HTTPException(400, f"The metadata URL is not allowed: {exc}") from exc
+
+        skew = config.get("clock_skew_seconds")
+        if skew is not None:
+            try:
+                skew_int = int(skew)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "clock_skew_seconds must be a whole number of seconds.") from None
+            if not 0 <= skew_int <= MAX_CLOCK_SKEW_SECONDS:
+                raise HTTPException(
+                    400,
+                    f"clock_skew_seconds must be between 0 and {MAX_CLOCK_SKEW_SECONDS}. "
+                    "A larger tolerance stops NotOnOrAfter meaning anything.",
+                )
+        return
+    missing = [k for k in _CUSTOM_ENDPOINT_KEYS if not str(config.get(k) or "").strip()]
+    if missing:
+        raise HTTPException(
+            400,
+            f"'{provider}' is not a built-in provider, so its OAuth endpoints must be "
+            f"supplied. Missing: {', '.join(missing)}.",
+        )
+    await _assert_endpoints_safe({
+        "auth_url":  config.get("auth_url"),
+        "token_url": config.get("token_url"),
+        "userinfo":  config.get("userinfo"),
+        "emails":    config.get("emails"),
+    })
+
+
+def _validated_provider_config(config: dict | None) -> dict:
+    """Reject a provisioning config that would mint privileged accounts.
+
+    `default_roles` is applied to accounts created by *strangers* completing an
+    OAuth flow, so `superadmin` there would turn "anyone at an allowed domain"
+    into a system account that `_assert_can_modify` then refuses to touch. An
+    admin has other, audited ways to grant roles; this is not one of them.
+    """
+    cfg = dict(config or {})
+    roles = [str(r) for r in (cfg.get("default_roles") or [])]
+    if any(r.strip().lower() == "superadmin" for r in roles):
+        raise HTTPException(
+            400, "default_roles cannot include 'superadmin' — an auto-provisioned "
+                 "account must never be a system account.",
+        )
+    # The sign-in page is public and unauthenticated, so an icon it fetches from
+    # a third party reports every visitor to that host. `_branding` drops one it
+    # cannot vouch for; refusing here means the admin finds out at the point of
+    # saving rather than from a button with no icon.
+    from case_service.identity.saml import is_safe_local_path
+
+    icon = str(cfg.get("icon_url") or "").strip()
+    if icon and not (icon.startswith("data:image/") or is_safe_local_path(icon)):
+        raise HTTPException(
+            400,
+            "icon_url must be a path served by this deployment (a single leading '/', "
+            "no backslash or whitespace) or a data:image/ URI. A remote URL would tell "
+            "that host who is about to sign in.",
+        )
+    return cfg
+
+
+def _provider_admin_dict(p: SsoProviderModel) -> dict:
+    """The management view of a provider row.
+
+    `client_secret_enc` is never returned in any shape — not even decrypted for
+    an admin. `has_secret` is all the screen needs to distinguish "configured"
+    from "never set", and it is what lets an edit form leave the field blank to
+    mean "keep the existing secret".
+    """
+    out = {
+        "id":         str(p.id),
+        "provider":   p.provider,
+        "client_id":  p.client_id,
+        "enabled":    p.enabled,
+        "tenant_id":  p.tenant_id,
+        "config":     dict(p.config or {}),
+        "has_secret": bool(p.client_secret_enc),
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+    if p.provider == "saml":
+        # Certificate expiry is computed here rather than in the browser: it
+        # means parsing DER, and the screen that warns about an expiring
+        # certificate must not be the thing that breaks when one is unparseable.
+        from case_service.identity.saml_keys import key_summary
+        from case_service.identity.saml_metadata import cert_health
+
+        cfg = dict(p.config or {})
+        out["saml_health"] = {
+            "certs": cert_health([str(c) for c in (cfg.get("idp_x509_certs") or [])]),
+            "metadata_sync": cfg.get("metadata_sync"),
+            # Summary only — never `sp_key_enc`, which is why the sealed key is a
+            # column and not a `config` entry.
+            "sp_key": key_summary(p),
+        }
+    return out
+
+
+@router.get("/sso/providers/manage")
+async def manage_sso_providers(
+    session: AsyncSession = Depends(get_session),
+    user:    AuthenticatedUser = Depends(hxguard.guard("identity.sso.read")),
+):
+    """Admin listing: every row, enabled or not, with its provisioning config.
+
+    Separate from the anonymous `GET /sso/providers`, which a login page calls
+    and which must not disclose `tenant_id`, `config` or disabled rows.
+    """
+    rows = (await session.execute(
+        select(SsoProviderModel).order_by(SsoProviderModel.provider)
+    )).scalars().all()
+    return {"providers": [_provider_admin_dict(r) for r in rows]}
 
 
 @router.post("/sso/providers", status_code=201)
 async def create_sso_provider(
     body:    SsoProviderIn,
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(get_current_user),
+    user:    AuthenticatedUser = Depends(hxguard.guard("identity.sso.configure")),
 ):
-    require_role("admin")(user)
+    # A provider the callback cannot service must not be saved: otherwise an
+    # admin sees a button appear on the login page and only discovers it is not
+    # wired when a user clicks it. `google`/`github` are built in; anything else
+    # is accepted once it brings its own (SSRF-checked) endpoints.
+    await _validated_custom_provider(body.provider, dict(body.config or {}))
     p = SsoProviderModel(
         tenant_id=body.tenant_id,
         provider=body.provider,
         client_id=body.client_id,
         client_secret_enc=encrypt_credentials({"secret": body.client_secret}),
-        config=body.config,
+        config=_validated_provider_config(body.config),
     )
     session.add(p)
     await session.commit()
     await session.refresh(p)
-    return {"id": str(p.id), "provider": p.provider, "client_id": p.client_id}
+    return _provider_admin_dict(p)
+
+
+class SsoProviderPatch(BaseModel):
+    client_id:     Optional[str]  = None
+    client_secret: Optional[str]  = None   # omitted/blank ⇒ keep the stored one
+    enabled:       Optional[bool] = None
+    tenant_id:     Optional[str]  = None
+    config:        Optional[dict] = None
+
+
+@router.patch("/sso/providers/{provider_id}")
+async def update_sso_provider(
+    provider_id: uuid.UUID,
+    body:        SsoProviderPatch,
+    session:     AsyncSession = Depends(get_session),
+    user:        AuthenticatedUser = Depends(hxguard.guard("identity.sso.configure")),
+):
+    """Edit a provider in place — chiefly its provisioning `config`.
+
+    `provider` itself is not patchable: changing it would silently re-point an
+    existing `client_id`/secret pair at a different identity provider. Delete
+    and re-create instead.
+    """
+    p = await session.get(SsoProviderModel, provider_id)
+    if not p:
+        raise coded(404, AUTH_SSO_UNCONFIGURED_404, "SSO provider not found")
+
+    if body.client_id is not None:
+        p.client_id = body.client_id
+    if body.client_secret:            # blank means "unchanged", not "erase"
+        p.client_secret_enc = encrypt_credentials({"secret": body.client_secret})
+    if body.enabled is not None:
+        p.enabled = body.enabled
+    if body.tenant_id is not None:
+        p.tenant_id = body.tenant_id or None
+    if body.config is not None:
+        cfg = _validated_provider_config(body.config)
+        # Re-run the endpoint contract: an edit can remove the very URLs that
+        # made a custom provider usable, or repoint them somewhere internal.
+        await _validated_custom_provider(p.provider, cfg)
+        p.config = cfg
+
+    await session.commit()
+    await session.refresh(p)
+
+    from case_service.enterprise.security_events import log_security_event
+    await log_security_event(
+        session, event_type="sso_provider_updated", severity="medium",
+        user_id=user.user_id, resource_type="sso_provider", resource_id=str(p.id),
+        action="update", outcome="success",
+        # The allowlist key differs by protocol — SAML reads
+        # `email_domain_allowlist`. Logging only the OIDC one recorded an empty
+        # allowlist for every SAML edit, which is the opposite of what the audit
+        # trail is for: "who widened auto-provisioning, and to what".
+        details={"provider": p.provider, "enabled": p.enabled,
+                 "allowed_domains": list(
+                     (p.config or {}).get(
+                         "email_domain_allowlist" if p.provider == "saml" else "allowed_domains",
+                     ) or []),
+                 "auto_provision": (p.config or {}).get("auto_provision", True),
+                 "link_existing_by_email": bool((p.config or {}).get("link_existing_by_email", False)),
+                 "secret_rotated": bool(body.client_secret)},
+    )
+    await session.commit()
+    return _provider_admin_dict(p)
 
 
 @router.delete("/sso/providers/{provider_id}", status_code=204)
 async def delete_sso_provider(
     provider_id: uuid.UUID,
     session:     AsyncSession = Depends(get_session),
-    user:        AuthenticatedUser = Depends(get_current_user),
+    user:        AuthenticatedUser = Depends(hxguard.guard("identity.sso.configure")),
 ):
-    require_role("admin")(user)
     p = await session.get(SsoProviderModel, provider_id)
     if not p:
         raise HTTPException(404, "Provider not found")
@@ -822,46 +1219,148 @@ OAUTH_ENDPOINTS = {
         "auth_url":   "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url":  "https://oauth2.googleapis.com/token",
         "userinfo":   "https://www.googleapis.com/oauth2/v3/userinfo",
+        "emails":     None,          # email + email_verified come back inline
         "scope":      "openid email profile",
     },
     "github": {
         "auth_url":   "https://github.com/login/oauth/authorize",
         "token_url":  "https://github.com/login/oauth/access_token",
         "userinfo":   "https://api.github.com/user",
+        # /user returns the *public profile* email, which the account holder
+        # types in freely and GitHub never verifies. The verified set lives
+        # here, and this is the only address we will accept.
+        "emails":     "https://api.github.com/user/emails",
         "scope":      "read:user user:email",
     },
 }
 
 
-@router.get("/sso/{provider}/auth-url")
+# ── OAuth `state` — CSRF defence ──────────────────────────────────
+# The state used to be minted and returned, and never looked at again: any
+# site could post its own provider code to /sso/callback and silently land a
+# victim's browser in the attacker's account (login CSRF). Two things fix it,
+# and both are needed:
+#
+#   1. This signature, which proves the state came from us, names the provider
+#      it was issued for, and expires. Stateless on purpose — a nonce table
+#      would need a migration and buys little, since an OAuth `code` is itself
+#      single-use at the provider, so a replayed state fails the exchange.
+#   2. The browser binding, which lives in the client: the value is held in
+#      sessionStorage and compared on return. That is what an attacker cannot
+#      forge — they can obtain a *valid* state of their own, but not write it
+#      into the victim's session storage.
+_SSO_STATE_TTL = 600  # seconds; a human OAuth round trip is well under this
+
+
+def _sso_state_secret() -> str:
+    """The HMAC key. Refuses to operate unconfigured.
+
+    An empty key still produces a valid-looking signature that anyone can
+    reproduce, which would silently reduce the state check to decoration. This
+    is the one place that must fail loudly instead.
+    """
+    secret = get_settings().auth_secret
+    if not secret or not secret.strip():
+        raise HTTPException(
+            503, "SSO is unavailable: the server has no auth secret configured.",
+        )
+    return secret
+
+
+def _sso_state_sign(body: str) -> str:
+    return hmac.new(
+        _sso_state_secret().encode(), body.encode(), hashlib.sha256
+    ).hexdigest()[:32]
+
+
+def _mint_sso_state(provider_id: str, redirect_uri: str) -> str:
+    """`<nonce>.<provider-row-id>.<redirect-digest>.<expiry>.<hmac>`.
+
+    The *row id* rather than the provider name: `auth-url` and `callback` each
+    used to pick "the first enabled row with this name", so in a multi-tenant
+    deployment the callback could complete against a different tenant's client
+    id than the one the browser was actually sent to. Binding the row removes
+    the ambiguity instead of trying to re-derive the same answer twice.
+    """
+    body = ".".join((
+        secrets.token_urlsafe(16),
+        str(provider_id),
+        hashlib.sha256(redirect_uri.encode()).hexdigest()[:16],
+        str(int(_time.time()) + _SSO_STATE_TTL),
+    ))
+    return f"{body}.{_sso_state_sign(body)}"
+
+
+def _verify_sso_state(state: str, redirect_uri: str) -> str | None:
+    """Return the provider row id the state was minted for, or None.
+
+    Signature, expiry and redirect_uri must all match the mint.
+    """
+    parts = (state or "").split(".")
+    if len(parts) != 5:
+        return None
+    body, sig = ".".join(parts[:4]), parts[4]
+    if not hmac.compare_digest(sig, _sso_state_sign(body)):
+        return None
+    _, provider_id, redirect_digest, expiry = parts[:4]
+    if redirect_digest != hashlib.sha256(redirect_uri.encode()).hexdigest()[:16]:
+        return None
+    try:
+        if int(expiry) <= int(_time.time()):
+            return None
+    except ValueError:
+        return None
+    return provider_id
+
+
+@router.get("/sso/{provider}/auth-url", dependencies=[Depends(_sso_rl)])
 async def get_sso_auth_url(
     provider:    str,
     redirect_uri: str,
+    tenant_id:   Optional[str] = None,
     session:     AsyncSession = Depends(get_session),
 ):
     """Return the provider's OAuth2 authorization URL for the frontend to redirect to."""
-    if provider not in OAUTH_ENDPOINTS:
-        raise HTTPException(400, f"Unknown provider '{provider}'. Supported: {list(OAUTH_ENDPOINTS)}")
-
-    p_row = (await session.execute(
+    if provider == "saml":
+        # A SAML row is not an OAuth provider: it has no authorize URL and its
+        # login is a browser redirect we build ourselves. Falling through would
+        # answer "no authorization URL configured", which reads as a broken
+        # setup rather than the wrong endpoint.
+        raise HTTPException(
+            400,
+            "SAML sign-in does not use this endpoint. Send the browser to "
+            "/api/v1/auth/saml/{tenant}/login instead.",
+        )
+    rows = (await session.execute(
         select(SsoProviderModel)
         .where(SsoProviderModel.provider == provider)
         .where(SsoProviderModel.enabled == True)  # noqa: E712
-        .limit(1)
-    )).scalar_one_or_none()
+        .order_by(SsoProviderModel.created_at)
+    )).scalars().all()
+    if tenant_id:
+        from case_service.tenancy.identity import same_tenant
+        rows = [r for r in rows if await same_tenant(session, r.tenant_id, tenant_id)]
+    p_row = rows[0] if rows else None
     if not p_row:
         raise HTTPException(404, f"SSO provider '{provider}' is not configured.")
 
-    ep  = OAUTH_ENDPOINTS[provider]
-    state = secrets.token_urlsafe(16)
-    params = {
+    ep = _endpoints_for(p_row)
+    if not ep.get("auth_url"):
+        raise coded(
+            404, AUTH_SSO_UNCONFIGURED_404,
+            f"SSO provider '{provider}' has no authorization URL configured.",
+        )
+    await _assert_endpoints_safe(ep)
+    state = _mint_sso_state(p_row.id, redirect_uri)
+    # urlencode, not f-string concatenation: redirect_uri arrives decoded, so a
+    # raw `&` in it used to inject extra parameters into the authorize request.
+    query = urlencode({
         "client_id":     p_row.client_id,
         "redirect_uri":  redirect_uri,
         "response_type": "code",
         "scope":         ep["scope"],
         "state":         state,
-    }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
+    })
     return {"auth_url": f"{ep['auth_url']}?{query}", "state": state}
 
 
@@ -869,10 +1368,61 @@ class SsoCallbackRequest(BaseModel):
     provider:     str
     code:         str
     redirect_uri: str
+    state:        str = Field(..., max_length=256)
     device_id:    Optional[str] = Field(None, max_length=36)  # Group J
 
 
-@router.post("/sso/callback")
+async def _provider_email(client, ep: dict, info: dict, access_token: str) -> tuple[str, bool]:
+    """The address the provider vouches for, and whether it vouches at all.
+
+    Only a *verified* address may name a Velaris account: the email decides
+    which existing user an SSO identity binds to, and GitHub's profile email is
+    free text the account holder sets. Unverified, it is an account-takeover
+    primitive — claim `admin@company.com` on a throwaway GitHub account and the
+    enrolment branch below hands over the real admin's session.
+
+    A custom provider takes the OIDC path (the `email_verified` claim) unless it
+    declares a GitHub-shaped `emails` endpoint of its own.
+    """
+    emails_url = ep.get("emails")
+    if emails_url:
+        resp = await client.get(emails_url, headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        })
+        if resp.is_success:
+            rows = [r for r in resp.json() if isinstance(r, dict)]
+            verified = [r for r in rows if r.get("verified") and r.get("email")]
+            primary  = next((r for r in verified if r.get("primary")), None)
+            chosen   = primary or (verified[0] if verified else None)
+            if chosen:
+                return str(chosen["email"]), True
+        return str(info.get("email") or ""), False
+
+    # Google and any other OIDC-shaped provider: the claim is authoritative.
+    claim    = info.get("email_verified")
+    verified = claim is True or str(claim).strip().lower() == "true"
+    return str(info.get("email") or ""), verified
+
+
+async def _unique_username(session: AsyncSession, base: str) -> str:
+    """A free username derived from the email local part.
+
+    `admin@gmail.com` used to derive `admin` and hit the unique index, which
+    surfaced as a 500 on an otherwise valid login.
+    """
+    candidate = "".join(c for c in base if c.isalnum() or c in "._-")[:60] or "user"
+    for suffix in ("", *(f"-{n}" for n in range(2, 10))):
+        name = f"{candidate}{suffix}"
+        taken = (await session.execute(
+            select(HelixUserModel.id).where(HelixUserModel.username == name).limit(1)
+        )).scalar_one_or_none()
+        if not taken:
+            return name
+    return f"{candidate}-{secrets.token_hex(4)}"
+
+
+@router.post("/sso/callback", dependencies=[Depends(_sso_rl)])
 async def sso_callback(
     request: Request,
     body:    SsoCallbackRequest,
@@ -881,19 +1431,30 @@ async def sso_callback(
     """Exchange OAuth2 code for a Helix JWT."""
     import httpx
 
-    if body.provider not in OAUTH_ENDPOINTS:
-        raise HTTPException(400, f"Unknown provider '{body.provider}'")
+    # Before anything else, including the outbound call: an unsigned callback
+    # is a forgery attempt and must not even reach the provider.
+    provider_id = _verify_sso_state(body.state, body.redirect_uri)
+    if not provider_id:
+        raise coded(
+            400, AUTH_SSO_STATE_400,
+            "Sign-in could not be verified. Start again from the sign-in page.",
+        )
 
-    p_row = (await session.execute(
-        select(SsoProviderModel)
-        .where(SsoProviderModel.provider == body.provider)
-        .where(SsoProviderModel.enabled == True)  # noqa: E712
-        .limit(1)
-    )).scalar_one_or_none()
-    if not p_row:
+    try:
+        p_row = await session.get(SsoProviderModel, uuid.UUID(provider_id))
+    except ValueError:
+        p_row = None
+    # The state names the exact row the browser was sent to. It must still
+    # exist, still be enabled, and still be the provider the client claims —
+    # otherwise a state minted before an admin disabled or repointed a provider
+    # would keep working.
+    if not p_row or not p_row.enabled or p_row.provider != body.provider:
         raise coded(404, AUTH_SSO_UNCONFIGURED_404, "SSO provider not configured")
 
-    ep     = OAUTH_ENDPOINTS[body.provider]
+    ep = _endpoints_for(p_row)
+    if not ep.get("token_url") or not ep.get("userinfo"):
+        raise coded(404, AUTH_SSO_UNCONFIGURED_404, "SSO provider not configured")
+    await _assert_endpoints_safe(ep)
     secret = decrypt_credentials(p_row.client_secret_enc)["secret"] if p_row.client_secret_enc else ""
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -919,12 +1480,40 @@ async def sso_callback(
             raise HTTPException(400, "Failed to fetch user info from provider")
         info = info_resp.json()
 
-    sso_email    = info.get("email") or info.get("emails", [{}])[0].get("email", "")
+        sso_email, email_verified = await _provider_email(
+            client, ep, info, access_token,
+        )
+
+    sso_email    = sso_email.strip().lower()
     sso_subject  = str(info.get("sub") or info.get("id") or "")
     display_name = info.get("name") or info.get("login") or sso_email.split("@")[0]
 
     if not sso_email:
         raise HTTPException(400, "Provider did not return an email address")
+    if not sso_subject:
+        # An empty subject is not a harmless blank: it is the key the lookup
+        # below matches on, so two subject-less identities would resolve to
+        # each other's account.
+        raise HTTPException(400, "Provider did not return a subject identifier")
+
+    from case_service.enterprise.security_events import log_security_event
+    client_ip = request.client.host if request.client else None
+
+    # Provisioning policy lives on the provider row's JSON config, so enabling
+    # it is an admin decision per provider rather than a platform default.
+    # `allowed_domains` empty or absent means NO auto-provisioning: before this,
+    # anyone on the public internet who completed the Google flow got an account.
+    cfg             = dict(p_row.config or {})
+    allowed_domains = {
+        str(d).strip().lower().lstrip("@")
+        for d in (cfg.get("allowed_domains") or []) if str(d).strip()
+    }
+    # `superadmin` is refused when the config is written; filtered again here so
+    # a row edited directly in the database cannot mint one either.
+    default_roles = [
+        str(r) for r in (cfg.get("default_roles") or [])
+        if str(r).strip() and str(r).strip().lower() != "superadmin"
+    ] or ["viewer"]
 
     # Find or create Helix user
     u = (await session.execute(
@@ -935,24 +1524,96 @@ async def sso_callback(
     )).scalar_one_or_none()
 
     if not u:
-        # Try to match by email (SSO enrolment)
+        # Email decides identity from here down, so it must be one the provider
+        # vouches for — on both the enrolment and the provisioning branch.
+        if not email_verified:
+            await log_security_event(
+                session, event_type="sso_email_unverified", severity="high",
+                action="sso_login", outcome="denied", ip_address=client_ip,
+                details={"provider": body.provider, "email": sso_email},
+            )
+            await session.commit()
+            raise coded(
+                403, AUTH_SSO_UNVERIFIED_403,
+                f"{body.provider} has not verified this email address. "
+                "Verify it with your identity provider, then sign in again.",
+            )
+
+        # Try to match by email (SSO enrolment). Case-insensitive: addresses are
+        # not case-sensitive in practice, and an exact match would fork one
+        # person into two accounts on a capitalisation difference.
         u = (await session.execute(
-            select(HelixUserModel).where(HelixUserModel.email == sso_email)
+            select(HelixUserModel).where(func.lower(HelixUserModel.email) == sso_email)
         )).scalar_one_or_none()
         if u:
+            # **Enrolment by address is a claim from outside, not proof.**
+            # `email_verified` says the provider believes the person controls
+            # that mailbox; it says nothing about whether the *Velaris account*
+            # holding that address is theirs. Whoever administers the directory
+            # chooses those addresses, so adopting on a match hands them
+            # whichever local account already uses it, with its roles. The SAML
+            # ACS refuses this for the same reason; an administrator links the
+            # account deliberately instead
+            # (`POST /identity/provisioning/links`).
+            refusal = None
+            if not bool(cfg.get("link_existing_by_email", False)):
+                refusal = "email_taken"
+            elif u.password_hash:
+                # Even where the deployment has switched linking back on: a row
+                # with a password is somebody who signs in here directly, and an
+                # IdP does not get to become them.
+                refusal = "local_account_protected"
+            if refusal:
+                await log_security_event(
+                    session, event_type="sso_provision_refused", severity="high",
+                    action="sso_login", outcome="denied", ip_address=client_ip,
+                    details={"provider": body.provider, "reason": refusal,
+                             "email": sso_email, "username": u.username},
+                )
+                await session.commit()
+                raise coded(
+                    403, AUTH_SSO_PROVISION_403,
+                    "An account already uses this email address and is not linked "
+                    "to your identity provider. Ask an administrator to link it.",
+                )
             u.sso_provider = body.provider
             u.sso_subject  = sso_subject
         else:
-            # Auto-provision as viewer
-            username = sso_email.split("@")[0]
+            domain = sso_email.rsplit("@", 1)[-1]
+            if domain not in allowed_domains:
+                await log_security_event(
+                    session, event_type="sso_provision_refused", severity="medium",
+                    action="sso_login", outcome="denied", ip_address=client_ip,
+                    details={"provider": body.provider, "domain": domain,
+                             "allowlist_configured": bool(allowed_domains)},
+                )
+                await session.commit()
+                raise coded(
+                    403, AUTH_SSO_PROVISION_403,
+                    "This account is not provisioned in Velaris. "
+                    "Ask an administrator to create it, or to allow your email domain.",
+                )
             u = HelixUserModel(
-                username=username, email=sso_email,
+                username=await _unique_username(session, sso_email.split("@")[0]),
+                email=sso_email,
                 display_name=display_name,
-                roles=["viewer"],
+                roles=list(default_roles),
+                is_active=True,
                 sso_provider=body.provider,
                 sso_subject=sso_subject,
             )
             session.add(u)
+            await log_security_event(
+                session, event_type="sso_user_provisioned", severity="medium",
+                action="sso_login", outcome="success", ip_address=client_ip,
+                details={"provider": body.provider, "email": sso_email,
+                         "roles": list(default_roles)},
+            )
+
+    # The password path has always refused disabled accounts; this one never
+    # did, so disabling a user left their SSO button working.
+    if not u.is_active:
+        raise coded(403, AUTH_DISABLED_403, "Account is disabled. Contact an administrator.")
 
     u.last_login_at = datetime.now(timezone.utc)
     await session.commit()
@@ -980,7 +1641,7 @@ async def sso_callback(
 @router.get("/settings/token-expiry")
 async def get_token_expiry(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("identity.tokens.read")),
 ):
     return {"token_expiry_days": await _get_token_expiry_days(session)}
 
@@ -992,7 +1653,7 @@ class TokenExpiryRequest(BaseModel):
 async def set_token_expiry(
     body: TokenExpiryRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("identity.tokens.configure")),
 ):
     # Get-or-create via the ORM (dialect-portable; admin-only/low-concurrency, so
     # last-write-wins is fine). updated_at is handled by the model's default/onupdate.

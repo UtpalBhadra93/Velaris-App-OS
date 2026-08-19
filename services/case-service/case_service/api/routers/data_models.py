@@ -22,7 +22,9 @@ from case_service.db import repository as repo
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 
-router = APIRouter(prefix="/data-models", tags=["data-models"], dependencies=[Depends(require_role("designer", "admin"))])
+from case_service import hxguard
+
+router = APIRouter(prefix="/data-models", tags=["data-models"], dependencies=[Depends(hxguard.guard("design.data_models.access"))])
 
 
 @router.post("", response_model=DataModelResponse, status_code=201)

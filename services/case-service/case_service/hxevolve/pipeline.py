@@ -147,7 +147,7 @@ async def hxevolve_cron() -> None:
     the cron can never change config; it has no apply/stage path at all.
 
     Authorization posture: there is no request subject here, so the HxGuard
-    `replay.run` check the interactive scan endpoint performs cannot apply.
+    `replay.cohorts.run` check the interactive scan endpoint performs cannot apply.
     The standing authorization is the admin's explicit `scan_enabled` opt-in on
     the config row (set through the admin-gated PUT /config); the cron runs
     ONLY for those rows, and the per-tenant cohort concurrency cap still holds

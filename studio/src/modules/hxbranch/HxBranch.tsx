@@ -12,6 +12,7 @@ import { ReviewerPicker } from "@shared/components";
 import { useCurrentUserGroups } from "@shared/hooks";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API  = "/api/v1/branches";
 const DAPI = "/api/v1/deploy";
@@ -113,7 +114,7 @@ function Badge({ label, color }: { label: string; color: string }) {
 function fmtDate(s: string | null) { return s ? new Date(s).toLocaleString() : "—"; }
 async function api(method: string, path: string, body?: unknown) {
   const r = await fetch(path, {
-    method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` },
+    method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAccessToken() ?? ""}` },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) {
@@ -554,7 +555,7 @@ type ArtifactOption = { id: string; name: string };
 
 async function fetchArtifactOptions(type: string): Promise<ArtifactOption[]> {
   try {
-    const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` });
+    const AUTH = () => ({ Authorization: `Bearer ${getAccessToken() ?? ""}` });
     const get = async (url: string) => {
       const r = await fetch(url, { headers: { ...AUTH() } });
       if (!r.ok) return null;

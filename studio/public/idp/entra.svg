@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Microsoft Entra ID's mark, as supplied by the deployment administrator.
+
+     Two changes from the source markup, both deliberate:
+
+     * The construction grid is gone. The original carried ~10 guide shapes
+       (bounding rects, circles, the centre lines and diagonals) stroked
+       `white` at 0.1 — a design-tool artefact. White-on-white is invisible on
+       the light theme, so it looked fine, but the sign-in button inverts the
+       icon on the dark theme and every one of those lines would have drawn.
+     * `stroke="black"` became `currentColor`, matching okta.svg, so the mark
+       follows the page rather than being painted a fixed colour.
+
+     The viewBox is measured, not the source's `0 0 96 96`: `getBBox()` on the
+     three paths gives x 14 y 6 w 67.74 h 84.54, and the 4-wide stroke straddles
+     that edge, so the inked box is x 12 y 4 w 71.74 h 88.54. Squared off around
+     it (side 88.54, centred horizontally) so this mark and Okta's carry the
+     same optical weight in the 20px button slot instead of one sitting inside
+     a margin of empty grid. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="3.6 4 88.54 88.54" role="img" aria-label="Microsoft Entra ID">
+  <g fill="none" stroke="currentColor" stroke-width="4">
+    <path d="M25.6416 90.4728C27.0797 90.4644 28.4659 90.1346 29.4945 89.5368L59.8103 71.5187C63.2057 69.563 65.9594 65.2917 65.9594 61.976V33.5368C65.9594 26.8761 64.5079 20.922 62.0167 16.4448C73.5834 19.878 81.7427 28.1929 81.7427 37.908V84.1749C81.7427 87.6859 78.0767 90.5367 73.5439 90.5367H26.8083C26.4122 90.5367 26.0227 90.5149 25.6416 90.4728Z"/>
+    <path d="M18.6128 64.2749C19.261 64.091 19.9526 63.7767 20.6707 63.3246L37.1189 53.216C41.7761 50.3538 44.6384 45.1107 44.6384 39.4421V22.9964C44.6384 17.5879 43.7219 13.256 42.1194 10.3192C42.1754 10.2866 42.2315 10.2542 42.2876 10.2218C55.3597 2.69704 65.9603 15.5367 65.9603 33.5368V61.976C65.9603 65.2917 63.2066 69.563 59.8111 71.5187L29.4954 89.5368C26.0538 91.5368 18.6104 90.5368 18.6104 84.5368L18.6128 64.2749Z"/>
+    <path d="M33.2387 6.50703C23.3322 10.1545 14.0049 26.5433 14.0049 44.4012L14 60.4046C14 64.3366 16.9871 65.6438 20.6705 63.3246L37.1187 53.216C41.7759 50.3538 44.6382 45.1107 44.6382 39.4421V22.9964C44.6382 10.7625 39.9484 4.03662 33.2387 6.50703Z"/>
+  </g>
+</svg>

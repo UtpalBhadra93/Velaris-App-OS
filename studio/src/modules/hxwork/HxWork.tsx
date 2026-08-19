@@ -11,9 +11,10 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CommitHistory } from "@shared/components";
 import { useAuth } from "@/auth";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/hxwork";
-const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}` });
+const AUTH = () => ({ Authorization: `Bearer ${getAccessToken() ?? ""}` });
 
 type BoardStatus = "active" | "closed";
 

@@ -82,6 +82,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.config import get_settings
@@ -101,10 +102,19 @@ from case_service.db.models import (
 )
 from case_service.core.error_codes import (
     MKT_ACCESS_403,
+    MKT_BLOCKED_403,
+    MKT_CONFORMANCE_422,
+    MKT_DISABLED_404,
+    MKT_GRANT_409,
+    MKT_INSTALL_400,
     MKT_INSTALLED_409,
     MKT_NOTFOUND_404,
     MKT_OFFICIAL_400,
+    MKT_PACK_409,
+    MKT_QUOTA_429,
+    MKT_SANDBOX_400,
     MKT_STATE_400,
+    MKT_VERIFY_502,
     coded,
 )
 
@@ -119,22 +129,25 @@ def _utcnow() -> datetime:
 
 
 def _require_developer_or_admin(user: AuthenticatedUser) -> None:
-    if not user.is_admin and "developer" not in (user.roles or []):
-        raise HTTPException(403, "Requires Developer or Admin role")
+    """Phase 4 step 2 — was `is_admin or "developer" in roles`."""
+    if not hxguard.user_allows(user, "marketplace.packages.publish"):
+        raise coded(403, MKT_ACCESS_403,
+                    "Requires the marketplace.packages.publish privilege")
 
 
 def _require_admin(user: AuthenticatedUser) -> None:
-    if not user.is_admin:
-        raise HTTPException(403, "Requires Admin role")
+    """Marketplace administration — 33 routes, one bare `admin` check until now."""
+    if not hxguard.user_allows(user, "marketplace.admin.access"):
+        raise coded(403, MKT_ACCESS_403,
+                    "Requires the marketplace.admin.access privilege")
 
 
 def _can_view(user: AuthenticatedUser) -> None:
     from case_service.api.routers.releases import is_feature_enabled
     if get_settings().marketplace_kill_switch or not is_feature_enabled("marketplace"):
-        raise HTTPException(404, "Marketplace is not available on this instance")
-    allowed = {"manager", "developer", "admin"}
-    if not user.is_admin and not any(r in allowed for r in (user.roles or [])):
-        raise HTTPException(403, "Marketplace is not accessible for your role")
+        raise coded(404, MKT_DISABLED_404, "Marketplace is not available on this instance")
+    if not hxguard.user_allows(user, "marketplace.catalogue.read"):
+        raise coded(403, MKT_ACCESS_403, "Marketplace is not accessible for your role")
 
 
 # ── AES-256-GCM token encryption ─────────────────────────────────────────────
@@ -830,7 +843,7 @@ async def remove_source(
     if not source:
         raise coded(404, MKT_NOTFOUND_404, "Source not found")
     if source.tier == "official":
-        raise HTTPException(400, "Cannot remove official Velaris source")
+        raise coded(400, MKT_OFFICIAL_400, "Cannot remove official Velaris source")
     # Remove packages from this source (they'll disappear from the catalogue)
     await session.execute(
         delete(MarketplacePackageCacheModel).where(
@@ -927,7 +940,7 @@ async def list_workspaces(
 ):
     _require_developer_or_admin(user)
     query = select(MarketplaceWorkspaceModel)
-    if not user.is_admin:
+    if not hxguard.user_allows(user, "marketplace.workspaces.override"):
         query = query.where(MarketplaceWorkspaceModel.created_by == user.user_id)
     result = await session.execute(query.order_by(MarketplaceWorkspaceModel.created_at.desc()))
     workspaces = result.scalars().all()
@@ -972,7 +985,7 @@ async def create_workspace(
     settings = get_settings()
 
     # Enforce per-user workspace limit (admins are exempt)
-    if not user.is_admin:
+    if not hxguard.user_allows(user, "marketplace.workspaces.override"):
         active_count_result = await session.execute(
             select(MarketplaceWorkspaceModel).where(
                 MarketplaceWorkspaceModel.created_by == user.user_id,
@@ -982,8 +995,8 @@ async def create_workspace(
         active_count = len(active_count_result.scalars().all())
         limit = settings.marketplace_max_workspaces_per_user
         if active_count >= limit:
-            raise HTTPException(
-                429,
+            raise coded(
+                429, MKT_QUOTA_429,
                 f"Workspace limit reached ({limit} active workspaces). "
                 f"Delete or wait for approval of an existing workspace before creating a new one. "
                 f"Admins can raise this limit via VELARIS_CASE_MARKETPLACE_MAX_WORKSPACES_PER_USER.",
@@ -1028,8 +1041,8 @@ async def delete_workspace(
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
         raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
-    if not user.is_admin and ws.created_by != user.user_id:
-        raise HTTPException(403, "Cannot delete another user's workspace")
+    if not hxguard.user_allows(user, "marketplace.workspaces.override") and ws.created_by != user.user_id:
+        raise coded(403, MKT_ACCESS_403, "Cannot delete another user's workspace")
     # Destroy sandbox container
     if ws.container_id:
         try:
@@ -1055,13 +1068,13 @@ async def install_package(
     if not ws:
         raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if ws.status != "active":
-        raise HTTPException(400, f"Cannot install into workspace with status '{ws.status}'")
-    if not user.is_admin and ws.created_by != user.user_id:
-        raise HTTPException(403, "Cannot install into another user's workspace")
+        raise coded(400, MKT_STATE_400, f"Cannot install into workspace with status '{ws.status}'")
+    if not hxguard.user_allows(user, "marketplace.workspaces.override") and ws.created_by != user.user_id:
+        raise coded(403, MKT_ACCESS_403, "Cannot install into another user's workspace")
 
     pkg = await session.get(MarketplacePackageCacheModel, body.package_id)
     if not pkg:
-        raise HTTPException(404, f"Package '{body.package_id}' not found")
+        raise coded(404, MKT_NOTFOUND_404, f"Package '{body.package_id}' not found")
 
     existing_r = await session.execute(
         select(MarketplaceWorkspaceItemModel).where(
@@ -1084,7 +1097,7 @@ async def install_package(
     )
     if blacklisted:
         await _report_to_velaris("install_blocked_blacklist", body.package_id, source_url, bl_reason)
-        raise HTTPException(403, f"Package is blacklisted: {bl_reason}")
+        raise coded(403, MKT_BLOCKED_403, f"Package is blacklisted: {bl_reason}")
 
     # Check access group rule — developer may be restricted from this package
     ag_id = str(user.active_access_group.id) if getattr(user, "active_access_group", None) else None
@@ -1092,7 +1105,7 @@ async def install_package(
         ws.tenant_id, ag_id, body.package_id, pkg.publisher_tier, session
     )
     if not allowed:
-        raise HTTPException(403, ar_reason)
+        raise coded(403, MKT_BLOCKED_403, ar_reason)
 
     # Download + verify checksum + validate manifest before touching the container
     if pkg.download_url and pkg.checksum_sha256:
@@ -1109,7 +1122,7 @@ async def install_package(
             # reject at install, not at first run.
             if manifest.get("runtime", "python") == "wasm":
                 if not get_settings().hxsandbox_enabled:
-                    raise HTTPException(400,
+                    raise coded(400, MKT_SANDBOX_400,
                         "This package declares runtime 'wasm' — HxSandbox is not "
                         "enabled on this platform; only runtime 'python' "
                         "packages can be installed.")
@@ -1123,7 +1136,7 @@ async def install_package(
                 try:
                     wasm_bytes = extract_module(hxapp_bytes, manifest)
                 except ModuleValidationError as exc:
-                    raise HTTPException(400, f"WASM module rejected: {exc}")
+                    raise coded(400, MKT_SANDBOX_400, f"WASM module rejected: {exc}")
                 # Store the validated bytes per tenant. A transform running per
                 # sync row must not re-fetch from the publisher, and re-install
                 # of the same package replaces the module rather than
@@ -1170,8 +1183,8 @@ async def install_package(
             if decision.blocked:
                 failed = [c for c in conf_result.get("checks", []) if not c.get("ok")]
                 detail = "; ".join(f"{c['check']}: {c['detail']}" for c in failed[:5]) or decision.reason
-                raise HTTPException(
-                    422,
+                raise coded(
+                    422, MKT_CONFORMANCE_422,
                     f"Package failed marketplace conformance — {decision.reason}. {detail}",
                 )
             if decision.badge == conf.BADGE_FAILED:
@@ -1192,12 +1205,12 @@ async def install_package(
                         requested_by=user.user_id,
                         publisher_tier=_effective_tier(source_url, body.package_id))
                 except ValueError as e:
-                    raise HTTPException(400, f"Execution provisioning failed: {e}")
+                    raise coded(400, MKT_INSTALL_400, f"Execution provisioning failed: {e}")
             logger.info("Package %s checksum + manifest + conformance verified", body.package_id)
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(400, f"Package verification failed: {exc}")
+            raise coded(400, MKT_INSTALL_400, f"Package verification failed: {exc}")
 
     item = MarketplaceWorkspaceItemModel(
         workspace_id=ws.id,
@@ -1223,15 +1236,15 @@ async def submit_workspace(
     if not ws:
         raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
     if ws.status != "active":
-        raise HTTPException(400, f"Workspace is already '{ws.status}'")
-    if not user.is_admin and ws.created_by != user.user_id:
-        raise HTTPException(403, "Cannot submit another user's workspace")
+        raise coded(400, MKT_STATE_400, f"Workspace is already '{ws.status}'")
+    if not hxguard.user_allows(user, "marketplace.workspaces.override") and ws.created_by != user.user_id:
+        raise coded(403, MKT_ACCESS_403, "Cannot submit another user's workspace")
     # Conformance gate (#27 Phase C, decision D3): a NEW submission must pass 100%
     # structural conformance first. (Pre-gate packages are grandfathered separately
     # via conformance_status='legacy_unverified' and are never re-submitted here.)
     if ws.conformance_status not in ("structural_passed", "full_passed"):
-        raise HTTPException(
-            400,
+        raise coded(
+            400, MKT_STATE_400,
             "Workspace must pass the structural Conformance Suite before submission. "
             "Run POST /api/v1/testsuite/conformance first.",
         )
@@ -1253,7 +1266,7 @@ async def get_network_log(
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
         raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
-    if not user.is_admin and ws.created_by != user.user_id:
+    if not hxguard.user_allows(user, "marketplace.workspaces.override") and ws.created_by != user.user_id:
         raise coded(403, MKT_ACCESS_403, "Access denied")
     result = await session.execute(
         select(MarketplaceNetworkLogModel)
@@ -1294,7 +1307,7 @@ async def request_whitelist(
     ws = await session.get(MarketplaceWorkspaceModel, uuid.UUID(workspace_id))
     if not ws:
         raise coded(404, MKT_NOTFOUND_404, "Workspace not found")
-    if not user.is_admin and ws.created_by != user.user_id:
+    if not hxguard.user_allows(user, "marketplace.workspaces.override") and ws.created_by != user.user_id:
         raise coded(403, MKT_ACCESS_403, "Access denied")
     entry = MarketplaceWhitelistModel(
         workspace_id=ws.id,
@@ -1321,7 +1334,7 @@ async def decide_whitelist(
         raise HTTPException(400, "decision must be 'approved' or 'denied'")
     entry = await session.get(MarketplaceWhitelistModel, uuid.UUID(whitelist_id))
     if not entry:
-        raise HTTPException(404, "Whitelist entry not found")
+        raise coded(404, MKT_NOTFOUND_404, "Whitelist entry not found")
     entry.status = body.decision
     entry.decided_by = user.user_id
     entry.decided_at = _utcnow()
@@ -1442,7 +1455,7 @@ async def approve_capability_grant(
     from case_service.marketplace import grants as mkt_grants
     grant = await _visible_grant(session, user, grant_id)
     if grant.status == "revoked":
-        raise HTTPException(409, "Grant is revoked — reinstall the package to request again")
+        raise coded(409, MKT_GRANT_409, "Grant is revoked — reinstall the package to request again")
     try:
         await mkt_grants.approve_grant(
             session, grant=grant, outbound_domains=body.outbound_domains,
@@ -1511,7 +1524,7 @@ async def revoke_capability_grant(
     from case_service.marketplace import grants as mkt_grants
     grant = await _visible_grant(session, user, grant_id)
     if grant.status == "revoked":
-        raise HTTPException(409, "Grant is already revoked")
+        raise coded(409, MKT_GRANT_409, "Grant is already revoked")
     await mkt_grants.revoke_grant(session, grant=grant, admin_id=user.user_id, note=body.note)
     await session.commit()
     return mkt_grants.grant_view(grant)
@@ -1688,9 +1701,9 @@ async def revoke_install(
     _require_admin(user)
     install = await session.get(MarketplaceInstallModel, uuid.UUID(install_id))
     if not install:
-        raise HTTPException(404, "Install not found")
+        raise coded(404, MKT_NOTFOUND_404, "Install not found")
     if install.tenant_id != (user.tenant_id or "default"):
-        raise HTTPException(403, "Cannot revoke install from another tenant")
+        raise coded(403, MKT_ACCESS_403, "Cannot revoke install from another tenant")
     install.revoked_at = _utcnow()
     teardown = {"deleted": False}
     if delete_data:
@@ -1747,7 +1760,7 @@ async def approve_update(
     if not upd.fast_track:
         raise HTTPException(400, "This update has new outbound domains — must go through sandbox testing first")
     if upd.status != "pending":
-        raise HTTPException(400, f"Update is already '{upd.status}'")
+        raise coded(400, MKT_STATE_400, f"Update is already '{upd.status}'")
 
     # Bump version in the install record
     install_r = await session.execute(
@@ -1771,7 +1784,7 @@ async def approve_update(
     if grant is not None:
         pkg = await session.get(MarketplacePackageCacheModel, upd.package_id)
         if not pkg or not pkg.download_url or not pkg.checksum_sha256:
-            raise HTTPException(502, "Cannot verify the updated package bundle for drift inspection")
+            raise coded(502, MKT_VERIFY_502, "Cannot verify the updated package bundle for drift inspection")
         try:
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 r = await http_client.get(pkg.download_url)
@@ -1782,7 +1795,7 @@ async def approve_update(
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(502, f"Drift inspection failed — update not applied: {exc}")
+            raise coded(502, MKT_VERIFY_502, f"Drift inspection failed — update not applied: {exc}")
         if new_manifest.get("execution"):
             src = await session.get(MarketplaceSourceModel, pkg.source_id) if pkg.source_id else None
             drift = await mkt_grants.apply_descriptor_drift(
@@ -1815,7 +1828,7 @@ async def approve_update(
             except Exception as exc:
                 # Fail closed: an update whose bundle cannot be fetched and
                 # verified is not conformance-checkable, so it does not land.
-                raise HTTPException(502, f"Conformance re-check failed — update not applied: {exc}")
+                raise coded(502, MKT_VERIFY_502, f"Conformance re-check failed — update not applied: {exc}")
             await conf.run_and_record(
                 session, tenant_id=upd.tenant_id, package_id=upd.package_id,
                 package_version=upd.available_version, manifest=new_man,
@@ -1830,8 +1843,8 @@ async def approve_update(
             is_existing_install=False,          # the NEW version has no standing yet
         )
         if upd_decision.blocked:
-            raise HTTPException(
-                422,
+            raise coded(
+                422, MKT_CONFORMANCE_422,
                 f"Update failed marketplace conformance — {upd_decision.reason}. "
                 f"The installed version is unaffected and keeps running.",
             )
@@ -1958,9 +1971,9 @@ async def remove_blacklist_entry(
     _require_admin(user)
     entry = await session.get(MarketplaceBlacklistModel, uuid.UUID(blacklist_id))
     if not entry:
-        raise HTTPException(404, "Blacklist entry not found")
+        raise coded(404, MKT_NOTFOUND_404, "Blacklist entry not found")
     if entry.tenant_id != (user.tenant_id or "default"):
-        raise HTTPException(403, "Cannot remove another tenant's blacklist entry")
+        raise coded(403, MKT_ACCESS_403, "Cannot remove another tenant's blacklist entry")
     await session.delete(entry)
     await session.commit()
     return {"removed": blacklist_id}
@@ -2083,9 +2096,9 @@ async def request_release(
     _require_developer_or_admin(user)
     pkg = await session.get(MarketplacePackageCacheModel, package_id)
     if not pkg:
-        raise HTTPException(404, "Package not found")
+        raise coded(404, MKT_NOTFOUND_404, "Package not found")
     if pkg.publisher_tier != "official":
-        raise HTTPException(400, "Only official packages use the release-request flow. Community packages use the sandbox workflow.")
+        raise coded(400, MKT_OFFICIAL_400, "Only official packages use the release-request flow. Community packages use the sandbox workflow.")
 
     # Write a release request — picked up by HxDeploy on next deployment build
     from case_service.db.models import MarketplaceReleaseRequestModel
@@ -2586,8 +2599,8 @@ async def _require_installed(session: AsyncSession, tenant_id: str, package_id: 
         )
     )).scalar_one_or_none()
     if install is None:
-        raise HTTPException(
-            403,
+        raise coded(
+            403, MKT_ACCESS_403,
             f"'{package_id}' is not installed for this tenant. Install it from the "
             f"marketplace first — that is where the conformance gate and access "
             f"rules are applied.",
@@ -2612,7 +2625,7 @@ async def _load_pack(session: AsyncSession, package_id: str) -> tuple[dict, Any]
         manifest = parse_and_validate_manifest(r.content)
     except Exception as exc:
         # Fail closed: an unverifiable bundle is never provisioned.
-        raise HTTPException(502, f"Could not verify pack bundle: {exc}")
+        raise coded(502, MKT_VERIFY_502, f"Could not verify pack bundle: {exc}")
 
     if manifest.get("type") != mkt_packs.PACK_TYPE:
         raise HTTPException(400,
@@ -2669,7 +2682,7 @@ async def provision_pack(
             session, tenant_id=user.tenant_id or "default", package_id=package_id,
             pack=pack, provisioned_by=user.user_id, with_sample_data=sample_data)
     except mkt_packs.PackError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MKT_PACK_409, str(exc))
 
 
 @router.get("/packs")
@@ -2715,7 +2728,7 @@ async def preview_pack_upgrade(
             session, tenant_id=user.tenant_id or "default",
             package_id=package_id, pack=pack)
     except mkt_packs.PackError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MKT_PACK_409, str(exc))
 
 
 @router.post("/packs/{package_id:path}/upgrade")
@@ -2740,7 +2753,7 @@ async def upgrade_pack(
             session, tenant_id=user.tenant_id or "default", package_id=package_id,
             pack=pack, upgraded_by=user.user_id)
     except mkt_packs.PackError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MKT_PACK_409, str(exc))
 
 
 @router.get("/packs/{package_id:path}/upgrades")
@@ -2791,7 +2804,7 @@ async def fork_pack(
             new_id=new_id, new_name=new_name)
         blob = mkt_packs.fork_to_hxapp(forked)
     except mkt_packs.PackError as exc:
-        raise HTTPException(409, str(exc))
+        raise coded(409, MKT_PACK_409, str(exc))
 
     # new_id is user-supplied and lands in a response header. A quote or a
     # newline would break out of the header value (response-header injection),

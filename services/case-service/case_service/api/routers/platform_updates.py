@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import get_current_user, require_role
+from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_analytics_session as get_session
 
@@ -187,7 +188,7 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 
 @router.get("/status")
 async def update_status(
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
     """Current platform version, channel pin, release metadata, beacon, pending request."""
     cfg = _read_platform_config()
@@ -236,7 +237,7 @@ class UpdateRequestBody(BaseModel):
 @router.post("/request", status_code=202)
 async def request_update(
     body: UpdateRequestBody,
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.request")),
     session: AsyncSession = Depends(get_session),
 ):
     """Approve a platform update for THIS environment.
@@ -304,7 +305,7 @@ async def request_update(
 
 @router.delete("/request", status_code=204)
 async def cancel_update_request(
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.request")),
 ):
     cfg = _read_platform_config()
     req = cfg["root"] / ".update-request"
@@ -523,7 +524,7 @@ async def _env_labels(session: AsyncSession) -> dict:
 @router.get("/plans")
 async def list_plans(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
     from case_service.db.models import PlatformUpdatePlanModel
     plans = (await session.execute(
@@ -541,7 +542,7 @@ async def approve_plan(
     plan_id: uuid.UUID,
     body: StepUpBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.approve")),
 ):
     """Activate a draft plan — the engine then triggers non-final rings.
 
@@ -575,7 +576,7 @@ async def approve_prod(
     plan_id: uuid.UUID,
     body: StepUpBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.approve_prod")),
 ):
     """Second deliberate gate: fire the final (prod) ring after the soak.
 
@@ -597,7 +598,7 @@ async def approve_prod(
 async def halt_plan(
     plan_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.approve")),
 ):
     plan = await _load_plan(session, plan_id)
     if plan.state in ("completed", "halted", "superseded"):
@@ -623,7 +624,7 @@ class RollbackRequestBody(StepUpBody):
 async def request_rollback(
     body: RollbackRequestBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.rollback")),
 ):
     """Revert THIS environment to its previous version (code + images only).
 
@@ -667,7 +668,7 @@ class SettingsBody(BaseModel):
 @router.get("/settings")
 async def get_update_settings(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
     from case_service.db.models import PlatformUpdateSettingsModel
     row = await session.get(PlatformUpdateSettingsModel, 1)
@@ -682,7 +683,7 @@ async def get_update_settings(
 async def put_update_settings(
     body: SettingsBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.configure")),
 ):
     from case_service.db.models import PlatformUpdateSettingsModel
     if body.mode is not None and body.mode not in ("auto-soak", "per-env", "manual"):
@@ -706,7 +707,7 @@ async def put_update_settings(
 async def approve_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(require_role("admin")),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.approve")),
 ):
     """per-env mode: each ring waits for its own explicit approval."""
     from case_service.db.models import PlatformUpdateRunModel
@@ -726,7 +727,7 @@ async def approve_run(
 @router.get("/environments")
 async def fleet_versions(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(require_role("admin")),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
     """Platform version + last update outcome of every registered environment."""
     import asyncio as _asyncio

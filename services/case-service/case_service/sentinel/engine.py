@@ -192,29 +192,52 @@ async def _rule_shared_doc_fraud(session, case, tenant, params) -> dict | None:
 async def _rule_identity_velocity(session, case, tenant, params) -> dict | None:
     window_days = int(params.get("window_days") or 30)
     min_cases = int(params.get("min_cases") or 3)
+    # A ceiling as well as a floor. A digest on hundreds of cases is not a
+    # person — it is a shared support address or a template constant living in a
+    # variable whose name matched an identity hint, and without this every case
+    # carrying it fires. 0/None disables the ceiling.
+    max_cases = int(params.get("max_cases") or 0)
     signals = await _signals_of(
         session, case.id, ("identity_email", "identity_phone", "identity_address"))
     hits: list[dict] = []
     cited_signals: list[str] = []
+    ignored: list[dict] = []
     for sig in signals:
         others = await _matching_cases(session, tenant, sig.signal_type, sig.signal_key, case.id)
         # distinct-case count including this one
         total = len(set(others)) + 1
+        if max_cases and total > max_cases:
+            # Say so rather than drop it silently: "too common to be an identity"
+            # and "no match" are different facts, and only one of them means the
+            # tenant should look at what is populating that variable.
+            ignored.append({"signal_type": sig.signal_type, "case_count": total})
+            continue
         if total >= min_cases:
             numbers = await _case_numbers(session, others)
             hits.append({"signal_type": sig.signal_type, "case_count": total,
                          "other_cases": [numbers.get(c, str(c)) for c in set(others)]})
             cited_signals.append(str(sig.id))
     if not hits:
+        if ignored:
+            logger.info(
+                "HxSentinel identity_velocity: case %s had %d value(s) over the "
+                "max_cases=%d ceiling — too common to be an identity, check what "
+                "populates them: %s", case.id, len(ignored), max_cases, ignored)
         return None
     top = max(h["case_count"] for h in hits)
+    evidence = {"signal_ids": cited_signals, "matches": hits,
+                "window_days": window_days, "min_cases": min_cases}
+    if ignored:
+        # Carried on the finding so a reviewer can see the rule declined to count
+        # something, and why — a silently narrowed finding is a misleading one.
+        evidence["ignored_too_common"] = ignored
+        evidence["max_cases"] = max_cases
     return {
         "title": "Identity shared across many recent cases",
         "message": (f"An identity value on this case recurs across {top} cases "
                     f"(threshold {min_cases}, window {window_days}d). Recommend "
                     f"enhanced verification."),
-        "evidence": {"signal_ids": cited_signals, "matches": hits,
-                     "window_days": window_days, "min_cases": min_cases},
+        "evidence": evidence,
     }
 
 
@@ -358,6 +381,30 @@ async def evaluate_case(
     if case is None:
         return []
     tenant = norm_tenant(case.tenant_id)
+
+    # Make sure THIS case's signals exist before any rule reads them.
+    #
+    # Four of the five rules (shared_doc_fraud, identity_velocity,
+    # shared_signal_negative_outcome, resembles_confirmed_cases) start from
+    # _signals_of(case.id) and return None on an empty list. Extraction ran only
+    # at a terminal status, so an OPEN case carried no signals and those rules
+    # could not fire on it — which is every case the verify gate exists to hold.
+    #
+    # This is NOT the lazy extraction that extraction.py argues against. That
+    # argument is about the CORPUS — other cases' signals, which must accumulate
+    # as cases move and still do (on-close hook + sweep). The SUBJECT case is a
+    # separate job, and this is its only correct moment: the data is whatever it
+    # is right now, and re-extraction reconciles rather than accumulates.
+    #
+    # Fails open: a vault or extraction fault degrades the evaluation, never
+    # breaks it — the gate's posture everywhere else.
+    try:
+        from case_service.sentinel import service as _sentinel_service
+        await _sentinel_service.extract_signals(session, case_id)
+    except Exception as exc:                       # pragma: no cover - defensive
+        logger.warning("HxSentinel: pre-evaluation extraction failed for %s "
+                       "(non-fatal, evaluating on stored signals): %s", case_id, exc)
+
     cfg = await _effective_config(session, tenant)
 
     existing = {

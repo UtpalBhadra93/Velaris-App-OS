@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.config import get_settings
+from case_service import hxguard
 from case_service.db.models import (
     MigrationProjectModel, MigrationTaskModel,
 )
@@ -26,7 +27,7 @@ from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 from case_service.orchestrator import orchestrator
 
-router = APIRouter(prefix="/orchestrator", tags=["orchestrator"], dependencies=[Depends(require_role("devops", "admin"))])
+router = APIRouter(prefix="/orchestrator", tags=["orchestrator"], dependencies=[Depends(hxguard.guard("platform.orchestrator.access"))])
 
 
 class CreateProjectRequest(BaseModel):

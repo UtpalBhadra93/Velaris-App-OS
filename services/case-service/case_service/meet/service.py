@@ -48,6 +48,28 @@ MEETING_CONNECTOR_TYPES = ("teams", "zoom", "gmeet", "meet_generic")
 _PROVIDER_BY_TYPE = {"teams": "teams", "zoom": "zoom", "gmeet": "gmeet", "meet_generic": "generic"}
 
 
+class RecordingConsentMissing(ValueError):
+    """Someone in the room has not consented to being recorded.
+
+    A subclass rather than a plain ValueError so the router can give it its own
+    error code without matching on the message text. `start_recording` refuses
+    for three reasons — no record intent, already recording, and this — and only
+    this one is about a person's rights rather than session state; conflating
+    them tells an operator to check the wrong thing. Matching on the prose would
+    silently reclassify the day someone rewords the message, and the message is
+    an f-string carrying the missing identities, so there is no stable literal
+    to match anyway.
+
+    Subclasses ValueError so every existing `except ValueError` still catches it.
+    """
+
+    def __init__(self, identities: list[str]) -> None:
+        self.identities = identities
+        super().__init__(
+            f"Participants without recording consent: {', '.join(identities)}"
+        )
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -700,7 +722,7 @@ async def start_recording(session: AsyncSession, *, row: CaseSessionModel, actor
         raise ValueError(f"Recording is already {row.recording_status}")
     missing = await _joined_without_consent(session, row.id)
     if missing:
-        raise ValueError(f"Participants without recording consent: {', '.join(sorted(missing))}")
+        raise RecordingConsentMissing(sorted(missing))
 
     room = row.external_meeting_id or livekit.room_name(row.tenant_id or "default", row.id)
     fname = f"{room}-{uuid.uuid4().hex[:8]}.mp4"

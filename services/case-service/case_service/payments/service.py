@@ -167,13 +167,26 @@ async def handle_stripe_webhook(
                 verified = sc.verify_webhook(payload, sig_header)
         except Exception as exc:
             logger.warning("Stripe HMAC error: %s", exc)
-    elif not sig_header:
-        # Dev/test: no signature header → accept without verification
-        verified = True
+    # FAIL CLOSED (2026-08-15). This used to read:
+    #
+    #     elif not sig_header:
+    #         verified = True          # dev/test
+    #     if not verified and sig_header:
+    #         return {{"status": "rejected", ...}}
+    #
+    # so a caller who sent NO signature header at all was treated as verified,
+    # and the rejection could only fire for someone who had bothered to send a
+    # (bad) signature. Proven exploitable anonymously: an unsigned POST to
+    # /api/v1/payments/webhooks/stripe marked a real payment request
+    # `succeeded`, completed its workflow step and posted to the ledger.
+    #
+    # Unsigned is now simply unverified. The tests already sign their webhooks,
+    # so nothing legitimate depended on the shortcut.
 
     evt.verified = verified
-    if not verified and sig_header:
-        evt.error = "HMAC verification failed"
+    if not verified:
+        evt.error = ("HMAC verification failed" if sig_header
+                     else "unsigned webhook rejected")
         await session.commit()
         return {"status": "rejected", "reason": "invalid_signature"}
 

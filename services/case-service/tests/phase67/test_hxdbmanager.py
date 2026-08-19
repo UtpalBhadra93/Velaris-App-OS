@@ -99,7 +99,10 @@ class TestAuth:
         _override(_worker)
         r = await client.get("/api/v1/hxdbmanager/schema")
         assert r.status_code == 403
-        assert "admin" in r.json()["detail"].lower()
+        # Phase 4 step 2 renamed what the refusal cites: the message names the
+        # privilege now, not the role. The status and who is refused are
+        # unchanged — a case_worker still cannot browse the schema.
+        assert "platform.dbmanager.read" in r.json()["detail"]
         _clear()
 
     @pytest.mark.asyncio

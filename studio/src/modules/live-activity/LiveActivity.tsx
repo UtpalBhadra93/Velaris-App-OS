@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useSubscribe, useConnectionStatus } from "@shared/realtime/hooks";
 import { Card, Spinner, Stat } from "@shared/components";
 import { BRAND } from "@/branding";
+import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
    Live Activity — real-time event stream (Phase 22)
@@ -33,7 +34,7 @@ export default function LiveActivity() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const token = localStorage.getItem("helix_token");
+        const token = getAccessToken();
         const resp = await fetch("/api/v1/realtime/stats", {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });

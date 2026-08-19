@@ -41,7 +41,7 @@ export default function SLARiskBadge({ caseId }: { caseId: string }) {
     let stop = false;
     (async () => {
       try {
-        const r = await apiFetch(`/api/v1/cases/${caseId}/sla/prediction`);
+        const r = await apiFetch(`/cases/${caseId}/sla/prediction`);
         if (r.ok && !stop) setP(await r.json());
       } catch { /* prediction is advisory — never block the view */ }
     })();

@@ -5,6 +5,10 @@ import { Spinner } from "@shared/components";
 
 /* ═══════════════════════════════════════════════════════════════════
    ProtectedRoute — wraps content that requires authentication
+
+   A SAML sign-in finishes in `SamlHandoffGate`, which sits above route
+   matching: the ACS can land on a path this SPA does not render, and anything
+   inside `<Routes>` would never run there.
    ═══════════════════════════════════════════════════════════════════ */
 
 interface Props {
@@ -14,7 +18,6 @@ interface Props {
 
 export default function ProtectedRoute({ children, requiredRole }: Props) {
   const { user, loading, hasRole } = useAuth();
-
   if (loading) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg-root)" }}>

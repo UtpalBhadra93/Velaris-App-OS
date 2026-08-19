@@ -23,6 +23,7 @@ from case_service.api.schemas.cases import (
 )
 from case_service.db import repository as repo
 from case_service.db.models import CaseTypeModel, CaseTypeMigrationModel
+from case_service import hxguard
 from case_service.auth.dependencies import get_current_user
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.session import get_session
@@ -154,7 +155,8 @@ def _assert_can_write_case_type(
         # Developers get this via: Access Directory → Access Roles → add privilege
         #   resource: case_type  action: global.write
         # No admin console access is needed or implied.
-        if not (user.is_admin or (can_write and can_edit_global)):
+        if not (hxguard.user_allows(user, "design.case_types.write")
+                or (can_write and can_edit_global)):
             raise HTTPException(
                 status_code=403,
                 detail=(
@@ -164,8 +166,12 @@ def _assert_can_write_case_type(
                 ),
             )
     else:
-        # Tenant-owned — privilege + must belong to that tenant
-        if not can_write:
+        # Tenant-owned — privilege + must belong to that tenant.
+        # Phase 4 step 3 removed `has_privilege`'s fallback to `is_admin`, so
+        # `can_write` alone would now refuse an admin who has no access group
+        # assigned. The platform privilege is named explicitly instead of
+        # arriving invisibly through that fallback.
+        if not (can_write or hxguard.user_allows(user, "design.case_types.write")):
             raise HTTPException(
                 status_code=403,
                 detail=(

@@ -74,10 +74,19 @@ RULES: tuple[Rule, ...] = (
             "An identity value on this case (email / phone / address, matched by "
             "keyed digest) recurs on several other cases within the window. High "
             "velocity is a common synthetic-identity and abuse signal. Recommend "
-            "enhanced verification."
+            "enhanced verification. Values shared by more cases than max_cases "
+            "are treated as non-identifying and ignored."
         ),
         default_severity="medium",
-        default_params={"window_days": 30, "min_cases": 3},
+        #: max_cases is a CEILING, the other end of min_cases. A value on
+        #: hundreds of cases is not a person — it is a shared address or a
+        #: template constant sitting in a variable whose name happens to match an
+        #: identity hint. Without it every case carrying that value fires.
+        #:
+        #: Set high (100) on purpose: the ceiling also hides a genuine ring that
+        #: shares one identity across more cases than this, so it must only catch
+        #: values no plausible individual could account for. Tenants tune it.
+        default_params={"window_days": 30, "min_cases": 3, "max_cases": 100},
     ),
     Rule(
         key="amount_anomaly",

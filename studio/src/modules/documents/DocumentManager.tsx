@@ -1,7 +1,8 @@
 // HELIX P24 — Document Manager (multi-select + version delete)
 import React, { useEffect, useState } from "react";
-import { errorFromResponse, verifyDocument, listDocumentVerifications, type DocCheck } from "@shared/api/client";
+import { errorFromResponse, verifyDocument, listDocumentVerifications, type DocCheck , openDocument } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Doc = {
   id: string;
@@ -34,7 +35,7 @@ const fmtBytes = (n: number) => {
 };
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
@@ -307,8 +308,13 @@ export default function DocumentManager() {
                 <span style={{ color: "#666", fontSize: 12 }}>{focusedDoc.id}</span>
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                <a href={`/api/v1/documents/${focusedDoc.id}/download`} style={btn()}>Download</a>
-                <a href={`/api/v1/documents/${focusedDoc.id}/preview`} target="_blank" rel="noreferrer" style={btn()}>Preview</a>
+                {/* Buttons, not <a href>: browser navigation sends no
+                    Authorization header, and these routes require one since
+                    2026-08-15. See openDocument(). */}
+                <button style={btn()} onClick={() => openDocument(focusedDoc.id, { filename: focusedDoc.filename })
+                  .catch(e => setError(e?.message || "Download failed"))}>Download</button>
+                <button style={btn()} onClick={() => openDocument(focusedDoc.id, { preview: true })
+                  .catch(e => setError(e?.message || "Preview failed"))}>Preview</button>
                 <label style={{ ...btn(), cursor: "pointer" }}>
                   New version
                   <input

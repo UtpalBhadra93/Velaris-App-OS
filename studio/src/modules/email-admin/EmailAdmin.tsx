@@ -1,6 +1,7 @@
 // HELIX P25b — Email Admin (accounts + templates)
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAccessToken } from "@/auth/tokenManager";
 
 type Account = {
   id?: string;
@@ -71,7 +72,7 @@ const emptyTemplate: Template = {
 };
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

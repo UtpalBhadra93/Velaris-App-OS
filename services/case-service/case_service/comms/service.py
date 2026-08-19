@@ -84,7 +84,10 @@ async def _auto_advance(session: AsyncSession, case_id: uuid.UUID) -> None:
                 )).scalar_one_or_none()
                 if ct:
                     from case_service.api.routers.cases import _auto_advance_if_complete
-                    await _auto_advance_if_complete(session, case, ct.definition_json or {})
+                    # See docintel/service.py: this passed 3 args to a 4-arg helper and
+                    # TypeError'd into the non-fatal handler on every call.
+                    await _auto_advance_if_complete(
+                        session, case.id, case.current_stage_id, ct.definition_json or {})
     except Exception as exc:
         logger.warning("Auto-advance failed (non-fatal): %s", exc)
 

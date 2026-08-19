@@ -6,11 +6,12 @@ import React, { useState, useEffect, useCallback } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/fusion";
 
 function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("helix_token");
+  const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -135,7 +136,7 @@ function truncate(s: string, n = 52) { return s.length > n ? s.slice(0, n) + "â€
 function useCaseTypes() {
   const [caseTypes, setCaseTypes] = useState<CaseType[]>([]);
   useEffect(() => {
-    apiFetch("/api/v1/case-types?page_size=200").then(r => r.ok ? r.json() : null).then(d => {
+    apiFetch("/case-types?page_size=200").then(r => r.ok ? r.json() : null).then(d => {
       if (d) setCaseTypes(d.items ?? []);
     });
   }, []);
@@ -145,9 +146,9 @@ function useCaseTypes() {
 function useCurrentUser() {
   const [user, setUser] = useState<{ username: string; display_name?: string } | null>(null);
   useEffect(() => {
-    apiFetch("/api/v1/auth/real/me/profile").then(r => r.ok ? r.json() : null).then(d => {
+    apiFetch("/auth/real/me/profile").then(r => r.ok ? r.json() : null).then(d => {
       if (d) setUser(d);
-      else apiFetch("/api/v1/auth/me").then(r => r.ok ? r.json() : null).then(d2 => { if (d2) setUser(d2); });
+      else apiFetch("/auth/me").then(r => r.ok ? r.json() : null).then(d2 => { if (d2) setUser(d2); });
     });
   }, []);
   return user;

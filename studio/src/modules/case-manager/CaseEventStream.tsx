@@ -41,13 +41,13 @@ export default function CaseEventStream({ caseId }: { caseId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiFetch(`/api/v1/cases/${caseId}/events`);
+      const r = await apiFetch(`/cases/${caseId}/events`);
       if (!r.ok) throw new Error(await r.text());
       const body = await r.json();
       setEvents(body.events ?? []);
       setSourced(body.event_sourced);
 
-      const v = await apiFetch(`/api/v1/cases/${caseId}/events/verify`);
+      const v = await apiFetch(`/cases/${caseId}/events/verify`);
       if (v.ok) setVerify(await v.json());
       setError(null);
     } catch (e: any) {

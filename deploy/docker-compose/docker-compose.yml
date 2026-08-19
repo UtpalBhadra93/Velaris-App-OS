@@ -341,12 +341,17 @@ services:
   # <<< Group K
 
   # >>> Marketplace Layer-2 — app-container network path
-  # Publisher containers join ONLY velaris-apps (internal: no route out of the
-  # host — egress-DROP by construction, no in-container iptables needed). The
-  # broker gateway is the single bridge: it also joins the edge network and
-  # proxies exactly /api/v1/broker to the host nginx's dedicated listener on
-  # the edge gateway IP (172.31.101.1:8210). App containers are NEVER on the
-  # edge network.
+  # Publisher containers and bot containers join ONLY velaris-apps (internal:
+  # no route out of the host — egress-DROP by construction, no in-container
+  # iptables needed). The broker gateway is the single bridge: it also joins
+  # the edge network and proxies an explicit path allowlist (/api/v1/broker,
+  # and the bot job result/progress pair) to the host nginx's dedicated
+  # listener on the edge gateway IP (172.31.101.1:8210). App containers are
+  # NEVER on the edge network.
+  #
+  # `bot_result_base_url` names THIS container. A host-networked container
+  # (velaris-gateway) has no DNS record on velaris-apps, so it cannot be the
+  # bridge however correct its routes look.
   broker-gw:
     image: nginx:1.27-alpine
     container_name: velaris-broker-gw

@@ -7,9 +7,10 @@ import {
 } from "@shared/api/client";
 import type { Tenant } from "@shared/api/client";
 import { Card, Button, Spinner, EmptyState, Stat, TimeAgo } from "@shared/components";
+import { getAccessToken } from "@/auth/tokenManager";
 
 function _authHdr(): Record<string, string> {
-  const t = localStorage.getItem("helix_token");
+  const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 

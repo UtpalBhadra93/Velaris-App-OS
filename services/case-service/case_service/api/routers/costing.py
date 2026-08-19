@@ -1,7 +1,7 @@
 """Case Costing API — rate card + automatic time rollup (HxReplay P4 / §11).
 
 Rates are commercially sensitive: gated behind the dedicated HxGuard capability
-``costing.rates`` (admin), per-tenant, never reachable by portal identities.
+``costing.rates.access`` (admin), per-tenant, never reachable by portal identities.
 The time rollup for a case inherits that case's view authorization.
 
 Copyright (c) 2024-2025 Velaris Contributors
@@ -35,7 +35,7 @@ async def get_rate_card(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates")
+    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates.access")
     row = await costing.get_default_rate(session, _tenant(user))
     if row is None:
         return {"configured": False, "hourly_rate": None, "currency": "USD"}
@@ -55,7 +55,7 @@ async def put_rate_card(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates")
+    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates.access")
     row = await costing.upsert_default_rate(session, _tenant(user),
                                             body.hourly_rate, body.currency, user.user_id)
     await session.commit()
@@ -216,9 +216,9 @@ async def export_billing(
     """Per-case billable cost lines for invoicing (HxCheckout / storefront).
 
     Per-case cost is commercially sensitive — same HxGuard capability as the
-    rate card (``costing.rates``), never reachable by portal identities."""
+    rate card (``costing.rates.access``), never reachable by portal identities."""
     from datetime import datetime, timedelta, timezone
-    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates")
+    await hxguard.require(session, hxguard.subject_from_user(user), "costing.rates.access")
 
     ct_id: uuid.UUID | None = None
     if case_type_id:

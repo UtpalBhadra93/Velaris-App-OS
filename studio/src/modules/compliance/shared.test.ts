@@ -16,7 +16,7 @@ describe("authHdr", () => {
   });
 
   it("returns a bearer header when a token is present", () => {
-    localStorage.setItem("helix_token", "abc123");
+    localStorage.setItem("velaris_token", "abc123");
     expect(authHdr()).toEqual({ Authorization: "Bearer abc123" });
   });
 });
@@ -64,7 +64,7 @@ describe("when", () => {
 
 describe("apiJSON", () => {
   it("attaches the auth header", async () => {
-    localStorage.setItem("helix_token", "tok");
+    localStorage.setItem("velaris_token", "tok");
     const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
       Promise.resolve({ ok: true, json: () => Promise.resolve({ fine: true }) } as Response),
     );

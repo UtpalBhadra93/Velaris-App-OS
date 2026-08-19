@@ -598,3 +598,162 @@ class TestUnscopableResources:
 
         with pytest.raises(retention.RetentionError, match="resolves to no tenant"):
             await retention.apply_policy(session, policy, apply=True)
+
+
+class TestSubmitterColumnsAreErased:
+    """`portal_submitter_email`/`_name` are COLUMNS, and were never scrubbed.
+
+    `ALWAYS_STRIP` names `portal_submitter_email`, but that only ever matched a
+    data KEY. A case reported as anonymized still carried the customer's real
+    address and name, readable by anyone with case access — and, because a NULL
+    submitter reads as "no data subject", erasing the data keys alone would have
+    let the case slip through the consent gate as unowned.
+    """
+
+    async def _portal_case(self, session, *, data=None, marker=None):
+        payload = dict(data or {"submitter_email": "cust@example.com"})
+        if marker:
+            payload[retention.ANON_MARKER] = marker
+        row = CaseInstanceModel(
+            case_type_id=uuid.uuid4(), case_type_version=1, status="closed",
+            priority="medium", tenant_id=None, created_by="cust@example.com",
+            updated_at=_old(5000), data=payload,
+            portal_submitter_email="cust@example.com",
+            portal_submitter_name="A Customer",
+            portal_tracking_token=uuid.uuid4(),
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+    async def _run(self, session):
+        policy = await _policy(session, resource_type="resolved_cases",
+                               action=retention.ANONYMIZE, days=30)
+        out = await retention.apply_policy(session, policy, apply=True)
+        await session.flush()
+        return out
+
+    async def test_columns_are_nulled(self, session):
+        case = await self._portal_case(session)
+        await self._run(session)
+        await session.refresh(case)
+
+        assert case.portal_submitter_email is None
+        assert case.portal_submitter_name is None
+
+    async def test_nulled_not_placeholdered(self, session):
+        """A shared placeholder would make every erased case match every other.
+
+        These columns are compared with `==` across portal login, case lookup and
+        mail threading, so a common sentinel value would link erased strangers.
+        """
+        a = await self._portal_case(session)
+        b = await self._portal_case(session)
+        await self._run(session)
+        await session.refresh(a)
+        await session.refresh(b)
+
+        assert (a.portal_submitter_email, b.portal_submitter_email) == (None, None)
+
+    async def test_already_anonymized_cases_are_backfilled(self, session):
+        """The marker makes a case skipped forever — it needs sweeping up."""
+        case = await self._portal_case(session, marker="2026-01-01T00:00:00+00:00")
+        out = await self._run(session)
+        await session.refresh(case)
+
+        assert out["rows"] == 1, "a previously-scrubbed case still needed erasing"
+        assert case.portal_submitter_email is None
+        assert case.portal_submitter_name is None
+
+    async def test_backfill_does_not_rescrub_the_data_blob(self, session):
+        """Backfill touches the columns only — the marker date must not move."""
+        marker = "2026-01-01T00:00:00+00:00"
+        case = await self._portal_case(
+            session, data={"claim_amount": 1200}, marker=marker)
+        await self._run(session)
+        await session.refresh(case)
+
+        assert case.data[retention.ANON_MARKER] == marker
+        assert case.data["claim_amount"] == 1200, "non-PII must still survive"
+
+    async def test_a_live_portal_case_is_untouched(self, session):
+        """HAPPY PATH: a recent case keeps its submitter, or the portal breaks."""
+        row = CaseInstanceModel(
+            case_type_id=uuid.uuid4(), case_type_version=1, status="closed",
+            priority="medium", tenant_id=None, created_by="new@example.com",
+            data={"submitter_email": "new@example.com"},
+            portal_submitter_email="new@example.com",
+            portal_submitter_name="Still Here",
+            portal_tracking_token=uuid.uuid4(),
+        )
+        session.add(row)
+        await session.flush()
+
+        await self._run(session)
+        await session.refresh(row)
+
+        assert row.portal_submitter_email == "new@example.com"
+        assert row.portal_submitter_name == "Still Here"
+
+
+class TestTrackingTokenIsRevoked:
+    """`portal_tracking_token` is a BEARER CREDENTIAL, not just an identifier.
+
+    `GET /portal/{slug}/track/{token}` returns the case to whoever holds the
+    link, with no other authentication. Leaving it live after an erasure means an
+    old confirmation email still opens the case — the erasure would only have
+    held against people arriving through the front door.
+    """
+
+    async def _case(self, session, *, marker=None, old=True):
+        data = {"submitter_email": "cust@example.com"}
+        if marker:
+            data[retention.ANON_MARKER] = marker
+        row = CaseInstanceModel(
+            case_type_id=uuid.uuid4(), case_type_version=1, status="closed",
+            priority="medium", tenant_id=None, created_by="cust@example.com",
+            data=data, portal_submitter_email="cust@example.com",
+            portal_tracking_token=uuid.uuid4(),
+            **({"updated_at": _old(5000)} if old else {}),
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+    async def _run(self, session):
+        policy = await _policy(session, resource_type="resolved_cases",
+                               action=retention.ANONYMIZE, days=30)
+        out = await retention.apply_policy(session, policy, apply=True)
+        await session.flush()
+        return out
+
+    async def test_token_is_revoked(self, session):
+        case = await self._case(session)
+        await self._run(session)
+        await session.refresh(case)
+        assert case.portal_tracking_token is None
+
+    async def test_already_anonymized_case_has_its_token_revoked(self, session):
+        """Old erasures left a working link behind — sweep those up too."""
+        case = await self._case(session, marker="2026-01-01T00:00:00+00:00")
+        out = await self._run(session)
+        await session.refresh(case)
+        assert out["rows"] == 1
+        assert case.portal_tracking_token is None
+
+    async def test_two_erased_cases_can_both_hold_null(self, session):
+        """The column is UNIQUE — NULL must not collide with NULL."""
+        a = await self._case(session)
+        b = await self._case(session)
+        await self._run(session)
+        await session.refresh(a)
+        await session.refresh(b)
+        assert (a.portal_tracking_token, b.portal_tracking_token) == (None, None)
+
+    async def test_happy_path_a_live_case_keeps_its_token(self, session):
+        """HAPPY PATH: tracking links must keep working for everyone else."""
+        case = await self._case(session, old=False)
+        token = case.portal_tracking_token
+        await self._run(session)
+        await session.refresh(case)
+        assert case.portal_tracking_token == token

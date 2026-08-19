@@ -51,7 +51,13 @@ def _extract_user_id(request: Request) -> str | None:
     try:
         from case_service.auth.jwt_handler import decode_jwt_token
         from case_service.config import get_settings
-        claims = decode_jwt_token(token, secret=get_settings().auth_secret)
+        # public_key or this verifies HS256 only. This one failed *quietly*:
+        # the caller swallows the exception and returns None, so on an RS256
+        # deployment every audit record lost its actor and the superadmin →
+        # __system__ masking below never ran.
+        _s = get_settings()
+        claims = decode_jwt_token(token, secret=_s.auth_secret,
+                                  public_key=_s.auth_rsa_public_key or "")
         user_id = str(claims.get("sub") or claims.get("preferred_username") or "")
         # Superadmin actions are recorded as __system__ to keep identity hidden
         roles = claims.get("realm_access", {}).get("roles", []) or claims.get("roles", [])

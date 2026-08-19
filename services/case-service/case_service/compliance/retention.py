@@ -124,8 +124,16 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
     rows = (await session.execute(q)).scalars().all()
 
     pending = [c for c in rows if not (c.data or {}).get(ANON_MARKER)]
+    # Already-marked cases were scrubbed before the submitter COLUMNS were part
+    # of this routine, so they still carry the customer's name and address. The
+    # marker check above means they are never revisited — they have to be swept
+    # up explicitly or they stay un-erased forever.
+    backfill = [c for c in rows
+                if (c.data or {}).get(ANON_MARKER)
+                and (c.portal_submitter_email or c.portal_submitter_name
+                     or c.portal_tracking_token)]
     if not apply:
-        return len(pending)
+        return len(pending) + len(backfill)
 
     strip = set(ALWAYS_STRIP) | await _confirmed_pii_keys(session)
     now = datetime.now(timezone.utc)
@@ -139,8 +147,39 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
         data[ANON_MARKER] = now.isoformat()
         case.data = data
         case.created_by = "anonymized"
+        _strip_submitter_columns(case)
         session.add(case)
-    return len(pending)
+    for case in backfill:
+        _strip_submitter_columns(case)
+        session.add(case)
+    return len(pending) + len(backfill)
+
+
+def _strip_submitter_columns(case) -> None:
+    """Clear the submitter identity that does NOT live in ``case.data``.
+
+    ``ALWAYS_STRIP`` names ``portal_submitter_email``, but that only ever matched
+    a *data key*; the real values are dedicated columns on ``case_instances`` and
+    survived anonymization untouched — so a case reported as anonymized still
+    held the customer's address and name, readable by anyone with case access.
+
+    ``portal_tracking_token`` goes too. It is not personal data itself, but it is
+    a **bearer credential**: ``GET /portal/{slug}/track/{token}`` returns the case
+    to whoever holds the link, with no other authentication. Leaving it live means
+    an old confirmation email still opens an erased case, so the erasure only held
+    against people who came in through the front door.
+
+    NULLed rather than replaced with a placeholder, unlike the data keys. All
+    three are matched with ``==`` across the portal (login, case list, tracking,
+    mail threading); a placeholder would be a value every erased case shares,
+    which is how they would start matching each other. NULL is safe for the
+    unique index on the token — SQL does not treat two NULLs as equal — and the
+    tracking route takes a ``uuid.UUID`` path param, so no request can arrive
+    carrying NULL and match these rows.
+    """
+    case.portal_submitter_email = None
+    case.portal_submitter_name = None
+    case.portal_tracking_token = None
 
 
 async def _confirmed_pii_keys(session: AsyncSession) -> set[str]:

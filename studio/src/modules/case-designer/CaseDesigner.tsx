@@ -22,6 +22,7 @@ import {
 } from "@shared/components";
 import CaseTypeEditor from "./CaseTypeEditor";
 import type { CaseTypeSummary } from "@shared/types";
+import { getAccessToken } from "@/auth/tokenManager";
 
 // ── Semver comparison ─────────────────────────────────────────────
 function compareSemver(a: string, b: string): number {
@@ -140,7 +141,7 @@ export default function CaseDesigner() {
                   method: "POST",
                   headers: {
                     "Content-Type": "application/json",
-                    ...(localStorage.getItem("helix_token") ? { Authorization: `Bearer ${localStorage.getItem("helix_token")}` } : {}),
+                    ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
                   },
                   body: JSON.stringify({ bundle, version_override: importVersion || null }),
                 });

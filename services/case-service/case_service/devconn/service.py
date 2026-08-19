@@ -117,7 +117,11 @@ async def receive_webhook(
                     )).scalar_one_or_none()
                     if ct:
                         from case_service.api.routers.cases import _auto_advance_if_complete
-                        await _auto_advance_if_complete(session, matched_case, ct.definition_json or {})
+                        # See docintel/service.py: 3 args to a 4-arg helper, TypeError
+                        # swallowed by the handler below — never actually advanced.
+                        await _auto_advance_if_complete(
+                            session, matched_case.id, matched_case.current_stage_id,
+                            ct.definition_json or {})
             except Exception as exc:
                 logger.warning("Auto-advance failed: %s", exc)
     else:

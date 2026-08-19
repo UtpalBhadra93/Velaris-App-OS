@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.db.models import SecurityRuleModel, SecurityIncidentModel, ShieldEventModel
+from case_service import hxguard
 from case_service.auth.dependencies import require_role
 from case_service.db.session import get_session
 from case_service.api.schemas.hxshield import (
@@ -17,7 +18,7 @@ from case_service.api.schemas.hxshield import (
     ShieldEventOut, ScoreRequest, ScoreResponse,
 )
 
-router = APIRouter(prefix="/shield", tags=["HxShield"], dependencies=[Depends(require_role("security", "admin"))])
+router = APIRouter(prefix="/shield", tags=["HxShield"], dependencies=[Depends(hxguard.guard("security.shield.access"))])
 
 
 # ── Security Rules ─────────────────────────────────────────────────────────────

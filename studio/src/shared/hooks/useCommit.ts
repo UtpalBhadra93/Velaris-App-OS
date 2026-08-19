@@ -15,6 +15,7 @@
  *   />
  */
 import { useState, useCallback } from "react";
+import { getAccessToken } from "@/auth/tokenManager";
 
 const CASE_BASE = "/api/v1";
 
@@ -29,7 +30,7 @@ async function postCommit(payload: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("helix_token") ?? ""}`,
+      Authorization: `Bearer ${getAccessToken() ?? ""}`,
     },
     body: JSON.stringify(payload),
   });
