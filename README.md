@@ -74,21 +74,14 @@
 
 ## What's new in 2.4.0
 
-**Enterprise identity** — SAML SSO and SCIM provisioning, proven against live Okta and Entra tenants. Paste one metadata URL and the entity ID, sign-in URL and certificate are read for you; certificates are **add-only**, so a rollover is not an outage, while issuer drift is reported and never applied silently. Velaris can hold its own key pair for signed requests, encrypted assertions and single logout.
-
-**Omnichannel inbound** — SMS, WhatsApp and CTI arrive as cases. Opt-out is honoured before the provider is called, and the WhatsApp 24-hour window is enforced here rather than at Meta, which accepts a late message and silently never delivers it.
-
-**Bot Runner (RPA)** — approved, sandboxed automation for systems with no API, with per-bot egress that is allow-listed rather than open.
-
-**Authorization you can prove** — HxGuard finishes the rebuild. Every decision is a privilege held **in data**, not a role name in code, and roles map to privileges in a table an administrator can edit.
-
-**Mobile** — App Builder exports one binary serving a client's customers and staff, following the session kind rather than a role name; real login, MFA, keystore and origin-pinned tokens.
-
-**Also** — Studio storage keys renamed to `velaris_*` without logging anyone out, and stable error codes extended across SAML and the new channels.
+- **SAML SSO + SCIM provisioning** — proven against live Okta and Entra tenants. Paste one metadata URL and the entity ID, sign-in URL and certificate are read for you; certificates are **add-only**, so a rollover is not an outage, while issuer drift is reported and never applied silently. Velaris can hold its own key pair for signed requests, encrypted assertions and single logout.
+- **Omnichannel inbound** — SMS, WhatsApp and CTI arrive as cases. Opt-out is honoured before the provider is called, and the WhatsApp 24-hour window is enforced here rather than at Meta, which accepts a late message and silently never delivers it.
+- **Bot Runner (RPA)** — approved, sandboxed automation for systems with no API, with per-bot egress allow-listed rather than open.
+- **HxGuard** — the authorization rebuild is finished: every decision is a privilege held **in data**, not a role name in code, and roles map to privileges in a table an administrator can edit.
+- **App Builder** — exports one binary serving a client's customers and staff, following the session kind rather than a role name; real login, MFA, keystore and origin-pinned tokens.
+- **Also** — Studio browser-storage keys renamed to `velaris_*` without signing anyone out, and stable error codes extended across SAML and the new channels.
 
 ### 2.3.0
-
-**Compliance (§8) — five modules that answer what an auditor actually asks.**
 
 - **HxConsent** — an append-only record of *why* each use of a subject's data was lawful, at the moment it became lawful. A withdrawal is a new row, because an overwritten one cannot answer "was this lawful **then**". All six GDPR Art. 6 bases; a withdrawal against a non-consent basis is refused. It is also a **control**, not just evidence: marketing email, warehouse egress and AI processing are each refused without a lawful basis.
 - **HxPrivacy** — scans customer-built forms for probable personal data. A rescan never overwrites a human verdict; vanished fields go stale rather than deleted.
@@ -96,12 +89,9 @@
 - **HxLedger** — balanced books. A transaction balances or it does not exist; corrections are reversals, never edits; money is integer cents.
 - **HxDR** — recovery posture per region. An untested backup reports `untested`, never green; a restore slower than the objective reports `rto_breached`. `backup-velaris.sh` takes the dump *and* records it.
 - **HxStatus** — uptime that never claims what it did not measure.
-
-**Platform determinism** — event sourcing for the Case aggregate (append-only stream beside the row, with a verify endpoint), a CDC event bus fanning the outbox onto Redpanda, CRDT convergence for offline variable edits, and a Temporal interpreter that runs the existing `definition_json` unchanged.
-
-**AI governance** — LLMOps observability at the one chokepoint every call passes through; an `ai_action` step where the model *proposes* and a human accepts, edits or rejects; GDPR Art. 22 provenance recording the model that actually answered.
-
-**Also** — stable error codes in API responses, logs and the docs; statistical SLA prediction; skill-based and manager-of assignment; package format v2 (permissions as ReBAC tuples); and the first frontend tests.
+- **Platform determinism** — event sourcing for the Case aggregate (append-only stream beside the row, with a verify endpoint), a CDC event bus fanning the outbox onto Redpanda, CRDT convergence for offline variable edits, and a Temporal interpreter that runs the existing `definition_json` unchanged.
+- **AI governance** — LLMOps observability at the one chokepoint every call passes through; an `ai_action` step where the model *proposes* and a human accepts, edits or rejects; GDPR Art. 22 provenance recording the model that actually answered.
+- **Also** — stable error codes in API responses, logs and the docs; statistical SLA prediction; skill-based and manager-of assignment; package format v2 (permissions as ReBAC tuples); and the first frontend tests.
 
 ### 2.2.0
 
