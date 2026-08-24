@@ -14,6 +14,7 @@ type Tenant = {
   allowed_case_type_ids: string[];
   voice_input: boolean;
   voice_consent_text: string;
+  self_registration: boolean;
   portal_case_type_count: number;
 };
 
@@ -158,6 +159,7 @@ function TenantsTab() {
           allowed_case_type_ids: editing.allowed_case_type_ids,
           voice_input: editing.voice_input ?? false,
           voice_consent_text: editing.voice_consent_text ?? "",
+          self_registration: editing.self_registration ?? true,
         }),
       });
       setEditing(null);
@@ -295,6 +297,28 @@ function TenantsTab() {
                 {logoPreview && <img src={logoPreview} alt="logo"
                   style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", border: "1px solid var(--border-default)" }} />}
               </div>
+            </ModalField>
+
+            {/* Who may create a customer account. Off does NOT mean nobody:
+                staff create them instead, via POST /portal/{slug}/customers —
+                which exists precisely so this switch has a safe "off". */}
+            <ModalField label="Customer Accounts">
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={editing.self_registration ?? true}
+                  onChange={e => setEditing({ ...editing, self_registration: e.target.checked })}
+                  style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+                />
+                <span style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                  Customers may create their own account
+                </span>
+              </label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 8 }}>
+                {editing.self_registration ?? true
+                  ? "Anyone can sign themselves up from the portal or the mobile app, and your team can also create accounts for people."
+                  : "Only your team can create accounts — sign-up is refused by the server, not merely hidden. Existing customers sign in as normal, and anyone new needs an account created for them first."}
+              </p>
             </ModalField>
 
             {/* Voice input P3b — recording a customer is the tenant's call to

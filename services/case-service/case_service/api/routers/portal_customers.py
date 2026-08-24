@@ -27,10 +27,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.auth.dependencies import require_role
+from case_service.middleware.endpoint_rate_limit import rate_limit
 from case_service import hxguard
 from case_service.auth.models import AuthenticatedUser
 from case_service.db.models import (
@@ -63,6 +64,32 @@ admin_router = APIRouter(
 )
 
 _OTP_TTL_SECONDS = 600  # 10 minutes
+
+#: Wrong guesses allowed against one code before it is retired. Six digits is a
+#: million possibilities and this endpoint is anonymous, so without a bound the
+#: whole space is walkable inside the code's own lifetime — measured at ~300
+#: guesses a second against the live service before this existed.
+_OTP_MAX_ATTEMPTS = 5
+
+#: The single answer every code failure gives. Kept as one constant so a future
+#: edit cannot reintroduce a distinguishable variant by accident.
+_OTP_REFUSED = "Invalid or expired code"
+
+#: Defence in depth, not the control. An attacker with a spread of addresses
+#: walks past an address limit; `_OTP_MAX_ATTEMPTS` is what actually bounds the
+#: guess. This keeps one host from making the attempt cheap.
+_otp_rl = rate_limit(max_calls=20, window_seconds=60, name="portal-otp")
+
+
+def _self_registration_allowed(tenant: TenantModel) -> bool:
+    """Whether a customer may create their own account.
+
+    Defaults to **True**: this setting arrived after self-registration was
+    already live, so a portal with no key set must keep behaving as it did. A
+    missing key silently closing a door that was open would be a regression
+    dressed as a default.
+    """
+    return bool((tenant.settings or {}).get("portal", {}).get("self_registration", True))
 
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
@@ -213,6 +240,14 @@ async def portal_register(
 ):
     """Create a new customer account and send verification OTP."""
     tenant = await _get_tenant_by_slug(slug, session)
+    if not _self_registration_allowed(tenant):
+        # The app hides the option when the portal config says so, but the
+        # server is the authority — hiding a control is presentation, not
+        # access control.
+        raise HTTPException(
+            403, "This portal does not accept self-registration. "
+                 "Contact the team to have an account created.",
+        )
 
     existing = (await session.execute(
         select(PortalCustomerModel).where(
@@ -228,6 +263,7 @@ async def portal_register(
         # Account exists — resend OTP (acts like request-otp but also works as "already registered")
         existing.otp_code       = otp_hash
         existing.otp_expires_at = expires
+        existing.otp_attempts   = 0   # a new code starts with its full allowance
         session.add(existing)
         await session.commit()
         comm_email = existing.alt_email if existing.preferred_email == "alt" and existing.alt_email else body.email.lower()
@@ -242,6 +278,7 @@ async def portal_register(
         verified        = False,
         otp_code        = otp_hash,
         otp_expires_at  = expires,
+        otp_attempts    = 0,
     )
     session.add(customer)
     await session.commit()
@@ -291,6 +328,7 @@ async def portal_request_otp(
         otp, otp_hash = _generate_and_hash_otp()
         customer.otp_code       = otp_hash
         customer.otp_expires_at = datetime.now(timezone.utc) + timedelta(seconds=_OTP_TTL_SECONDS)
+        customer.otp_attempts   = 0   # a new code starts with its full allowance
         session.add(customer)
         await session.commit()
         comm_email = customer.alt_email if customer.preferred_email == "alt" and customer.alt_email else body.email.lower()
@@ -302,7 +340,7 @@ async def portal_request_otp(
 
 # ── Public: Verify OTP ────────────────────────────────────────────────────────
 
-@public_router.post("/{slug}/auth/verify-otp")
+@public_router.post("/{slug}/auth/verify-otp", dependencies=[Depends(_otp_rl)])
 async def portal_verify_otp(
     slug: str,
     body: VerifyOTPBody,
@@ -318,18 +356,51 @@ async def portal_verify_otp(
         )
     )).scalar_one_or_none()
 
+    # One answer for every failure below. The variants used to differ — no such
+    # account, no live code, expired, wrong — and the difference told a guesser
+    # things they should have to find out the hard way: whether an address has
+    # an account, and precisely when their guesses retired a live code, which is
+    # confirmation the code was live and being counted.
     if not customer or not customer.otp_code or not customer.otp_expires_at:
-        raise HTTPException(401, "Invalid or expired code")
+        raise HTTPException(401, _OTP_REFUSED)
 
     if customer.otp_expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        raise HTTPException(401, "Code has expired")
+        raise HTTPException(401, _OTP_REFUSED)
 
     if not secrets.compare_digest(customer.otp_code, _hash_otp(body.otp.strip())):
-        raise HTTPException(401, "Invalid code")
+        # Bound the guess. Six digits is a small space and this endpoint is
+        # anonymous, so without this the code falls to brute force well inside
+        # its own ten-minute life. Retiring the code — rather than locking the
+        # account — means a wrong guess costs the attacker the whole code and
+        # costs the owner one more email.
+        #
+        # **Two statements the DATABASE evaluates, not a read-modify-write.**
+        # Reading the count into Python and writing back looks equivalent and is
+        # not: eight parallel guesses each read 0, each wrote 1, and the code
+        # survived — measured, before this. The increment has to be atomic, and
+        # the retirement has to be conditional on the value *after* it.
+        await session.execute(
+            update(PortalCustomerModel)
+            .where(PortalCustomerModel.id == customer.id)
+            .values(otp_attempts=PortalCustomerModel.otp_attempts + 1)
+        )
+        # Whoever pushes it over the line clears the code; the rest match nothing.
+        # No RETURNING — MySQL 8 does not have it on UPDATE.
+        await session.execute(
+            update(PortalCustomerModel)
+            .where(
+                PortalCustomerModel.id == customer.id,
+                PortalCustomerModel.otp_attempts >= _OTP_MAX_ATTEMPTS,
+            )
+            .values(otp_code=None, otp_expires_at=None, otp_attempts=0)
+        )
+        await session.commit()
+        raise HTTPException(401, _OTP_REFUSED)
 
     # Consume OTP, mark verified, update last_active
     customer.otp_code       = None
     customer.otp_expires_at = None
+    customer.otp_attempts   = 0
     customer.verified       = True
     customer.last_active_at = datetime.now(timezone.utc)
     session.add(customer)
@@ -482,6 +553,94 @@ async def portal_account_cases(
 
 
 # ── Admin: Customer management ────────────────────────────────────────────────
+
+class AdminCreateCustomerBody(BaseModel):
+    email: str
+    display_name: str
+    phone: Optional[str] = None
+    #: Send the person a code so they can sign in straight away. Off by default:
+    #: creating a record and mailing somebody are separate decisions, and a bulk
+    #: import should not put a code in every inbox.
+    send_invite: bool = False
+
+
+@admin_router.post("/{slug}/customers", status_code=201)
+async def admin_create_customer(
+    slug: str,
+    body: AdminCreateCustomerBody,
+    current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.write")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Create a customer account on someone's behalf.
+
+    Exists because self-registration can be switched off, and until this route
+    there was **no way for staff to create a customer at all** — the only code
+    path that made a `portal_customers` row was the public register endpoint.
+    Turning self-registration off without this would have meant nobody could
+    have an account.
+
+    Unlike self-registration this does not depend on the toggle: the toggle
+    governs whether *the public* may create accounts, not whether staff may.
+    """
+    tenant = await _get_tenant_by_slug(slug, session)
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "A valid email address is required.")
+    if not body.display_name.strip():
+        raise HTTPException(400, "A name is required.")
+
+    existing = (await session.execute(
+        select(PortalCustomerModel).where(
+            PortalCustomerModel.tenant_id == tenant.id,
+            PortalCustomerModel.primary_email == email,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        # Staff are looking at a list and can see the duplicate; unlike the
+        # public route there is no enumeration concern to hide behind.
+        raise HTTPException(409, "A customer with that email already exists.")
+
+    customer = PortalCustomerModel(
+        tenant_id     = tenant.id,
+        primary_email = email,
+        display_name  = body.display_name.strip(),
+        phone         = body.phone,
+        verified      = False,
+    )
+    if body.send_invite:
+        otp, otp_hash = _generate_and_hash_otp()
+        customer.otp_code       = otp_hash
+        customer.otp_expires_at = datetime.now(timezone.utc) + timedelta(seconds=_OTP_TTL_SECONDS)
+        customer.otp_attempts   = 0   # a new code starts with its full allowance
+    session.add(customer)
+    await session.commit()
+    await session.refresh(customer)
+
+    # Same auto-link the public route performs: cases this person already
+    # submitted by email become theirs to see.
+    historical = (await session.execute(
+        select(CaseInstanceModel).where(
+            CaseInstanceModel.tenant_id == tenant.id,
+            CaseInstanceModel.portal_submitter_email == email,
+            CaseInstanceModel.id.not_in(select(PortalCustomerCaseLinkModel.case_id)),
+        )
+    )).scalars().all()
+    for c in historical:
+        session.add(PortalCustomerCaseLinkModel(customer_id=customer.id, case_id=c.id))
+    if historical:
+        await session.commit()
+
+    if body.send_invite:
+        await _send_otp_email(session, email, otp, purpose="register")
+
+    return {
+        "id":            str(customer.id),
+        "primary_email": customer.primary_email,
+        "display_name":  customer.display_name,
+        "linked_cases":  len(historical),
+        "invited":       body.send_invite,
+    }
+
 
 @admin_router.get("/{slug}/customers")
 async def admin_list_customers(

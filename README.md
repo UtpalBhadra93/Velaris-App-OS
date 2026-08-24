@@ -72,7 +72,21 @@
 
 ---
 
-## What's new in 2.3.0
+## What's new in 2.4.0
+
+**Enterprise identity** — SAML SSO and SCIM provisioning, proven against live Okta and Entra tenants. Paste one metadata URL and the entity ID, sign-in URL and certificate are read for you; certificates are **add-only**, so a rollover is not an outage, while issuer drift is reported and never applied silently. Velaris can hold its own key pair for signed requests, encrypted assertions and single logout.
+
+**Omnichannel inbound** — SMS, WhatsApp and CTI arrive as cases. Opt-out is honoured before the provider is called, and the WhatsApp 24-hour window is enforced here rather than at Meta, which accepts a late message and silently never delivers it.
+
+**Bot Runner (RPA)** — approved, sandboxed automation for systems with no API, with per-bot egress that is allow-listed rather than open.
+
+**Authorization you can prove** — HxGuard finishes the rebuild. Every decision is a privilege held **in data**, not a role name in code, and roles map to privileges in a table an administrator can edit.
+
+**Mobile** — App Builder exports one binary serving a client's customers and staff, following the session kind rather than a role name; real login, MFA, keystore and origin-pinned tokens.
+
+**Also** — Studio storage keys renamed to `velaris_*` without logging anyone out, and stable error codes extended across SAML and the new channels.
+
+### 2.3.0
 
 **Compliance (§8) — five modules that answer what an auditor actually asks.**
 

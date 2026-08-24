@@ -264,12 +264,14 @@ class TestRegistry:
         with a phase."""
         endpoint = [a for a in ACTIONS.values() if a.kind == "endpoint"]
         module = [a for a in ACTIONS.values() if a.kind == "module"]
-        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6, (
+        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1, (
             f"{len(endpoint)} endpoint actions — expected 49 (Phase 0) + 19 "
             f"(Phase 3.5) + 16 (Phase 4 step 2) + 6 (ungated sweep) + 15 "
             f"(Phase 5: the case layer's ACTION_ROLES table + the ReBAC bypass) "
             f"+ 4 (enterprise identity) + 5 (omnichannel channels.*) "
-            f"+ 6 (RPA bots.*)")
+            f"+ 6 (RPA bots.*) + 1 (portal.customers.write — staff-created "
+            f"customer accounts, the only path to one once self-registration "
+            f"is switched off)")
         assert len(module) == 18, (
             f"{len(module)} module actions — 12 from Phase 0, 6 from Phase 4")
 

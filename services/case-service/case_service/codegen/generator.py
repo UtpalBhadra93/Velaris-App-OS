@@ -18,6 +18,7 @@ from typing import Any
 from case_service.codegen.templates import (
     PACKAGE_JSON, APP_JSON, EAS_JSON, APP_TSX, API_CONTEXT,
     CONFIG_TS, URL_TS, STORAGE_TS, ENDPOINTS_TS, LOGIN_SCREEN,
+    REQUESTS_SCREEN, NEW_REQUEST_SCREEN, REQUEST_DETAIL_SCREEN,
     CASE_LIST_SCREEN, CASE_DETAIL_SCREEN, CREATE_CASE_SCREEN,
     MY_WORK_SCREEN, SETTINGS_SCREEN, BABEL_CONFIG, TSCONFIG,
     GITIGNORE, README,
@@ -31,6 +32,9 @@ class AppConfig:
     primary_color: str = "#4ecdc4"
     default_api_url: str = "http://localhost:8200"
     default_tenant: str = "default"
+    portal_slug: str = ""
+    #: both | staff | customer — who the build is for.
+    audience: str = "both"
     case_type_ids: list[str] = field(default_factory=list)
     # Store metadata
     app_version: str = "1.0.0"
@@ -44,6 +48,8 @@ class AppConfig:
             self.primary_color = "#4ecdc4"
         if not re.match(r"^\d+\.\d+\.\d+$", self.app_version):
             self.app_version = "1.0.0"
+        if self.audience not in AUDIENCES:
+            self.audience = "both"
 
 
 def render(template: str, config: AppConfig) -> str:
@@ -80,12 +86,72 @@ def _tokens(config: AppConfig) -> dict[str, str]:
         "__PRIMARY_COLOR__": config.primary_color,
         "__DEFAULT_API_URL__": config.default_api_url,
         "__DEFAULT_TENANT__": config.default_tenant,
+        # The portal a customer signs in against. Defaults to the tenant slug,
+        # which is what a single-portal deployment uses.
+        "__PORTAL_SLUG__": config.portal_slug or config.default_tenant,
         "__APP_VERSION__": config.app_version,
         "__IOS_BUNDLE_ID__": config.ios_bundle_id,
         "__ANDROID_PACKAGE__": config.android_package,
         "__APP_DESCRIPTION__": config.app_description or config.app_name,
         "__CASE_TYPE_IDS_JSON__": json.dumps(config.case_type_ids or []),
+        "__AUDIENCE__": config.audience,
     }
+
+
+#: Who a build is for. A single-audience build omits the other side's screens
+#: rather than hiding them: a company shipping to its own customers should not
+#: have an operator's Resolve button sitting in the binary.
+AUDIENCES = ("both", "staff", "customer")
+
+#: Screens only one audience ever reaches.
+_STAFF_SCREENS = (
+    "src/screens/CaseListScreen.tsx",
+    "src/screens/CaseDetailScreen.tsx",
+    "src/screens/CreateCaseScreen.tsx",
+    "src/screens/MyWorkScreen.tsx",
+)
+_CUSTOMER_SCREENS = (
+    "src/screens/RequestsScreen.tsx",
+    "src/screens/NewRequestScreen.tsx",
+    "src/screens/RequestDetailScreen.tsx",
+)
+
+
+def _apply_audience(app_tsx: str, audience: str) -> str:
+    """Strip the half of `App.tsx` this build does not ship.
+
+    Marker-driven rather than three separate templates, so the navigation that
+    both audiences share has exactly one definition to keep correct.
+    """
+    if audience == "both":
+        return app_tsx
+
+    drop_tag = "@customer" if audience == "staff" else "@staff"
+    keep_shell = "StaffTabs" if audience == "staff" else "CustomerTabs"
+
+    out, skipping = [], False
+    for line in app_tsx.splitlines(keepends=True):
+        if f"// {drop_tag}-block-start" in line:
+            skipping = True
+            continue
+        if f"// {drop_tag}-block-end" in line:
+            skipping = False
+            continue
+        if skipping:
+            continue
+        # An import for a screen that is no longer emitted would not resolve.
+        if line.rstrip().endswith(f"// {drop_tag}"):
+            continue
+        if "// @both" in line:
+            line = f"  return <{keep_shell} />;\n"
+        out.append(line)
+
+    # The block markers of the audience we KEPT are just comments now.
+    kept = "@staff" if audience == "staff" else "@customer"
+    return "".join(
+        l for l in out
+        if f"// {kept}-block-start" not in l and f"// {kept}-block-end" not in l
+    )
 
 
 def generate_app(config: AppConfig) -> dict[str, str]:
@@ -97,13 +163,16 @@ def generate_app(config: AppConfig) -> dict[str, str]:
         "package.json": render(PACKAGE_JSON, config),
         "app.json": render(APP_JSON, config),
         "eas.json": render(EAS_JSON, config),
-        "App.tsx": render(APP_TSX, config),
+        "App.tsx": _apply_audience(render(APP_TSX, config), config.audience),
         "src/api/ApiContext.tsx": render(API_CONTEXT, config),
         "src/api/config.ts": render(CONFIG_TS, config),
         "src/api/endpoints.ts": render(ENDPOINTS_TS, config),
         "src/api/storage.ts": render(STORAGE_TS, config),
         "src/api/url.ts": render(URL_TS, config),
         "src/screens/LoginScreen.tsx": render(LOGIN_SCREEN, config),
+        "src/screens/RequestsScreen.tsx": render(REQUESTS_SCREEN, config),
+        "src/screens/NewRequestScreen.tsx": render(NEW_REQUEST_SCREEN, config),
+        "src/screens/RequestDetailScreen.tsx": render(REQUEST_DETAIL_SCREEN, config),
         "src/screens/CaseListScreen.tsx": render(CASE_LIST_SCREEN, config),
         "src/screens/CaseDetailScreen.tsx": render(CASE_DETAIL_SCREEN, config),
         "src/screens/CreateCaseScreen.tsx": render(CREATE_CASE_SCREEN, config),
@@ -114,6 +183,12 @@ def generate_app(config: AppConfig) -> dict[str, str]:
         ".gitignore": GITIGNORE,
         "README.md": render(README, config),
     }
+    if config.audience == "staff":
+        for path in _CUSTOMER_SCREENS:
+            files.pop(path, None)
+    elif config.audience == "customer":
+        for path in _STAFF_SCREENS:
+            files.pop(path, None)
     return files
 
 

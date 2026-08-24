@@ -15,7 +15,7 @@ parity proof for that action goes with it.
 **Nothing here is enforced yet.** Phase 1 adds the registry and the evaluator
 alongside the existing gates; Phase 2 shadows them; Phase 3 cuts over.
 
-Source: docs/Future/authz-gate-inventory.md (Phase 0, 2026-08-13).
+Source: docs/Future/Done/authz-gate-inventory.md (Phase 0, 2026-08-13).
 
 Copyright (c) 2024-2026 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1
@@ -186,6 +186,9 @@ _reg(_a("portal.customers.erase", "endpoint", ['admin'],
         "GDPR Art. 17 erasure — irreversible. Deserves its own action."))
 _reg(_a("portal.customers.read", "endpoint", ['admin'],
         "One customer's record."))
+_reg(_a("portal.customers.write", "endpoint", ['admin'],
+        "Create a customer account on someone's behalf — the only path to an "
+        "account once self-registration is switched off."))
 _reg(_a("portal.submissions.read", "endpoint", ['admin'],
         "What customers submitted."))
 _reg(_a("variables.definitions.write", "endpoint", ['designer'],
@@ -503,6 +506,7 @@ ACTION_GATES: dict[str, tuple[str, ...]] = {
     "portal.config.write": ('portal.py::toggle_case_type_portal', 'portal.py::update_case_type_portal_display', 'portal.py::update_portal_settings', 'portal.py::upload_portal_logo'),
     "portal.customers.erase": ('portal_customers.py::admin_delete_customer',),
     "portal.customers.read": ('portal_customers.py::admin_get_customer', 'portal_customers.py::admin_list_customers'),
+    "portal.customers.write": ('portal_customers.py::admin_create_customer',),
     "portal.submissions.read": ('portal.py::list_portal_submissions',),
     "variables.definitions.write": ('case_variables.py::define_variable', 'case_variables.py::delete_variable', 'case_variables.py::patch_variable'),
 }

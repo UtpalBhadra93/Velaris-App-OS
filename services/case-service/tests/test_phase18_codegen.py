@@ -266,6 +266,263 @@ class TestTheExportIsRunnable:
         api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
         assert "s.origin === originOf(baseRef.current)" in api
 
+    def test_a_session_is_pinned_to_one_half_of_the_api(self):
+        # Staff and customer tokens both arrive as `Authorization: Bearer`, and
+        # the server separates them only by router — so nothing downstream would
+        # notice a customer token sent to a staff route. This is the only place
+        # that can refuse it.
+        from case_service.codegen.generator import AppConfig, generate_app
+        files = generate_app(AppConfig())
+        api = files["src/api/ApiContext.tsx"]
+        assert "current.kind !== family" in api, "cross-family calls must be refused"
+        assert "s.kind === family" in api, "the token must only attach to its own family"
+        # The bare name also matches `routeFamilyX`, an import, and the
+        # comment — assert the definition.
+        assert "export function routeFamily(path: string): RouteFamily" in files["src/api/url.ts"]
+
+    def test_an_unrecognised_stored_session_kind_is_not_guessed_at(self):
+        # A session stored before the app knew about kinds can only be staff.
+        # Anything else is unrecognised, and an unusable session is better than
+        # a token routed by a guess.
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        # Assert the whole ternary. `": null;"` alone also matches the JSON
+        # parse at the end of `request`, so it stayed green when the fallback
+        # was changed to 'staff' — the exact bug this test exists to catch.
+        assert (
+            "        storedKind === null ? 'staff'\n"
+            "        : (SESSION_KINDS as string[]).indexOf(storedKind) !== -1 ? (storedKind as SessionKind)\n"
+            "        : null;"
+        ) in api, "an unknown stored kind must resolve to null, never to a default"
+
+    def test_no_placeholder_forces_a_sign_up_before_the_app_will_run(self):
+        # `updates.url` and `extra.eas.projectId` used to ship as placeholders.
+        # Expo CLI reads them, tries to resolve the EAS project, and refuses to
+        # serve the app: `expo start` answered "An Expo user account is required
+        # to proceed" before anyone could open the scaffold in Expo Go. The
+        # export could not be run at all without an account on another service.
+        import json
+        from case_service.codegen.generator import AppConfig, generate_app
+        expo = json.loads(generate_app(AppConfig())["app.json"])["expo"]
+        assert "updates" not in expo, "an unconfigured updates block blocks `expo start`"
+        assert "projectId" not in json.dumps(expo.get("extra", {})), \
+            "a placeholder EAS projectId makes the CLI demand a login"
+
+    def test_the_sdk_is_one_expo_go_can_actually_open(self):
+        # Expo Go only ever supports the NEWEST SDK. A scaffold pinned to an old
+        # one cannot be opened on a phone at all — it answers "Project is
+        # incompatible with this version of Expo Go", which the template did on
+        # a real device while pinned to SDK 50 against an SDK 54 Expo Go.
+        # This does not pin a number; it fails once the pin falls behind by a
+        # major, which is the point at which Expo Go stops accepting it.
+        import json
+        import re
+        import urllib.request
+        import pytest as _pytest
+        from case_service.codegen.generator import AppConfig, generate_app
+
+        pkg = json.loads(generate_app(AppConfig())["package.json"])
+        ours = int(re.sub(r"[^0-9.]", "", pkg["dependencies"]["expo"]).split(".")[0])
+        try:
+            with urllib.request.urlopen(
+                "https://registry.npmjs.org/expo/latest", timeout=10,
+            ) as r:
+                latest = int(json.load(r)["version"].split(".")[0])
+        except Exception:
+            _pytest.skip("npm registry unreachable — cannot check the SDK is current")
+        assert ours >= latest - 1, (
+            f"the template pins Expo SDK {ours}, but {latest} is current. "
+            "Expo Go supports only the newest SDK, so the export cannot be "
+            "opened on a phone. Bump `expo` and run `npx expo install --fix`."
+        )
+
+    def test_splash_is_a_plugin_not_a_top_level_key(self):
+        # `splash` moved into `expo-splash-screen` at SDK 52. Left at the top
+        # level it fails the Expo config schema check outright.
+        import json
+        from case_service.codegen.generator import AppConfig, generate_app
+        files = generate_app(AppConfig())
+        expo = json.loads(files["app.json"])["expo"]
+        assert "splash" not in expo
+        assert any(p[0] == "expo-splash-screen" for p in expo.get("plugins", [])
+                   if isinstance(p, list))
+        assert "expo-splash-screen" in json.loads(files["package.json"])["dependencies"]
+
+    def test_app_json_is_valid_json(self):
+        # It is assembled as text, so a stray comment or trailing comma is
+        # possible and would break every Expo command at once.
+        import json
+        from case_service.codegen.generator import AppConfig, generate_app
+        json.loads(generate_app(AppConfig())["app.json"])
+
+    def test_one_screen_serves_both_audiences(self):
+        # Staff have a password; customers never do — the server issues none, so
+        # sign-in there is a one-time code. Both live on one screen, and nothing
+        # asks who you are before you try.
+        from case_service.codegen.generator import AppConfig, generate_app
+        login = generate_app(AppConfig())["src/screens/LoginScreen.tsx"]
+        assert "Email me a code instead" in login
+        assert "signInWithOtp" in login and "requestOtp" in login
+        assert "registerCustomer" in login
+
+    def test_the_federated_branch_is_matched_on_the_error_code(self):
+        # `auth_real.py` already answers 400 VEL-AUTH-SSO-REQUIRED-400 for an
+        # account with no password. Matching the prose instead would break the
+        # moment someone rewords it.
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        assert "'VEL-AUTH-SSO-REQUIRED-400'" in api
+        assert "code === SSO_REQUIRED_CODE" in api
+
+    def test_the_error_code_the_app_matches_still_exists(self):
+        # Checked against the server's own constant rather than a copy of the
+        # string, so renaming the code there fails here instead of in the field.
+        from case_service.core.error_codes import AUTH_SSO_REQUIRED_400
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        assert f"'{AUTH_SSO_REQUIRED_400}'" in api
+
+    def test_the_feature_flag_being_off_is_explained(self):
+        # Every customer route 404s when Customer Accounts is disabled for the
+        # deployment. Reported as "not found" it reads as a broken app.
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        assert "resp.status === 404" in api
+        assert "customer accounts enabled" in api
+
+    def test_a_customer_session_is_renewed_the_only_way_it_can_be(self):
+        # The server mints no refresh token for a customer: a still-valid token
+        # buys another 24h and an expired one buys nothing. Renewal therefore
+        # goes to the portal route carrying the current token, and the staff
+        # refresh-token path would simply never fire.
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        assert "PORTAL.refresh(PORTAL_SLUG)" in api
+        assert "current.kind === 'staff' && !current.refreshToken" in api
+
+    def test_sign_out_does_not_call_a_route_the_session_has_no_business_at(self):
+        # There is no customer logout endpoint; the token expires on its own.
+        from case_service.codegen.generator import AppConfig, generate_app
+        api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
+        assert "s.kind === 'staff' && s.refreshToken" in api
+
+    def test_the_portal_slug_is_baked_in_not_typed(self):
+        # A customer token is minted for one portal slug and rejected on any
+        # other, so it is a build-time value rather than a field to get wrong.
+        from case_service.codegen.generator import AppConfig, generate_app
+        cfg = AppConfig(default_tenant="acme", portal_slug="acme-support")
+        assert "PORTAL_SLUG = 'acme-support'" in generate_app(cfg)["src/api/config.ts"]
+        # and it falls back to the tenant, which is what one portal per tenant means
+        fallback = generate_app(AppConfig(default_tenant="acme"))["src/api/config.ts"]
+        assert "PORTAL_SLUG = 'acme'" in fallback
+
+    def test_the_shell_follows_the_session_kind(self):
+        # A customer token can only reach `/portal/…`, so showing a customer the
+        # staff shell is a screen full of refusals — which is exactly what it
+        # did between steps 1 and 3. The choice is made on the session kind, not
+        # a role name or a build flag.
+        from case_service.codegen.generator import AppConfig, generate_app
+        app = generate_app(AppConfig())["App.tsx"]
+        assert "sessionKind === 'customer' ? <CustomerTabs /> : <StaffTabs />" in app
+        assert "function CustomerTabs()" in app and "function StaffTabs()" in app
+
+    def test_the_customer_shell_does_not_offer_staff_screens(self):
+        # My Work is an operator queue and Resolve is an operator action.
+        from case_service.codegen.generator import AppConfig, generate_app
+        app = generate_app(AppConfig())["App.tsx"]
+        customer = app[app.index("function CustomerTabs()"):app.index("/** Nothing renders")]
+        for staff_only in ("MyWorkScreen", "CasesStack", "CaseDetailScreen"):
+            assert staff_only not in customer, f"{staff_only} is in the customer shell"
+
+    def test_the_customer_screens_call_only_portal_routes(self):
+        # A staff path here would be refused by the family guard at runtime;
+        # catching it in the build is cheaper than catching it on a phone.
+        import re
+        from case_service.codegen.generator import AppConfig, generate_app
+        files = generate_app(AppConfig())
+        for name in ("RequestsScreen", "NewRequestScreen", "RequestDetailScreen"):
+            body = files[f"src/screens/{name}.tsx"]
+            used = re.findall(r"\b(EP|PORTAL)\.", body)
+            assert used, f"{name} makes no API call at all"
+            assert "EP" not in used, f"{name} calls a staff endpoint"
+
+    def test_a_submission_carries_an_idempotency_key(self):
+        # `portal.py` treats a repeated `client_ref` as the same submission.
+        # Without one, a retry on a flaky mobile connection raises a duplicate
+        # case — and the person who tapped once gets billed twice for it.
+        from case_service.codegen.generator import AppConfig, generate_app
+        screen = generate_app(AppConfig())["src/screens/NewRequestScreen.tsx"]
+        assert "client_ref: clientRef.current" in screen
+        assert "useRef(newId())" in screen, "the key must be per attempt, not per render"
+
+    def test_the_request_form_comes_from_the_server(self):
+        # Fields arrive flat from `/case-types/{id}/form`, so editing a form in
+        # Form Builder changes the app without a rebuild. An unknown type has to
+        # stay answerable rather than vanish from the form.
+        from case_service.codegen.generator import AppConfig, generate_app
+        screen = generate_app(AppConfig())["src/screens/NewRequestScreen.tsx"]
+        assert "PORTAL.form(PORTAL_SLUG" in screen
+        assert "function renderField" in screen
+        assert "type === 'textarea'" in screen and "f.options" in screen
+
+    def test_the_customer_case_id_is_checked_before_it_reaches_a_url(self):
+        from case_service.codegen.generator import AppConfig, generate_app
+        # Both call sites, named individually — the bare identifier also
+        # matches the *other* one, so a single occurrence proved nothing when
+        # the load guard was removed.
+        screen = generate_app(AppConfig())["src/screens/RequestDetailScreen.tsx"]
+        assert (
+            "    if (!isUuid(caseId)) {\n"
+            "      setError('That request reference is not valid.');"
+        ) in screen, "the load path must check the id it was handed"
+        assert "if (!text || !isUuid(caseId)) return;" in screen, \
+            "posting a message must check it too"
+
+    def test_a_single_audience_build_omits_the_other_side(self):
+        # Hiding a Resolve button behind a tab is not the same as not shipping
+        # it. A company sending this to its own customers should not have an
+        # operator action in the binary.
+        from case_service.codegen.generator import AppConfig, generate_app
+
+        both = generate_app(AppConfig(audience="both"))
+        staff = generate_app(AppConfig(audience="staff"))
+        customer = generate_app(AppConfig(audience="customer"))
+
+        assert "src/screens/RequestsScreen.tsx" in both
+        assert "src/screens/CaseListScreen.tsx" in both
+
+        for gone in ("RequestsScreen", "NewRequestScreen", "RequestDetailScreen"):
+            assert f"src/screens/{gone}.tsx" not in staff
+        for gone in ("CaseListScreen", "CaseDetailScreen", "CreateCaseScreen", "MyWorkScreen"):
+            assert f"src/screens/{gone}.tsx" not in customer
+
+    def test_no_build_imports_a_screen_it_does_not_ship(self):
+        # The whole risk of stripping files is an import left pointing at one.
+        # `tsc` catches it, but only if someone runs it — this does not need a
+        # node_modules to exist.
+        import re
+        from case_service.codegen.generator import AppConfig, generate_app
+        for audience in ("both", "staff", "customer"):
+            files = generate_app(AppConfig(audience=audience))
+            for path, body in files.items():
+                if not path.endswith((".tsx", ".ts")):
+                    continue
+                for target in re.findall(r"from '\./(?:src/)?screens/(\w+)'", body):
+                    assert any(k.endswith(f"screens/{target}.tsx") for k in files), (
+                        f"{audience}: {path} imports {target}, which is not emitted"
+                    )
+
+    def test_an_unknown_audience_falls_back_to_both(self):
+        # A bad value must not produce an app missing half its screens.
+        from case_service.codegen.generator import AppConfig
+        assert AppConfig(audience="nonsense").audience == "both"
+        assert AppConfig(audience="").audience == "both"
+
+    def test_the_portal_slug_reaches_a_single_audience_build(self):
+        from case_service.codegen.generator import AppConfig, generate_app
+        cfg = AppConfig(audience="customer", portal_slug="acme-support")
+        assert "PORTAL_SLUG = 'acme-support'" in generate_app(cfg)["src/api/config.ts"]
+
     def test_there_is_no_field_for_pasting_a_raw_token(self):
         # The scaffold used to ask the user to paste a JWT into Settings, which
         # is both unusable (they expire in minutes) and the reason the token was
@@ -317,9 +574,17 @@ class TestTheExportIsRunnable:
         # Every path the app knows lives in one table, so this cannot miss one
         # by failing to guess how it was written at the call site.
         endpoints = generate_app(AppConfig())["src/api/endpoints.ts"]
-        called = set()
-        for path in re.findall(r"[\'`](/[A-Za-z0-9._~\-/${}]*)[\'`]", endpoints):
-            called.add(re.sub(r"\$\{[^}]+\}", "{case_id}", path))
+
+        # A template slot and a router parameter are both "some id here", but
+        # they are rarely spelled the same (`${slug}` vs `{slug}`, `${id}` vs
+        # `{case_id}`). Blank both sides so the check is about the SHAPE of the
+        # path — which is what a 404 actually depends on — rather than about
+        # whether two authors picked the same word.
+        blank = lambda path: re.sub(r"\$?\{[^}]*\}", "{}", path)
+        routes = {blank(r) for r in routes}
+
+        called = {blank(path) for path in
+                  re.findall(r"[\'`](/[A-Za-z0-9._~\-/${}]*)[\'`]", endpoints)}
         assert called, "no API paths found — has endpoints.ts been renamed?"
         for path in sorted(called):
             assert f"/api/v1{path}" in routes, f"the app calls {path}, which is not a route"

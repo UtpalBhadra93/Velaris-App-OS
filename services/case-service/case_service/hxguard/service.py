@@ -568,6 +568,13 @@ def guard(action: str):
     ) -> AuthenticatedUser:
         await require(session, subject_from_user(user), action)
         return user
+
+    # The action is otherwise only visible inside the closure, so a test can
+    # assert that a route 403s but not WHICH action it 403s on — and two actions
+    # held by the same role are indistinguishable from the outside. Anything
+    # walking the built route table can now read the real gate rather than a
+    # hand-kept map that drifts.
+    _dep.hxguard_action = action  # type: ignore[attr-defined]
     return _dep
 
 

@@ -1,7 +1,7 @@
 // Adversarial cases against the GENERATED url.ts. The base URL is the one
 // place a valid bearer token could be aimed at a host that should never see
 // it, so the interesting cases are the ones that should be REFUSED.
-const { checkBaseUrl, originOf, pathIsSafe, isUuid } = require(process.env.GENERATED_OUT + '/url.js');
+const { checkBaseUrl, originOf, pathIsSafe, isUuid, routeFamily } = require(process.env.GENERATED_OUT + '/url.js');
 
 let failures = 0;
 const ok = (n, c, x) => { if (c) console.log('  PASS  ' + n); else { failures++; console.log('  FAIL  ' + n + (x !== undefined ? '  ' + JSON.stringify(x) : '')); } };
@@ -66,6 +66,15 @@ ok('refuses a protocol-relative jump', !pathIsSafe('//evil.test/x'));
 ok('refuses traversal', !pathIsSafe('/cases/../../admin'));
 ok('refuses a path that is not rooted', !pathIsSafe('cases'));
 ok('refuses a full URL as a path', !pathIsSafe('https://evil.test/x'));
+
+console.log('route family — which half of the API a path belongs to');
+// Both halves present their token as `Authorization: Bearer`; the server tells
+// them apart only by router, so getting this wrong sends a customer's token to
+// a staff route.
+for (const p of ['/portal/acme/auth/verify-otp', '/portal/acme/account/cases', '/portal/acme', '/portal'])
+  ok('customer: ' + p, routeFamily(p) === 'customer', routeFamily(p));
+for (const p of ['/cases', '/case-types', '/my/assignments', '/auth/real/login', '/portalish/x', '/portals'])
+  ok('staff: ' + p, routeFamily(p) === 'staff', routeFamily(p));
 
 console.log('case ids');
 ok('accepts a uuid', isUuid('70c463e9-1275-41fb-aaf4-32dc19f6d7c8'));

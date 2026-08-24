@@ -28,6 +28,8 @@ interface AppConfig {
   app_slug: string;
   primary_color: string;
   default_api_url: string;
+  portal_slug: string;
+  audience: "both" | "staff" | "customer";
   default_tenant: string;
   case_type_ids: string[];
   app_version: string;
@@ -43,6 +45,8 @@ export default function AppBuilder() {
     app_slug: "velaris-mobile",
     primary_color: "#4ecdc4",
     default_api_url: "http://localhost:8200",
+    portal_slug: "",
+    audience: "both",
     default_tenant: "default",
     case_type_ids: [],
     app_version: "1.0.0",
@@ -219,11 +223,49 @@ function ConfigureTab({ config, setConfig, caseTypes }: { config: AppConfig; set
           <Input value={config.default_api_url} onChange={set("default_api_url")} placeholder="https://api.yourcompany.com" />
           {apiUrlProblem(config.default_api_url)
             ? <Warning>{apiUrlProblem(config.default_api_url)}</Warning>
-            : <Hint>Production URL. Dev: <code>http://10.0.2.2:8200</code> (Android emu) / <code>http://localhost:8200</code> (iOS sim)</Hint>}
+            : <Hint>
+                A host your phones can actually reach. <strong>Not <code>localhost</code></strong> —
+                on a phone that is the phone. Emulators: <code>http://10.0.2.2:8200</code> (Android),
+                <code>http://localhost:8200</code> (iOS sim). A real device needs your LAN or public address.
+              </Hint>}
         </Field>
         <Field label="Default Tenant">
           <Input value={config.default_tenant} onChange={set("default_tenant")} />
         </Field>
+        <Field label="Portal Slug (customer sign-in)">
+          <Input value={config.portal_slug} onChange={set("portal_slug")}
+                 placeholder={config.default_tenant || "same as tenant"} />
+          <Hint>
+            A customer signs in against <code>/portal/&lt;slug&gt;</code>, and the token they get
+            back is bound to that one portal. Leave blank to use the tenant slug.
+          </Hint>
+        </Field>
+      </Card>
+
+      {/* Who the build is for. Not cosmetic: a single-audience build omits the
+          other side's screens entirely. */}
+      <Card>
+        <SectionTitle>Audience</SectionTitle>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {([
+            ["both", "Staff and customers", "One app. Sign-in offers a password for your team and an emailed code for customers, and the shell follows whoever signed in."],
+            ["staff", "Staff only", "A mobile Work Center — cases, My Work, Resolve. No customer screens are generated."],
+            ["customer", "Customers only", "Your clients raise and track their own requests. No Cases list and no Resolve button in the build at all."],
+          ] as const).map(([value, label, detail]) => (
+            <label key={value} style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer",
+                                        padding: "10px 12px", borderRadius: 6,
+                                        border: `1px solid ${config.audience === value ? "var(--accent)" : "var(--border-subtle)"}`,
+                                        background: config.audience === value ? "var(--ac-dim)" : "transparent" }}>
+              <input type="radio" name="audience" checked={config.audience === value}
+                     onChange={() => setConfig({ ...config, audience: value })}
+                     style={{ marginTop: 3, accentColor: "var(--accent)" }} />
+              <span>
+                <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{label}</span>
+                <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5, marginTop: 2 }}>{detail}</span>
+              </span>
+            </label>
+          ))}
+        </div>
       </Card>
 
       {/* Case types */}

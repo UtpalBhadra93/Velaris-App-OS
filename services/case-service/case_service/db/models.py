@@ -5107,6 +5107,10 @@ class PortalCustomerModel(Base):
     verified:        Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
     otp_code:        Mapped[str | None]      = mapped_column(String(64), nullable=True)   # SHA-256 hash
     otp_expires_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Wrong guesses against the current code (mig 164). Six digits is a small
+    #: space and `verify-otp` is anonymous, so the code is bounded by this
+    #: rather than by how fast someone can send requests.
+    otp_attempts:    Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
     notify_email:    Mapped[bool]            = mapped_column(Boolean, nullable=False, default=True)  # P4 (mig 116)
     created_at:      Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
     last_active_at:  Mapped[datetime]        = mapped_column(DateTime(timezone=True), default=_utcnow)

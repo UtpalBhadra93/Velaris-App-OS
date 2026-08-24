@@ -156,6 +156,10 @@ class PortalConfig(BaseModel):
     logo_text: str
     enabled: bool
     logo_url: Optional[str] = None   # P5: real uploaded logo
+    #: Whether a customer may create their own account. Published because the
+    #: sign-in screen has to know whether to offer it — an app that shows the
+    #: option and then gets refused is worse than one that never showed it.
+    self_registration: bool = True
     case_types: list[dict]
 
 
@@ -199,6 +203,10 @@ class PortalSettingsUpdate(BaseModel):
     # and defend, so it is opt-in and silence means off.
     voice_input: Optional[bool] = None
     voice_consent_text: Optional[str] = None
+    # Whether the public may create their own customer account. Off means staff
+    # create them instead — see `POST /portal/{slug}/customers`, which is the
+    # only other path to an account.
+    self_registration: Optional[bool] = None
 
 
 # SD-5 / SD-2 schemas
@@ -220,6 +228,43 @@ def _portal_settings(tenant: TenantModel) -> dict:
     return (tenant.settings or {}).get("portal", {})
 
 
+async def _portal_case_types(session: AsyncSession, tenant: TenantModel) -> list[CaseTypeModel]:
+    """The case types this portal may show, and no other tenant's.
+
+    `portal_enabled` says a case type is customer-facing; it does not say
+    *whose* customers. Without the tenant rule the public, unauthenticated
+    portal config listed another tenant's case type by name, and `submit`
+    accepted it — a tenant boundary crossed from an endpoint that needs no
+    credentials at all.
+
+    A NULL `tenant_id` is platform-shared and stays visible to everyone, which
+    is `same_tenant`'s documented rule rather than an exception invented here.
+    """
+    from case_service.tenancy.identity import same_tenant
+
+    rows = (await session.execute(
+        select(CaseTypeModel).where(CaseTypeModel.portal_enabled == True)  # noqa: E712
+    )).scalars().all()
+    mine = [ct for ct in rows if await same_tenant(session, ct.tenant_id, tenant.id)]
+
+    allowed_ids = _portal_settings(tenant).get("allowed_case_type_ids", [])
+    if allowed_ids:
+        mine = [ct for ct in mine if str(ct.id) in allowed_ids]
+    return mine
+
+
+async def _portal_case_type_or_refuse(
+    session: AsyncSession, tenant: TenantModel, case_type_id,
+) -> CaseTypeModel:
+    """One case type, refused identically whether it is missing, not
+    portal-enabled, not allowed here, or another tenant's — so the answer
+    cannot be used to discover what exists elsewhere."""
+    for ct in await _portal_case_types(session, tenant):
+        if str(ct.id) == str(case_type_id):
+            return ct
+    raise coded(400, PORTAL_CASETYPE_400, "Case type not available for portal submission")
+
+
 def _get_portal_config(tenant: TenantModel, case_types: list) -> dict:
     ps = _portal_settings(tenant)
     return {
@@ -230,6 +275,10 @@ def _get_portal_config(tenant: TenantModel, case_types: list) -> dict:
         "logo_text": ps.get("logo_text", tenant.name),
         "enabled": ps.get("enabled", False),
         "logo_url": f"/api/v1/portal/{tenant.slug}/logo" if ps.get("logo_key") else None,
+        # Defaults to True so an existing portal keeps behaving as it did — this
+        # setting arrived after self-registration was already live, and a
+        # missing key must not silently close a door that was open.
+        "self_registration": ps.get("self_registration", True),
         "case_types": case_types,
     }
 
@@ -251,11 +300,7 @@ async def get_portal_config(
     if not ps.get("enabled", False):
         raise coded(403, PORTAL_INACTIVE_403, "This portal is not currently active")
 
-    allowed_ids = ps.get("allowed_case_type_ids", [])
-    q = select(CaseTypeModel).where(CaseTypeModel.portal_enabled == True)  # noqa: E712
-    if allowed_ids:
-        q = q.where(CaseTypeModel.id.in_([uuid.UUID(x) for x in allowed_ids]))
-    cts = (await session.execute(q)).scalars().all()
+    cts = await _portal_case_types(session, tenant)
 
     ct_list = [{"id": str(ct.id), "name": ct.name, "description": ct.description,
                 "default_priority": ct.default_priority} for ct in cts]
@@ -280,13 +325,7 @@ async def submit_case(
     if not ps.get("enabled", False):
         raise coded(403, PORTAL_INACTIVE_403, "This portal is not currently active")
 
-    ct = await session.get(CaseTypeModel, body.case_type_id)
-    if not ct or not ct.portal_enabled:
-        raise coded(400, PORTAL_CASETYPE_400, "Case type not available for portal submission")
-
-    allowed_ids = ps.get("allowed_case_type_ids", [])
-    if allowed_ids and str(body.case_type_id) not in allowed_ids:
-        raise coded(400, PORTAL_CASETYPE_400, "Case type not allowed for this portal")
+    ct = await _portal_case_type_or_refuse(session, tenant, body.case_type_id)
 
     # Portal v2 P2 — idempotent replay: same client_ref ⇒ same case.
     from case_service.db.models import PortalSubmissionRefModel as _Ref
@@ -1116,6 +1155,9 @@ async def list_portal_tenants(
             "allowed_case_type_ids": ps.get("allowed_case_type_ids", []),
             "voice_input": ps.get("voice_input", False),
             "voice_consent_text": ps.get("voice_consent_text", ""),
+            # Default True — the setting arrived after self-registration was
+            # already live, so an untouched portal keeps accepting sign-ups.
+            "self_registration": ps.get("self_registration", True),
             "portal_case_type_count": len(ct_count),
         })
     return result
@@ -1151,6 +1193,8 @@ async def update_portal_settings(
         portal["voice_input"] = body.voice_input
     if body.voice_consent_text is not None:
         portal["voice_consent_text"] = body.voice_consent_text.strip() or None
+    if body.self_registration is not None:
+        portal["self_registration"] = body.self_registration
 
     settings["portal"] = portal
     tenant.settings = settings
@@ -1897,9 +1941,9 @@ async def portal_case_type_form(
     )).scalar_one_or_none()
     if not tenant or not _portal_settings(tenant).get("enabled", False):
         raise coded(404, PORTAL_NOTFOUND_404, "Portal not found")
-    ct = await session.get(CaseTypeModel, case_type_id)
-    if not ct or not ct.portal_enabled:
-        raise coded(404, PORTAL_NOTFOUND_404, "Case type not found")
+    # Same rule as the config listing and submit: a form belongs to a case type,
+    # and a case type belongs to a tenant.
+    ct = await _portal_case_type_or_refuse(session, tenant, case_type_id)
     form_id = _portal_display(ct).get("form_id")
     if not form_id:
         return {"fields": []}

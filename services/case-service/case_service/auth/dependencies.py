@@ -315,7 +315,7 @@ def require_role(*roles: str) -> Callable:
         "require_role() was retired in Phase 4 of privilege-based authorization. "
         f"Use hxguard.guard('<action>') instead of require_role({roles!r}) — see "
         "case_service/hxguard/actions.py for the registry, and "
-        "docs/Future/privilege-based-authorization.md for why."
+        "docs/Future/Done/privilege-based-authorization.md for why."
     )
 
 
