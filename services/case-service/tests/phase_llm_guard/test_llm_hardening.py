@@ -14,9 +14,9 @@ import asyncio
 
 import pytest
 
-from case_service.hxnexus import egress_audit
-from case_service.hxnexus.factory import GuardedBackend
-from case_service.hxnexus.guard import PromptTooLargeError
+from velaris_shared.llm import egress_audit
+from velaris_shared.llm.factory import GuardedBackend
+from velaris_shared.llm.guard import PromptTooLargeError
 
 
 class _FakeBackend:

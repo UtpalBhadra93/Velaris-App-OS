@@ -20,8 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from case_service.hxnexus import factory
-from case_service.hxnexus.ollama_backend import OllamaBackend
+from velaris_shared.llm import factory
+from velaris_shared.llm.ollama_backend import OllamaBackend
 
 
 def _settings(**over) -> SimpleNamespace:
@@ -50,7 +50,7 @@ def with_settings(monkeypatch):
     """
     def _apply(**over):
         s = _settings(**over)
-        monkeypatch.setattr("case_service.config.get_settings", lambda: s)
+        monkeypatch.setattr("velaris_shared.config.get_settings", lambda: s)
         return s
     return _apply
 

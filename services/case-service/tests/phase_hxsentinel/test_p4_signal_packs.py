@@ -15,7 +15,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseOutcomeLabelModel,
     CaseRiskSignalModel,
@@ -138,7 +138,7 @@ class TestPackEvaluation:
         assert not any(f.rule_key.startswith("pack:") for f in active)
 
     async def test_uninstall_retires_pack_findings_and_releases_hold(self, session, client):
-        from case_service.db.models import (
+        from velaris_shared.db.models import (
             CaseRiskConfigModel, CaseRiskFindingModel, CaseRiskHoldModel)
         # Gate on 'high' so the pack finding opens a hold.
         session.add(CaseRiskConfigModel(tenant_id="default", verify_gate_severity="high",

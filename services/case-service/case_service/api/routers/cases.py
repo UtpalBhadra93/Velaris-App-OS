@@ -37,21 +37,21 @@ from case_service.api.schemas.cases import (
 )
 from case_service.core import case_lifecycle
 from case_service.core.outbound_rules import fire_outbound_rules
-from case_service.db import repository as repo
+from velaris_shared.db import repository as repo
 from case_service.integrations.webhook_dispatcher import (
     dispatch_event as _dispatch_webhook,
     build_case_event_payload as _webhook_payload,
 )
-from case_service.process_mining import event_logger
+from velaris_shared.process_mining import event_logger
 from case_service.realtime.publisher import publish_case_event, publish_assignment_event
-from case_service.db.session import get_session
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.hxstream.emitter import emit_trace
+from velaris_shared.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.hxstream.emitter import emit_trace
 from case_service.case_vars import service as case_vars
 from sqlalchemy import select as sa_select
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     CASE_AI_ACTION_400,
     CASE_GUARD_403,
     CASE_NOTFOUND_404,
@@ -311,7 +311,7 @@ async def create_case(
             # companion so a case is driven from birth; adopting a case
             # mid-flight also works, but starting late means the stages it
             # already passed were driven by the synchronous path instead.
-            from case_service.config import get_settings as _gs
+            from velaris_shared.config import get_settings as _gs
 
             if (
                 _gs().temporal_interpreter_enabled
@@ -343,8 +343,8 @@ async def create_case(
 
     # Generate human-readable case number: HLX-{TYPE}-{NNNNNN}
     try:
-        from case_service.config import get_settings
-        from case_service.db.backends import get_backend
+        from velaris_shared.config import get_settings
+        from velaris_shared.db.backends import get_backend
         # Per-dialect monotonic counter (PG sequence / MySQL atomic counter row).
         seq_val = await get_backend(get_settings().database_backend).next_case_seq(session)
         prefix = re.sub(r"[^A-Za-z]", "", case_type.name).upper()[:3].ljust(3, "X")
@@ -379,6 +379,25 @@ async def create_case(
     except Exception as _e:
         logger.warning("outbox dispatch failed for case %s: %s", case.id, _e)
 
+    # HxShield producer (roadmap #25). Three of its patterns —
+    # duplicate_case_flood, dos_submission and field_value_anomaly — match on
+    # `case_created` and nothing had ever written it, so they could not fire
+    # however many rules were enabled. The detector hook on log_security_event
+    # scores this; see hxshield/detector.py.
+    try:
+        from velaris_shared.db.security_events import log_security_event
+        await log_security_event(
+            session, event_type="case_created", severity="info",
+            user_id=user.user_id, resource_type="case", resource_id=str(case.id),
+            action="create", outcome="success",
+            ip_address=request.client.host if request.client else None,
+            details={"case_type_id": str(case.case_type_id),
+                     "tenant_id": user.tenant_id},
+        )
+    except Exception as _e:  # noqa: BLE001
+        # A detection producer must never cost a case its creation.
+        logger.warning("security event for case %s not recorded: %s", case.id, _e)
+
     return await repo.get_case_instance(session, case.id)
 
 
@@ -410,7 +429,7 @@ async def list_cases(
     # Case Variables Phase 3: indexed variable filters
     variable_filters: list[tuple[str, str]] = []
     if var:
-        from case_service.db.models import CaseTypeVariableModel, VariableNamespaceModel
+        from velaris_shared.db.models import CaseTypeVariableModel, VariableNamespaceModel
         from case_service.case_vars.service import NAME_RE, _effective_sensitivity
         for raw_filter in var[:10]:                      # sane cap
             full_key, sep, value = raw_filter.partition(":")
@@ -441,12 +460,12 @@ async def list_cases(
     # user has a relationship with (owner / tuple / allowed case type).
     # Admin, manager, and "*"-scoped access groups see everything.
     accessible_to_user = None
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     if (get_settings().hxguard_case_enforcement or "shadow").lower() == "enforce" \
             and not (hxguard.user_allows(user, "casework.sensitive.read")
                      or "superadmin" in (user.roles or [])
                      or "manager" in (user.roles or [])):
-        from case_service.db.models import AccessGroupModel, OperatorAccessGroupModel
+        from velaris_shared.db.models import AccessGroupModel, OperatorAccessGroupModel
         allowed_lists = (await session.execute(
             sa_select(AccessGroupModel.allowed_case_type_ids)
             .join(OperatorAccessGroupModel,
@@ -485,7 +504,7 @@ async def get_case(
 ):
     case = await _get_case_or_404(session, case_id)
     # HxGuard Phase B pilot (shadow by default — see hxguard_case_enforcement)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     # case_vars façade read: typed variables (sensitivity-redacted in the
     # service) merged over the case.data blob. SD-4 redaction maps still
@@ -512,12 +531,12 @@ async def update_case_data(
     case = await _get_case_or_404(session, case_id)
     # HxGuard Phase B pilot — also closes the pre-existing unauthenticated-
     # mutation gap (route previously had NO auth dependency)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     # Phase 4 guard: a promoted key's blob value is no longer served by the
     # façade — writing it here would vanish silently. Reject with a pointer.
     if body.data:
-        from case_service.db.models import CaseTypeVariableModel
+        from velaris_shared.db.models import CaseTypeVariableModel
         promoted = (await session.execute(
             sa_select(CaseTypeVariableModel.promoted_source, CaseTypeVariableModel.full_key)
             .where(CaseTypeVariableModel.case_type_id == case.case_type_id)
@@ -628,7 +647,7 @@ async def change_status(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     await apply_status_change(session, case_id, body.status, body.actor_id, body.reason)
     await _signal_lifecycle(request, case_id, "status_changed", {"status": body.status})
@@ -688,7 +707,7 @@ async def change_priority(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     await apply_priority_change(session, case_id, body.priority, body.actor_id)
     return await repo.get_case_instance(session, case_id)
@@ -704,7 +723,7 @@ async def transition_stage(
 ):
     case = await _get_case_or_404(session, case_id)
     # same case-level check the MCP case_advance_stage tool applies
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
 
     # HxSentinel verify gate (opt-in per tenant): refuse a manual advance while
@@ -772,7 +791,7 @@ async def resolve_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     case = await _get_case_or_404(session, case_id)
     prev = case.status
@@ -819,7 +838,7 @@ async def close_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     case = await _get_case_or_404(session, case_id)
     prev = case.status
@@ -845,7 +864,7 @@ async def reopen_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     case = await _get_case_or_404(session, case_id)
     prev = case.status
@@ -890,7 +909,7 @@ async def cancel_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     case = await _get_case_or_404(session, case_id)
     prev = case.status
@@ -931,7 +950,7 @@ async def create_assignment(
     HTTP surface is for operators and requires case.update on the case.
     """
     await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
 
     assignment = await repo.create_assignment(
@@ -970,7 +989,7 @@ async def list_case_assignments(
 ):
     """List all assignments for a case."""
     await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     return await repo.get_assignments_for_case(session, case_id)
 
@@ -988,7 +1007,7 @@ async def get_case_history(
 ):
     await _get_case_or_404(session, case_id)
     # same posture as get_case — a timeline reveals as much as the case itself
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     return await repo.get_audit_log(session, case_id)
 
@@ -1010,7 +1029,7 @@ async def add_relationship(
     await _get_case_or_404(session, case_id)
     await _get_case_or_404(session, body.target_case_id)
     # mirror of the MCP case_link tool: update on source, read on target
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     await hxguard.require_case(session, user, "case.read", body.target_case_id)
     rel = await repo.create_relationship(
@@ -1046,7 +1065,7 @@ async def list_relationships(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     return await repo.get_relationships(session, case_id)
 
@@ -1065,7 +1084,7 @@ async def create_child_case(
 ):
     """Create a child case linked to the parent."""
     parent = await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
     body.parent_case_id = case_id
     case_type = await repo.get_case_type(session, body.case_type_id)
@@ -1115,7 +1134,7 @@ async def list_child_cases(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     children, _ = await repo.search_case_instances(
         session,
@@ -1141,7 +1160,7 @@ async def _auto_advance_if_complete(
     non-advance, but only one of them is something a human must act on.
     """
     from sqlalchemy import select
-    from case_service.db.models import CaseStepCompletionModel
+    from velaris_shared.db.models import CaseStepCompletionModel
 
     stages = sorted(
         case_type_def.get("stages", []),
@@ -1244,7 +1263,7 @@ async def complete_step(
     """
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy import select
-    from case_service.db.models import CaseStepCompletionModel, CaseTypeModel
+    from velaris_shared.db.models import CaseStepCompletionModel, CaseTypeModel
 
     case = await _get_case_or_404(session, case_id)
 
@@ -1255,7 +1274,7 @@ async def complete_step(
     ct_def = ct.definition_json if ct else {}
 
     # Validate lock ownership — if a live lock exists it must belong to this operator
-    from case_service.db.models import CaseAssignmentModel
+    from velaris_shared.db.models import CaseAssignmentModel
     now = datetime.now(timezone.utc)
     active_assignment = (await session.execute(
         select(CaseAssignmentModel).where(
@@ -1392,7 +1411,7 @@ async def activate_step(
     script_task → evaluate inline rule expression, auto-complete
     """
     from sqlalchemy import select
-    from case_service.db.models import CaseTypeModel, CaseStepCompletionModel
+    from velaris_shared.db.models import CaseTypeModel, CaseStepCompletionModel
 
     case = await _get_case_or_404(session, case_id)
     ct = (await session.execute(
@@ -1499,7 +1518,7 @@ async def activate_step(
             raise HTTPException(400, "subprocess step has no process_definition_id configured")
         try:
             from case_service.hxfusion.engine import start_instance as _start_fusion
-            from case_service.db.models import ProcessDefinitionModel
+            from velaris_shared.db.models import ProcessDefinitionModel
             defn = await session.get(ProcessDefinitionModel, uuid.UUID(process_def_id))
             if not defn or defn.status != "active":
                 raise coded(400, CASE_PROCDEF_400, f"Process definition {process_def_id} not found or inactive")
@@ -1600,8 +1619,8 @@ async def get_case_detail(
     """
     from sqlalchemy import select as _select
 
-    from case_service import hxguard
-    from case_service.db.models import CaseAssignmentModel
+    from velaris_shared import hxguard
+    from velaris_shared.db.models import CaseAssignmentModel
 
     case = await _get_case_or_404(session, case_id)
     await hxguard.require_case(session, user, "case.read", case_id)
@@ -1647,7 +1666,7 @@ async def get_interpreter_state(
     which is the normal state for every case type that has not opted in, and
     must not read as a fault.
     """
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
 
     client = getattr(request.app.state, "temporal_client", None)
@@ -1677,7 +1696,7 @@ async def get_case_event_stream(
     """
     from case_service.core import event_store
 
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
 
     case = await repo.get_case_instance(session, case_id)
@@ -1717,7 +1736,7 @@ async def verify_case_event_stream(
     """
     from case_service.core import event_store
 
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
 
     try:
@@ -1752,7 +1771,7 @@ async def sync_offline_variable_edits(
     # Offline sync WRITES case variables, so it needs the same relationship
     # check every other case-mutating route makes. Without it any
     # authenticated user could converge edits onto any case.
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
 
     edits = body.get("edits")
@@ -1777,7 +1796,7 @@ async def list_ai_action_proposals(
 ):
     """Proposals an `ai_action` step has produced for this case (#33)."""
     from case_service.core import ai_action
-    from case_service import hxguard
+    from velaris_shared import hxguard
 
     # Proposals carry model output derived from this case's data — a read of
     # the case by another name.
@@ -1815,8 +1834,8 @@ async def decide_ai_action_proposal(
     which is what makes the model's real accuracy measurable later.
     """
     from case_service.core import ai_action
-    from case_service import hxguard
-    from case_service.db.models import AIActionProposalModel
+    from velaris_shared import hxguard
+    from velaris_shared.db.models import AIActionProposalModel
 
     # Accepting or overriding writes a value into case variables — a case
     # update, and the human half of the §5.1 control. It must not be reachable
@@ -1928,7 +1947,7 @@ async def apply_rule_to_case(
     ``case.data.crm.account_status``; velaris.* projections are readable.
     """
     from case_service.core.rules_evaluator import evaluate_rule as _eval_rule
-    from case_service import hxguard
+    from velaris_shared import hxguard
 
     # HxGuard pilot: any authenticated user today, but the decision (and any
     # future tightening) lives in the PDP, not in this route.
@@ -2000,7 +2019,7 @@ async def _resolve_share_user(session, value: str):
     or email. Tuples must store the canonical user id (the JWT `sub` is the
     user UUID); a free-text subject would 'share' to nobody."""
     from sqlalchemy import func, or_
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     v = value.strip()
     target = None
     try:
@@ -2026,7 +2045,7 @@ async def _require_share_access(session, user, case_id: uuid.UUID, action: str) 
     Anti-oracle: a caller who cannot READ the case gets 404 (existence is
     not confirmed); 403 is reserved for callers who can read but lack the
     requested capability."""
-    from case_service import hxguard
+    from velaris_shared import hxguard
     subject = hxguard.subject_from_user(user)
     decision = await hxguard.check(session, subject, action, {"case_id": case_id})
     if decision.allow:
@@ -2053,7 +2072,7 @@ async def share_case(
     target = await _resolve_share_user(session, body.user_id)
     if target is None or not target.is_active:
         raise HTTPException(400, f"No user found for '{body.user_id}' — use a user id, username, or email")
-    from case_service.hxguard import tuples as hxg_tuples
+    from velaris_shared.hxguard import tuples as hxg_tuples
     await hxg_tuples.write_tuple(
         session, object_type="case", object_id=case_id,
         relation=body.relation, subject_type="user",
@@ -2074,14 +2093,14 @@ async def list_case_shares(
 ):
     await _get_case_or_404(session, case_id)
     await _require_share_access(session, user, case_id, "case.read")
-    from case_service.hxguard import tuples as hxg_tuples
+    from velaris_shared.hxguard import tuples as hxg_tuples
     rows = await hxg_tuples.list_tuples(
         session, object_type="case", object_id=case_id,
         relations={"viewer", "editor", "assignee"},
     )
     # Resolve subject UUIDs to usernames so the Sharing tab shows people,
     # not identifiers. Legacy/free-text subjects simply resolve to nothing.
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     subject_uuids = []
     for t in rows:
         try:
@@ -2114,7 +2133,7 @@ async def unshare_case(
 ):
     await _get_case_or_404(session, case_id)
     await _require_share_access(session, user, case_id, "case.share")
-    from case_service.hxguard import tuples as hxg_tuples
+    from velaris_shared.hxguard import tuples as hxg_tuples
     # Accept id/username/email like share; fall back to the raw value so
     # legacy free-text tuples stay removable.
     target = await _resolve_share_user(session, user_id)
@@ -2143,10 +2162,10 @@ async def list_step_completions(
 ):
     """Return all step completions for a case, optionally filtered by stage."""
     from sqlalchemy import select
-    from case_service.db.models import CaseStepCompletionModel
+    from velaris_shared.db.models import CaseStepCompletionModel
 
     await _get_case_or_404(session, case_id)
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     stmt = select(CaseStepCompletionModel).where(
         CaseStepCompletionModel.case_id == case_id
@@ -2179,7 +2198,7 @@ async def get_my_task(
     Returns null (204 body) when no active assignment exists for this operator.
     """
     from sqlalchemy import select
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseAssignmentModel, CaseTypeModel, CaseStepCompletionModel
     )
 
@@ -2274,7 +2293,7 @@ async def unlock_step(
     the lock from blocking colleagues for the full TTL.
     """
     from sqlalchemy import select
-    from case_service.db.models import CaseAssignmentModel
+    from velaris_shared.db.models import CaseAssignmentModel
 
     assignment = (await session.execute(
         select(CaseAssignmentModel).where(

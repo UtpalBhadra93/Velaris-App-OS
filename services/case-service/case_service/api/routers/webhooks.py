@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import WebhookSubscriptionModel, WebhookDeliveryModel
-from case_service.auth.dependencies import get_current_user
-from case_service.db.session import get_session
+from velaris_shared.db.models import WebhookSubscriptionModel, WebhookDeliveryModel
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db.session import get_session
 from case_service.integrations.webhook_dispatcher import CASE_EVENTS
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"], dependencies=[Depends(get_current_user)])

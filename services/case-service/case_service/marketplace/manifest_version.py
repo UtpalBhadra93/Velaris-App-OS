@@ -159,3 +159,53 @@ def effective_permissions(manifest: dict[str, Any]) -> list[dict[str, str]]:
     if version >= 2:
         return validate_v2_permissions(manifest)
     return translate_v1_permissions(manifest)
+
+
+# ── Enforcement (#29) ─────────────────────────────────────────────────────────
+#
+# Validating a declaration and enforcing it are different jobs, and until
+# 2026-08-24 only the first one existed: `effective_permissions` resolved the
+# block at install and the result was attached to an in-memory dict that nobody
+# persisted and nothing read. A package could declare `viewer` on `case` and
+# still reach everything its installer's capability grant allowed.
+#
+# The declaration is a **ceiling**. The operator's grant decides what is on
+# offer; the manifest decides what the package is allowed to accept. A call
+# needs both, and neither can widen the other.
+
+#: Which declared relations imply the right to READ an object. All three do —
+#: an assignee and an editor can obviously see what they act on. Listed rather
+#: than assumed so that adding a write-only relation later cannot silently
+#: become a read.
+READ_RELATIONS = {"assignee", "editor", "viewer"}
+
+#: Relations that imply the right to CHANGE an object. The broker is read-only
+#: today, so nothing consults this yet; it is here so the write surface, when it
+#: arrives, cannot be built without deciding the question.
+WRITE_RELATIONS = {"assignee", "editor"}
+
+
+def declares_access(
+    permissions: list[dict[str, str]] | None,
+    object_type: str,
+    *,
+    write: bool = False,
+) -> bool:
+    """Does this package's own manifest permit touching `object_type`?
+
+    `None` means the install predates enforcement: there is no declaration to
+    check, so this is not the layer that refuses. Say yes and let the
+    capability grant decide, exactly as it did before. An upgrade must not
+    revoke access from packages that are working today.
+
+    An empty list is NOT the same thing. It means the package was read and
+    declared nothing, which is a real answer: it may touch nothing.
+    """
+    if permissions is None:
+        return True
+    wanted = WRITE_RELATIONS if write else READ_RELATIONS
+    return any(
+        entry.get("object_type") == object_type
+        and entry.get("relation") in wanted
+        for entry in permissions
+    )

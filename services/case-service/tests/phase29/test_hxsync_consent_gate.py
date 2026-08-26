@@ -31,7 +31,7 @@ import uuid
 import pytest
 
 from case_service.compliance import consent as c
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
     SyncDestinationModel,
@@ -233,7 +233,7 @@ class TestReporting:
         """"We stopped sharing their data" must be a record, not an assertion."""
         from sqlalchemy import select
 
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
 
         await _case(session, SUBJECT)
         dest = await _dest(session, gated=True)
@@ -252,7 +252,7 @@ class TestReporting:
     async def test_no_audit_row_when_nothing_was_dropped(self, session, adapter):
         from sqlalchemy import select
 
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
 
         await _case(session, None)
         dest = await _dest(session, gated=True)

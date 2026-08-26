@@ -26,19 +26,19 @@ from datetime import timedelta, timezone
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
-from case_service.auth.dependencies import (
+from velaris_shared.auth.dependencies import (
     _bearer_scheme,
     _enrich_with_access_group,
     _security_check,
     get_current_user,
 )
-from case_service.auth.jwt_handler import (
+from velaris_shared.auth.jwt_handler import (
     create_dev_token,
     decode_jwt_token,
     extract_user_from_claims,
 )
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import MCPTokenGrantModel, _utcnow
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import MCPTokenGrantModel, _utcnow
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def mint_scoped_token(
     user: AuthenticatedUser, tools: list[str], ttl_minutes: int, label: str | None,
 ) -> tuple[str, MCPTokenGrantModel]:
     """Build the grant row + signed JWT. Caller persists the row."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     settings = get_settings()
 
     grant_id = uuid.uuid4()
@@ -82,7 +82,7 @@ async def get_mcp_caller(
     """Auth dependency for the MCP transport: accepts normal user tokens
     (identical to get_current_user) AND scoped mcp tokens (nowhere else valid).
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     settings = get_settings()
 
     if credentials is None:
@@ -123,7 +123,7 @@ async def get_mcp_caller(
 
     # grant row = server-side truth: exists, not revoked, not expired.
     # Checked on EVERY call so revocation is instant.
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
     async with get_session_factory()() as session:
         grant = await session.get(MCPTokenGrantModel, grant_id)
         if grant is None or grant.revoked:

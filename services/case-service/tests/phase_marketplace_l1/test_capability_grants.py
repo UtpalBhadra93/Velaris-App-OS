@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ConnectorRegistryModel,
     MarketplaceCapabilityGrantModel,
     MarketplaceInstallModel,
@@ -281,9 +281,9 @@ class TestGrantApproval:
         assert r.status_code == 409
 
     async def test_grant_endpoints_are_tenant_scoped_404(self, client, session):
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
-        from case_service.db.models import UserDirectoryModel
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
+        from velaris_shared.db.models import UserDirectoryModel
         grant = await self._pending(client, session)
         s = get_settings()
         grant_id = str(grant.id)   # capture before expire_all (MissingGreenlet gotcha)
@@ -310,8 +310,8 @@ class TestGrantApproval:
         assert r.status_code == 404
 
     async def test_grant_endpoints_admin_only(self, client, session):
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
         grant = await self._pending(client, session)
         s = get_settings()
         dev = create_dev_token(

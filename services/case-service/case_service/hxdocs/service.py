@@ -11,7 +11,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     HxDocsSpaceModel,
     HxDocsArticleModel,
     FormDefinitionModel,
@@ -257,7 +257,7 @@ async def generate_article_content(
 
     # Try LLM generation
     try:
-        from case_service.hxnexus.factory import get_llm_backend
+        from velaris_shared.llm.factory import get_llm_backend
         llm = get_llm_backend()
         prompt = f"""You are a technical documentation writer for a BPM platform called Velaris.
 Write a comprehensive documentation article about: {concept}

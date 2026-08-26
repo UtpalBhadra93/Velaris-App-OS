@@ -24,7 +24,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 
-from case_service.config import get_settings
+from velaris_shared.config import get_settings
 from case_service.marketplace.sandbox import (
     DROPPED_CAPS,
     _SECCOMP_PROFILE_PATH,
@@ -136,6 +136,7 @@ def provision_app_container(
     port: int | None = None,
     pids_limit: int | None = None,
     tmpfs: dict[str, str] | None = None,
+    mem_limit: str | None = None,
     labels: dict[str, str] | None = None,
 ) -> str:
     """Start the publisher's container with the full hardening posture on the
@@ -146,12 +147,15 @@ def provision_app_container(
     marketplace/egress.py). A domain grant without that path available is
     refused fail-closed, exactly as before the gateway existed.
 
-    `pids_limit` and `tmpfs` are overrides for the bot runner, whose browser
-    profile needs a higher process cap and larger writable scratch than an L2
-    app. **Defaults are unchanged**, so an existing app is unaffected, and the
-    override is deliberately not `read_only=False`: a browser needs writable
-    directories, not a writable root filesystem, and unlocking the rootfs to get
-    them would give up the immutability for the whole container.
+    `pids_limit`, `tmpfs` and `mem_limit` are overrides for the bot runner, whose
+    browser profile needs a higher process cap, larger writable scratch, and a
+    memory ceiling above that scratch — **tmpfs pages count against the
+    container's own memory cgroup**, so a profile handed 768m of tmpfs under a
+    512m limit can be OOM-killed by using what it was given. **Defaults are
+    unchanged**, so an existing app is unaffected, and the override is
+    deliberately not `read_only=False`: a browser needs writable directories, not
+    a writable root filesystem, and unlocking the rootfs to get them would give
+    up the immutability for the whole container.
 
     Returns the docker container id. Every failure raises Layer2Error.
     """
@@ -200,7 +204,7 @@ def provision_app_container(
         name=f"velaris-app-{row_id[:12]}",
         command=declared_command,        # manifest-declared, admin-reviewed
         environment=env,
-        mem_limit=settings.marketplace_l2_mem_limit,
+        mem_limit=mem_limit or settings.marketplace_l2_mem_limit,
         cpu_quota=settings.marketplace_l2_cpu_quota,
         pids_limit=pids_limit or CONTAINER_PIDS_LIMIT,
         user="65534",

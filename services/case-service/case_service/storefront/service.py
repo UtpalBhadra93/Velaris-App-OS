@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     StorefrontInventoryLogModel, StorefrontProductVariantModel,
     StorefrontPromotionModel, StorefrontPromotionUseModel,
 )

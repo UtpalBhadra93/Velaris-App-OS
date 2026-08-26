@@ -1,0 +1,59 @@
+# ═══════════════════════════════════════════════════════════════════
+# Velaris hxmigrate-service — extracted from case-service (roadmap 13c-e)
+# ═══════════════════════════════════════════════════════════════════
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# ── Build stage ──────────────────────────────────────────────────
+FROM base AS builder
+# Database driver. The DB SDK is a BYO model: asyncpg (PostgreSQL) is a core
+# dependency, every other backend is an extra. Build with
+#     --build-arg DB_EXTRAS="[mysql]"
+# for a MySQL or MariaDB install. Empty by default, so the image built
+# today is byte-for-byte the image built yesterday.
+ARG DB_EXTRAS=""
+
+# Build context is the REPOSITORY ROOT: this service depends on
+# `velaris-shared` (services/_shared), a path dependency a narrower context
+# cannot see. Install it first so pip resolves the requirement from what is
+# already installed rather than reaching for an index.
+COPY services/_shared /app/services/_shared
+RUN pip install --break-system-packages -e /app/services/_shared
+
+COPY services/hxmigrate-service /app/services/hxmigrate-service
+RUN pip install --break-system-packages -e "/app/services/hxmigrate-service${DB_EXTRAS}"
+
+# ── Runtime stage ────────────────────────────────────────────────
+FROM base AS runtime
+
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /app /app
+
+RUN groupadd -r velaris && useradd -r -g velaris -d /app velaris
+USER velaris
+
+EXPOSE 8204
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8204/health')" || exit 1
+
+# Same reasoning as case-service: uvicorn honours X-Forwarded-Proto only from a
+# trusted source, and its default trust list is loopback. In a bridge network
+# the gateway arrives on a container address, so set FORWARDED_ALLOW_IPS to it.
+ENV FORWARDED_ALLOW_IPS=127.0.0.1
+
+ENTRYPOINT ["uvicorn", "hxmigrate_service.main:app", \
+    "--host", "0.0.0.0", \
+    "--port", "8204", \
+    "--proxy-headers", \
+    "--workers", "2", \
+    "--limit-concurrency", "200", \
+    "--timeout-keep-alive", "30"]

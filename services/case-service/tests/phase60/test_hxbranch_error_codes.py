@@ -15,8 +15,8 @@ import uuid
 
 import pytest
 
-from case_service.core import error_codes
-from case_service.db.models import ArtifactBranchModel, EnvironmentRegistryModel
+from velaris_shared.core import error_codes
+from velaris_shared.db.models import ArtifactBranchModel, EnvironmentRegistryModel
 
 
 def _code(resp) -> str | None:
@@ -24,8 +24,8 @@ def _code(resp) -> str | None:
 
 
 def _headers(user_id: str, roles: list[str] | None = None) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
     s = get_settings()
     token = create_dev_token(
         user_id=user_id, username=f"u-{user_id[:8]}", roles=roles or ["designer"],

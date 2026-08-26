@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseInstanceVariableModel,
     DocumentModel,
@@ -341,7 +341,7 @@ async def test_gate_blocks_a_real_advance_with_no_seeded_signals(session, client
     Every other gate test hand-inserts the subject case's signals, so none of
     them would notice if extraction never ran on a live case.
     """
-    from case_service.db.models import CaseRiskConfigModel
+    from velaris_shared.db.models import CaseRiskConfigModel
     from tests.conftest import create_case, deploy_case_type
 
     ct = await deploy_case_type(client, name=f"E2E {uuid.uuid4().hex[:6]}")
@@ -386,7 +386,7 @@ async def test_retiring_a_signal_is_audited_without_the_raw_value(session):
     that the link ever existed. The trail must survive — but it must not
     re-introduce the plaintext the hashing exists to avoid.
     """
-    from case_service.db.models import CaseAuditLogModel
+    from velaris_shared.db.models import CaseAuditLogModel
 
     cid = await seed_case(session)
     case = await session.get(CaseInstanceModel, cid)
@@ -422,7 +422,7 @@ async def test_retiring_a_signal_is_audited_without_the_raw_value(session):
 @pytest.mark.asyncio
 async def test_no_audit_row_when_nothing_is_retired(session):
     """Re-extracting an unchanged case must not spam the audit log."""
-    from case_service.db.models import CaseAuditLogModel
+    from velaris_shared.db.models import CaseAuditLogModel
 
     cid = await seed_case(session)
     case = await session.get(CaseInstanceModel, cid)

@@ -20,7 +20,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AccessGroupModel,
     HelixUserModel,
     IdentityGroupMappingModel,
@@ -171,7 +171,7 @@ class TestThroughTheAcs:
         # correctly refuses an assertion answering a request we never sent.
         from datetime import datetime, timedelta, timezone
 
-        from case_service.db.models import SamlAuthnRequestModel
+        from velaris_shared.db.models import SamlAuthnRequestModel
 
         for request_id in ("_authnrequest-1", "id-authnrequest-1"):
             session.add(SamlAuthnRequestModel(

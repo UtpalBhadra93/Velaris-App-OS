@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import update as sa_update, select
+from sqlalchemy import func, update as sa_update, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.api.schemas.cases import (
@@ -21,12 +21,16 @@ from case_service.api.schemas.cases import (
     CaseTypeListResponse,
     CaseTypeResponse,
 )
-from case_service.db import repository as repo
-from case_service.db.models import CaseTypeModel, CaseTypeMigrationModel
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import (
+    CaseInstanceModel,
+    CaseTypeModel,
+    CaseTypeMigrationModel,
+)
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/case-types", tags=["case-types"], dependencies=[Depends(get_current_user)])
 
@@ -238,10 +242,10 @@ async def _sync_lifecycle_docs(case_type_id: uuid.UUID) -> None:
     import logging
     log = logging.getLogger(__name__)
     try:
-        from case_service.db.session import get_engine
+        from velaris_shared.db.session import get_engine
         from sqlalchemy.ext.asyncio import AsyncSession as _Session, async_sessionmaker
         from case_service.hxdocs import service as docs_service
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.hxstream.emitter import emit_trace
 
         engine = get_engine()
         factory = async_sessionmaker(engine, class_=_Session, expire_on_commit=False)
@@ -284,6 +288,22 @@ async def delete_case_type(
         raise HTTPException(status_code=404, detail="Case type not found")
 
     if hard:
+        # A hard delete of a case type that still has cases violates the
+        # case_instances FK. Left unguarded that surfaced as an unhandled
+        # IntegrityError (500); the caller needs a conflict it can act on.
+        in_use = (await session.execute(
+            select(func.count())
+            .select_from(CaseInstanceModel)
+            .where(CaseInstanceModel.case_type_id == case_type_id)
+        )).scalar_one()
+        if in_use:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Case type still has {in_use} case(s); "
+                    "delete them first or soft-delete this case type"
+                ),
+            )
         await repo.delete_case_type(session, case_type_id)
     else:
         now = datetime.now(timezone.utc)

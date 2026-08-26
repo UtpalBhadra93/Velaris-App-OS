@@ -28,8 +28,8 @@ async def credential_expiry_monitor() -> None:
 
 
 async def _check_expiring_credentials() -> None:
-    from case_service.db.session import get_analytics_session_factory
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.session import get_analytics_session_factory
+    from velaris_shared.db.models import ConnectorRegistryModel
 
     cutoff = datetime.now(timezone.utc) + timedelta(days=WARN_DAYS)
     try:
@@ -50,7 +50,7 @@ async def _check_expiring_credentials() -> None:
                 )
                 # Emit HxStream warning event
                 try:
-                    from case_service.hxstream.emitter import emit_trace
+                    from velaris_shared.hxstream.emitter import emit_trace
                     await emit_trace(
                         event_type="credential_expiry_warning",
                         data={

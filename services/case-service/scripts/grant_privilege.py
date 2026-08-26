@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 async def _main() -> int:
     from sqlalchemy import select
 
-    from case_service.db.models import HelixUserModel
-    from case_service.db.session import get_session_factory
-    from case_service.hxguard.lockout import BOOTSTRAP_ACTION, _holders_of
+    from velaris_shared.db.models import HelixUserModel
+    from velaris_shared.db.session import get_session_factory
+    from velaris_shared.hxguard.lockout import BOOTSTRAP_ACTION, _holders_of
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--list", action="store_true",
@@ -70,7 +70,7 @@ async def _main() -> int:
         if args.make_superadmin:
             change, new_roles = "superadmin", sorted(set(user.roles or []) | {"superadmin"})
         elif args.grant:
-            from case_service.hxguard.actions import ACTIONS
+            from velaris_shared.hxguard.actions import ACTIONS
             if args.grant not in ACTIONS:
                 print(f"unknown action: {args.grant}", file=sys.stderr)
                 return 1
@@ -95,7 +95,7 @@ async def _main() -> int:
             user.is_superadmin = True
         user.is_active = True
 
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="breakglass_grant", severity="critical",
             user_id=str(user.id), action="breakglass", outcome="success",

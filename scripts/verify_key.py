@@ -121,6 +121,15 @@ def main() -> int:
 
     if last_verified_str and age_days < CHECK_INTERVAL:
         next_check = CHECK_INTERVAL - age_days
+        # A pending key must be said out loud EVERY startup, not once a week.
+        # The 7-day short circuit is why "registered but never activated" could
+        # stay invisible: the check that would have mentioned it only ran on the
+        # eighth day, and printed "valid" on the other seven.
+        if cache.get("status") == "pending":
+            print(yellow(f"  ⚠  Key {key_id} is registered but NOT activated "
+                         f"(re-checking in {next_check} day(s))."))
+            print(yellow("     Run ./activate-velaris.sh to activate it."))
+            return 0
         print(green(f"  ✓  Key {key_id} valid (next check in {next_check} day(s))."))
         return 0
 
@@ -149,6 +158,21 @@ def main() -> int:
             print(red(f"  ✗  Key {key_id} not found in registration server."))
             print(red("     Re-run ./setup-velaris.sh with a valid key."))
             return 1
+
+        if status == "pending":
+            # Registered, never activated. The platform still runs — refusing to
+            # start over a status column would be worse than the problem — but
+            # it must say so every time, because the old behaviour was to
+            # believe a hardcoded "active" and never mention it again.
+            cache["status"]        = "pending"
+            cache["last_verified"] = datetime.now(timezone.utc).isoformat()
+            cache["mac"]           = mac
+            write_cache(cache)
+            print(yellow(f"  ⚠  Key {key_id} is registered but NOT activated."))
+            print(yellow("     Your dashboard will show it as pending until you run:"))
+            print(yellow("       ./activate-velaris.sh"))
+            print(yellow("     That call sends the signed key; this check cannot."))
+            return 0
 
         if status == "active":
             cache["status"]        = "active"

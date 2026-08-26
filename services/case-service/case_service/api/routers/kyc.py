@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import ESignRequestModel, IdentityVerificationModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import ESignRequestModel, IdentityVerificationModel
+from velaris_shared.db.session import get_session
 from case_service.kyc import service as kyc_svc
 
 identity_router = APIRouter(prefix="/identity", tags=["kyc"])
@@ -200,7 +200,7 @@ async def list_all_verifications(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import IdentityVerificationModel
+    from velaris_shared.db.models import IdentityVerificationModel
     q = select(IdentityVerificationModel).order_by(IdentityVerificationModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(IdentityVerificationModel.status == status)
@@ -216,7 +216,7 @@ async def list_all_esign_requests(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import ESignRequestModel
+    from velaris_shared.db.models import ESignRequestModel
     q = select(ESignRequestModel).order_by(ESignRequestModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(ESignRequestModel.status == status)

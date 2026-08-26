@@ -21,12 +21,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.models import ReplayResultModel, ReplayRunModel
-from case_service.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import ReplayResultModel, ReplayRunModel
+from velaris_shared.db.session import get_session
 from case_service.hxreplay import runner
 
 router = APIRouter(prefix="/hxreplay", tags=["hxreplay"])

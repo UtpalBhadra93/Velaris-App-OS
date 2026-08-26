@@ -37,18 +37,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     AccessGroupModel,
     HelixUserModel,
     OperatorAccessGroupModel,
     ScimTokenModel,
     UserDirectoryModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.identity import provisioning, scim
-from case_service.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
 
 log = logging.getLogger(__name__)
 
@@ -657,7 +657,7 @@ async def create_scim_token(
     await session.commit()
     await session.refresh(row)
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="scim_token_minted", severity="medium",
         user_id=user.user_id, resource_type="scim_token", resource_id=str(row.id),
@@ -683,7 +683,7 @@ async def revoke_scim_token(
         row.revoked_at = datetime.now(timezone.utc)
         await session.commit()
 
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="scim_token_revoked", severity="medium",
             user_id=user.user_id, resource_type="scim_token", resource_id=str(token_id),

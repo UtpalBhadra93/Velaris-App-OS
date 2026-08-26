@@ -30,17 +30,17 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import require_role
-from case_service.middleware.endpoint_rate_limit import rate_limit
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     TenantModel,
     CaseInstanceModel,
     PortalCustomerModel,
     PortalCustomerCaseLinkModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 log = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def _generate_and_hash_otp() -> tuple[str, str]:
 
 async def _send_otp_email(session: AsyncSession, to_email: str, otp: str, purpose: str = "login") -> None:
     try:
-        from case_service.db.models import EmailAccountModel
+        from velaris_shared.db.models import EmailAccountModel
         from case_service.mail import EmailService
 
         account = (await session.execute(

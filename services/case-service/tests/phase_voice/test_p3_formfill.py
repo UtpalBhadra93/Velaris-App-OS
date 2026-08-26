@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseSessionModel,
     CaseTypeVariableModel,
     FormDefinitionModel,
@@ -125,7 +125,7 @@ async def _sealed_session(case_id: str, **kw) -> str:
 
 
 async def _case_row(case_id: str, db):
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
     return await db.get(CaseInstanceModel, uuid.UUID(case_id))
 
 
@@ -214,7 +214,7 @@ class TestAuth:
 
     async def test_extract_action_registered_as_write_prep(self):
         """Proposing values is preparation for a write — viewers are out."""
-        from case_service.hxguard.service import CASE_ACTIONS
+        from velaris_shared.hxguard.service import CASE_ACTIONS
         assert CASE_ACTIONS["voicefill.extract"] == {"assignee", "editor"}
 
 
@@ -403,7 +403,7 @@ class TestNeverWrites:
             "…but the case still holds its original value until a human saves"
 
     async def test_no_variable_rows_are_written(self, client):
-        from case_service.db.models import CaseInstanceVariableModel
+        from velaris_shared.db.models import CaseInstanceVariableModel
         await _tenant_ai({"case_qa": True})
         case_id = await _case(client)
         form = await _form(client)
@@ -422,7 +422,7 @@ class TestNeverWrites:
 
 class TestAudit:
     async def test_audit_names_fields_but_not_values(self, client):
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         await _tenant_ai({"case_qa": True})
         case_id = await _case(client)
         form = await _form(client)
@@ -663,7 +663,7 @@ class TestTenantIsolation:
         from fastapi import HTTPException
 
         from case_service.api.routers.voicefill import _get_case_or_404
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
         case_id = await _case(client)
         async with TestSessionFactory() as db:
@@ -681,7 +681,7 @@ class TestTenantIsolation:
     async def test_own_tenant_case_is_reachable(self, client):
         """The other half — the gate must not lock out the owning tenant."""
         from case_service.api.routers.voicefill import _get_case_or_404
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
         tenant_uuid = uuid.uuid4()
         case_id = await _case(client)

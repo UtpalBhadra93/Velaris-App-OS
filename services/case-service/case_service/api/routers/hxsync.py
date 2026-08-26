@@ -10,15 +10,15 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     SyncDestinationModel,
     SyncFieldMappingModel,
     SyncRedactionRuleModel,
     SyncRunModel,
 )
-from case_service.db.session import get_analytics_session as get_session
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_analytics_session as get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.hxsync import destinations as _dest_mod  # noqa: F401
 from case_service.hxsync.protocol import get_destination
 from case_service.hxsync.pipeline import run_sync
@@ -191,7 +191,7 @@ async def trigger_sync(
     await _dest_or_404(session, dest_id)
 
     async def _run_bg():
-        from case_service.db.session import get_analytics_session_factory
+        from velaris_shared.db.session import get_analytics_session_factory
         async with get_analytics_session_factory()() as bg_session:
             await run_sync(dest_id, bg_session)
 

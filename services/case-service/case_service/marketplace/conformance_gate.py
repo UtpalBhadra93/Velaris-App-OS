@@ -84,7 +84,7 @@ class GateDecision(NamedTuple):
 def gate_mode() -> str:
     """Current mode from settings, defaulting to `warn` on anything unrecognised."""
     try:
-        from case_service.config import settings
+        from velaris_shared.config import settings
         mode = str(getattr(settings, "marketplace_conformance_gate", MODE_WARN) or MODE_WARN).lower()
     except Exception:                                    # config unavailable → safest useful default
         return MODE_WARN
@@ -93,7 +93,7 @@ def gate_mode() -> str:
 
 async def get_window(session: AsyncSession):
     """The singleton window row, or None when the gate was never activated."""
-    from case_service.db.models import MarketplaceConformanceWindowModel
+    from velaris_shared.db.models import MarketplaceConformanceWindowModel
     r = await session.execute(select(MarketplaceConformanceWindowModel).limit(1))
     return r.scalar_one_or_none()
 
@@ -105,7 +105,7 @@ async def activate_window(session: AsyncSession, *, activated_by: str,
     Re-activating would hand every lagging publisher a fresh 60 days, quietly
     defeating the deadline, so an existing row is returned untouched.
     """
-    from case_service.db.models import MarketplaceConformanceWindowModel
+    from velaris_shared.db.models import MarketplaceConformanceWindowModel
     existing = await get_window(session)
     if existing is not None:
         return existing
@@ -145,7 +145,7 @@ async def latest_result(session: AsyncSession, tenant_id: str, package_id: str,
     Ordered by `created_at DESC, id DESC` — the id tiebreak matters because two
     runs can land in the same microsecond and "latest wins" must be stable.
     """
-    from case_service.db.models import MarketplaceConformanceModel as M
+    from velaris_shared.db.models import MarketplaceConformanceModel as M
     stmt = select(M).where(M.tenant_id == tenant_id, M.package_id == package_id)
     if package_version:
         stmt = stmt.where(M.package_version == package_version)
@@ -158,7 +158,7 @@ async def record_result(session: AsyncSession, *, tenant_id: str, package_id: st
                         package_version: str, result: dict,
                         run_id: uuid.UUID | None = None):
     """Persist one `run_structural` result. Caller owns the commit."""
-    from case_service.db.models import MarketplaceConformanceModel
+    from velaris_shared.db.models import MarketplaceConformanceModel
     row = MarketplaceConformanceModel(
         tenant_id=tenant_id, package_id=package_id, package_version=package_version,
         status="passed" if result.get("passed") else "failed",

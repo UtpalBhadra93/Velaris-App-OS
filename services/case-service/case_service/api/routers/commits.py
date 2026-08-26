@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import ComponentCommitModel, HxWorkStoryModel, HxWorkBoardModel
-from case_service.db.session import get_session
-from case_service.auth.dependencies import get_current_user
-from case_service.hxstream.emitter import emit_trace
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.db.models import ComponentCommitModel, HxWorkStoryModel, HxWorkBoardModel
+from velaris_shared.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.hxstream.emitter import emit_trace
+from velaris_shared.auth.models import AuthenticatedUser
 
 router = APIRouter(prefix="/commits", tags=["commits"])
 
@@ -90,7 +90,7 @@ async def _advance_stories(
     if not target_status:
         # Try HxNexus for semantic inference
         try:
-            from case_service.hxnexus.factory import generate_json
+            from velaris_shared.llm.factory import generate_json
             stories_q = (await session.execute(
                 select(HxWorkStoryModel)
                 .where(HxWorkStoryModel.board_id == board_row.id)

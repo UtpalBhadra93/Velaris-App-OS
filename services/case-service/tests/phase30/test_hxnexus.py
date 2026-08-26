@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel,
     CopilotConversationModel, CopilotMessageModel,
     DocumentChunkModel,
@@ -20,16 +20,16 @@ from case_service.db.models import (
 from case_service.hxnexus.chunker import chunk_text
 from case_service.hxnexus.text_extractor import extract_text
 from case_service.hxnexus.vector_store import InMemoryVectorStore, _cosine
-from case_service.hxnexus.ollama_backend import OllamaBackend
-from case_service.hxnexus.openai_backend import OpenAIBackend
-from case_service.hxnexus.anthropic_backend import AnthropicBackend
+from velaris_shared.llm.ollama_backend import OllamaBackend
+from velaris_shared.llm.openai_backend import OpenAIBackend
+from velaris_shared.llm.anthropic_backend import AnthropicBackend
 from case_service.hxnexus.service import next_best_action, qa_over_documents, chat, index_document
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def _fake_user(user_id: str = "user-1", roles: list[str] | None = None):
-    from case_service.auth.models import AuthenticatedUser
+    from velaris_shared.auth.models import AuthenticatedUser
     return AuthenticatedUser(user_id=user_id, email=f"{user_id}@test.local",
                              roles=roles or ["viewer"])
 

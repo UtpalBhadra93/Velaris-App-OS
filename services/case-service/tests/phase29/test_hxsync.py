@@ -13,8 +13,8 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
 from case_service.hxsync import destinations as _  # noqa: F401 — registers adapters
 from case_service.hxsync.protocol import get_destination, _REGISTRY
 from case_service.hxsync.redaction import apply_redaction, apply_transforms
@@ -168,7 +168,7 @@ class TestTransforms:
 @pytest.mark.asyncio
 class TestPipeline:
     async def test_pipeline_empty_db(self, session):
-        from case_service.db.models import SyncDestinationModel
+        from velaris_shared.db.models import SyncDestinationModel
         dest = SyncDestinationModel(name="test-dest", dest_type="bigquery",
                                     connection_config={"project_id": "p", "dataset_id": "d"})
         session.add(dest)

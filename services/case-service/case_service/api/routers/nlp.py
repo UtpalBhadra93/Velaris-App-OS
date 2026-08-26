@@ -12,11 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service import hxguard
-from case_service.auth.dependencies import require_role
-from case_service.db.session import get_session
-from case_service.hxnexus.factory import check_ai_available, get_ai_info
+from velaris_shared.config import get_settings
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared.db.session import get_session
+from velaris_shared.llm.factory import check_ai_available, get_ai_info
 from case_service.nlp import case_type_builder
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ async def generate_case_type(
 
     # Optionally deploy
     if body.deploy:
-        from case_service.db import repository as repo
+        from velaris_shared.db import repository as repo
         import uuid as _uuid
 
         try:
@@ -176,7 +176,7 @@ async def generate_full(
 
     deployed_id = None
     if body.deploy:
-        from case_service.db import repository as repo
+        from velaris_shared.db import repository as repo
         try:
             deploy_name = (body.name_override or "").strip() or result["name"]
             existing = await repo.get_case_type_by_name(session, deploy_name)

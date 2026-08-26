@@ -10,6 +10,7 @@ def build_mime_message(
     *, from_address: str, to_addresses: list[str], cc_addresses: list[str] | None,
     subject: str, body_text: str, body_html: Optional[str],
     message_id: str, in_reply_to: Optional[str], references: list[str] | None,
+    calendar_ics: Optional[str] = None,
 ) -> MIMEMultipart:
     msg = MIMEMultipart("alternative")
     msg["From"] = from_address
@@ -26,6 +27,15 @@ def build_mime_message(
     msg.attach(MIMEText(body_text or "", "plain", "utf-8"))
     if body_html:
         msg.attach(MIMEText(body_html, "html", "utf-8"))
+    if calendar_ics:
+        # A meeting invitation is a `text/calendar` **alternative**, not a file
+        # bolted on: that is what makes a mail client show Accept and Decline
+        # rather than an attachment icon. It goes last, because a client picks
+        # the last part it understands.
+        part = MIMEText(calendar_ics, "calendar", "utf-8")
+        part.set_param("method", "REQUEST")
+        part.add_header("Content-Disposition", "inline", filename="invite.ics")
+        msg.attach(part)
     return msg
 
 

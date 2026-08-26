@@ -21,19 +21,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
+from velaris_shared import hxguard
 from case_service.api.routers.releases import is_feature_enabled
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     RISK_NOTFOUND_404,
     RISK_REJECTED_400,
     RISK_URL_400,
     coded,
 )
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.models import CaseInstanceModel, CaseOutcomeModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseInstanceModel, CaseOutcomeModel
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import rules as rulecat
@@ -358,7 +358,7 @@ async def _authorized_finding(session, user, finding_id: str):
         fid = uuid.UUID(finding_id)
     except ValueError:
         raise coded(404, RISK_NOTFOUND_404, "Finding not found")
-    from case_service.db.models import CaseRiskFindingModel
+    from velaris_shared.db.models import CaseRiskFindingModel
     finding = await session.get(CaseRiskFindingModel, fid)
     if finding is None:
         raise coded(404, RISK_NOTFOUND_404, "Finding not found")
@@ -445,7 +445,7 @@ async def dispute_feedback(
         fid = uuid.UUID(feedback_id)
     except ValueError:
         raise coded(404, RISK_NOTFOUND_404, "Feedback not found")
-    from case_service.db.models import CaseRiskFeedbackModel
+    from velaris_shared.db.models import CaseRiskFeedbackModel
     fb = await session.get(CaseRiskFeedbackModel, fid)
     # Tenant scope: a supervisor disputes only their own tenant's scores.
     if fb is None or norm_tenant_str(fb.tenant_id) != _tenant(user):
@@ -803,7 +803,7 @@ async def get_config(
 ):
     _require_enabled()
     await hxguard.require(session, hxguard.subject_from_user(user), "risk.assessment.read")
-    from case_service.db.models import CaseRiskConfigModel
+    from velaris_shared.db.models import CaseRiskConfigModel
     row = await session.get(CaseRiskConfigModel, _tenant(user))
     return {"verify_gate_severity": row.verify_gate_severity if row else None}
 
@@ -817,7 +817,7 @@ async def put_config(
     """Set the optional verify gate. Managing the gate is a rule-config action."""
     _require_enabled()
     await hxguard.require(session, hxguard.subject_from_user(user), "risk.rules.configure")
-    from case_service.db.models import CaseRiskConfigModel
+    from velaris_shared.db.models import CaseRiskConfigModel
     sev = body.verify_gate_severity
     if sev in ("", "off"):
         sev = None
@@ -889,7 +889,7 @@ async def resolve_hold(
         hid = uuid.UUID(hold_id)
     except ValueError:
         raise coded(404, RISK_NOTFOUND_404, "Hold not found")
-    from case_service.db.models import CaseRiskHoldModel
+    from velaris_shared.db.models import CaseRiskHoldModel
     hold = await session.get(CaseRiskHoldModel, hid)
     if hold is None:
         raise coded(404, RISK_NOTFOUND_404, "Hold not found")
@@ -905,7 +905,7 @@ async def resolve_hold(
 
 
 async def sentinel_rule_upsert(session, *, tenant, rule_key, enabled, severity, params, updated_by):
-    from case_service.db.models import CaseRiskRuleModel
+    from velaris_shared.db.models import CaseRiskRuleModel
     row = (await session.execute(
         select(CaseRiskRuleModel).where(
             CaseRiskRuleModel.tenant_id == tenant,

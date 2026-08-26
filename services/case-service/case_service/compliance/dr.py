@@ -33,7 +33,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import BackupRecordModel, RegionModel
+from velaris_shared.db.models import BackupRecordModel, RegionModel
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class DRError(ValueError):
 
 
 async def _region_regulations(session: AsyncSession, region_id) -> set[str]:
-    from case_service.db.models import SovereigntyRuleModel
+    from velaris_shared.db.models import SovereigntyRuleModel
 
     rows = (await session.execute(
         select(SovereigntyRuleModel.regulation).where(

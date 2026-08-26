@@ -22,8 +22,8 @@ import itertools
 
 import pytest
 
-from case_service.hxguard.actions import ACTIONS, GATE_ROLES, resource_of, verb_of
-from case_service.hxguard.privileges import (
+from velaris_shared.hxguard.actions import ACTIONS, GATE_ROLES, resource_of, verb_of
+from velaris_shared.hxguard.privileges import (
     KNOWN_ROLES,
     SEEDED_ROLE_PRIVILEGES,
     PrivilegeBackend,
@@ -149,16 +149,54 @@ class TestBypasses:
                            "platform.dbmanager.read", "platform.dbmanager.reauth",
                            "devconn.namespace.register",
                            "bots.definitions.read", "bots.definitions.write",
-                           "bots.jobs.read", "bots.jobs.run"}),
+                           "bots.jobs.read", "bots.jobs.run",
+                           # 2026-08-20: the scheduler. Writing a timed action is
+                           # developer work and firing one by hand is how you test
+                           # it — but `scheduler.schedules.approve` is NOT here,
+                           # and must not be: the author of a schedule may never
+                           # be the person who puts it into service.
+                           "scheduler.schedules.read", "scheduler.schedules.write",
+                           "scheduler.schedules.run",
+                           # 2026-08-21: HxDeploy + the app registry. Building
+                           # and previewing a promotion package is developer
+                           # work; `deploy.packages.seal`, `deploy.runs.promote`
+                           # and `deploy.runs.approve` are NOT here — sealing
+                           # declares what ships, and approving releases it into
+                           # another environment.
+                           "deploy.environments.read", "deploy.packages.read",
+                           "deploy.packages.write", "deploy.runs.read",
+                           "deploy.windows.read",
+                           "apps.packages.read", "apps.packages.write",
+                           # 2026-08-21: Calendar. A developer can see who is
+                           # away — a build waits on people too — but records
+                           # nobody's leave and approves none.
+                           "calendar.absences.read",
+                           "calendar.events.read", "calendar.events.write"}),
             ("finance", {"finance.details.read"}),
             ("manager", {"marketplace.catalogue.read", "analytics.reports.read",
                          "design.escalation.read", "risk.assessment.read", "risk.outcomes.write",
                          "risk.rules.configure", "risk.scores.review", "casework.records.any",
                          "channels.conversations.read", "channels.conversations.write",
-                         "channels.cti.pop", "bots.jobs.read", "bots.jobs.run"}),
+                         "channels.cti.pop", "bots.jobs.read", "bots.jobs.run",
+                         # Read-only on the timetable: a manager needs to see what
+                         # runs overnight without being able to change it.
+                         "scheduler.schedules.read",
+                         # Same shape for deployments: a manager can see what was
+                         # promoted and what is waiting, and can move nothing.
+                         "deploy.runs.read",
+                         # Calendar: a manager records and approves their
+                         # reports' leave. `calendar.patterns.write` is NOT here
+                         # — contracted hours are an admin change.
+                         "calendar.absences.read", "calendar.absences.write",
+                         "calendar.absences.approve",
+                         "calendar.events.read", "calendar.events.write"}),
             ("case_worker", {"risk.assessment.read",
                              "channels.conversations.read", "channels.conversations.write",
-                             "channels.cti.pop", "bots.jobs.read", "bots.jobs.run"}),
+                             "channels.cti.pop", "bots.jobs.read", "bots.jobs.run",
+                             # Their own leave, and the team's availability. They
+                             # approve nothing.
+                             "calendar.absences.read", "calendar.absences.write",
+                             "calendar.events.read", "calendar.events.write"}),
         ):
             granted = {n for n in ACTIONS if backend.evaluate(_Subject([role]), n).allow}
             assert granted == expected, f"{role}: {granted ^ expected}"
@@ -264,14 +302,24 @@ class TestRegistry:
         with a phase."""
         endpoint = [a for a in ACTIONS.values() if a.kind == "endpoint"]
         module = [a for a in ACTIONS.values() if a.kind == "module"]
-        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1, (
+        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1 + 4 + 14 + 6, (
             f"{len(endpoint)} endpoint actions — expected 49 (Phase 0) + 19 "
             f"(Phase 3.5) + 16 (Phase 4 step 2) + 6 (ungated sweep) + 15 "
             f"(Phase 5: the case layer's ACTION_ROLES table + the ReBAC bypass) "
             f"+ 4 (enterprise identity) + 5 (omnichannel channels.*) "
             f"+ 6 (RPA bots.*) + 1 (portal.customers.write — staff-created "
             f"customer accounts, the only path to one once self-registration "
-            f"is switched off)")
+            f"is switched off) + 4 (scheduler.schedules.* — read, write, approve "
+            f"and a manual run; approve is separate from write for the same "
+            f"reason it is on bots) + 14 (deploy.* and apps.* — the promotion "
+            f"path had no privilege gate of any kind: 21 and 13 endpoints behind "
+            f"a bare get_current_user, so any authenticated user could register a "
+            f"target environment, promote to production and approve their own run) "
+            f"+ 4 (calendar.* — Calendar: absence is personal data before it is "
+            f"a scheduling input, so read/write/approve are split and the kind "
+            f"and note are filtered per caller) + 2 (calendar.events.* — team "
+            f"meetings, which HxMeet could not hold because its sessions are "
+            f"case-scoped)")
         assert len(module) == 18, (
             f"{len(module)} module actions — 12 from Phase 0, 6 from Phase 4")
 
@@ -309,11 +357,15 @@ class TestCutoverLedger:
     more than keeping the exact number."""
 
     def test_migrated_routers_have_no_role_gates_left(self):
-        from pathlib import Path
-        from case_service.hxguard.actions import MIGRATED_ROUTERS
-        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        # `find_router` looks across every service, not just this one: seven of
+        # these routers moved to analytics-, hxgraph- and hxmigrate-service at
+        # 13c-e, and a path that assumed one service would have turned this
+        # guard into a FileNotFoundError rather than a check.
+        from velaris_shared.hxguard.actions import MIGRATED_ROUTERS
+
+        from case_service.hxguard_ledger.legacy_sites import find_router
         for name in sorted(MIGRATED_ROUTERS):
-            src = (routers / name).read_text()
+            src = find_router(name).read_text()
             assert "require_role(" not in src, (
                 f"{name} is listed as migrated but still has role gates")
             assert "hxguard.guard(" in src, f"{name} has no guard() calls"
@@ -322,7 +374,7 @@ class TestCutoverLedger:
         """A router losing its gates without joining the ledger is how a module
         silently loses authorization — the failure this whole phase is built to
         make impossible."""
-        from case_service.hxguard.actions import (
+        from velaris_shared.hxguard.actions import (
             ACTION_BY_GATE, MIGRATED_ROUTERS, MODULE_ACTION_BY_FILE)
         expected = {g.split("::")[0] for g in ACTION_BY_GATE} | set(MODULE_ACTION_BY_FILE)
         assert expected == set(MIGRATED_ROUTERS), (
@@ -343,15 +395,16 @@ class TestCutoverLedger:
         # imperative check tracked by the legacy-site ledger below, not a
         # dependency gate, and matching it here would make this test unfixable.
         gate = re.compile(r"(?<![A-Za-z0-9_])(require_role|require_admin)\(")
-        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        from case_service.hxguard_ledger.legacy_sites import ROUTER_DIRS
         offenders = {f.name: len(gate.findall(f.read_text()))
-                     for f in routers.glob("*.py") if gate.search(f.read_text())}
+                     for d in ROUTER_DIRS if d.is_dir()
+                     for f in d.glob("*.py") if gate.search(f.read_text())}
         assert not offenders, f"role gates reappeared: {offenders}"
 
     def test_every_gate_became_a_guard(self):
-        from pathlib import Path
-        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
-        guards = sum(f.read_text().count("hxguard.guard(") for f in routers.glob("*.py"))
+        from case_service.hxguard_ledger.legacy_sites import ROUTER_DIRS
+        guards = sum(f.read_text().count("hxguard.guard(")
+                     for d in ROUTER_DIRS if d.is_dir() for f in d.glob("*.py"))
         assert guards >= 166, f"only {guards} guard() calls for 166 migrated gates"
 
 
@@ -369,7 +422,7 @@ class TestLegacySiteLedger:
     role-name decision cannot slip in among things that merely look like one."""
 
     def test_the_scan_matches_the_recorded_population(self):
-        from case_service.hxguard.legacy_sites import EXPECTED_SITES, scan
+        from case_service.hxguard_ledger.legacy_sites import EXPECTED_SITES, scan
         found = {f"{s.file}::{s.function}" for s in scan()}
         new = found - EXPECTED_SITES
         gone = EXPECTED_SITES - found
@@ -383,7 +436,7 @@ class TestLegacySiteLedger:
     def test_the_ledger_is_not_empty_or_vacuous(self):
         """A scan that silently matched nothing would pass the test above while
         proving nothing — the same vacuity trap as the Phase-1 parity table."""
-        from case_service.hxguard.legacy_sites import scan, summary
+        from case_service.hxguard_ledger.legacy_sites import scan, summary
         s = summary()
         assert s["sites"] > 40, s
         assert s["endpoints"] > 0 and s["helpers"] > 0, s
@@ -394,8 +447,8 @@ class TestLegacySiteLedger:
         is migrated *and* still decides on `superadmin` inside handlers — both
         are true, and conflating them is how the follow-up work got lost the
         first time."""
-        from case_service.hxguard.actions import MIGRATED_ROUTERS
-        from case_service.hxguard.legacy_sites import scan
+        from velaris_shared.hxguard.actions import MIGRATED_ROUTERS
+        from case_service.hxguard_ledger.legacy_sites import scan
         files = {s.file for s in scan()}
         assert files & set(MIGRATED_ROUTERS), (
             "expected at least one migrated router to still have imperative checks")
@@ -404,7 +457,7 @@ class TestLegacySiteLedger:
         """storefront/checkout/testsuite/hxtest had 56 gates and no imperative
         checks; after the cutover they should contribute no *unguarded*
         endpoint sites."""
-        from case_service.hxguard.legacy_sites import scan
+        from case_service.hxguard_ledger.legacy_sites import scan
         for name in ("storefront.py", "checkout.py", "testsuite.py", "hxtest.py"):
             unguarded = [s for s in scan()
                          if s.file == name and s.route and not s.also_guarded]

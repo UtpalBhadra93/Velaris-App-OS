@@ -21,9 +21,6 @@ import {
   testWebhook,
   listWebhookEvents,
   deleteWebhook,
-  listCalendars,
-  createCalendar,
-  updateCalendar,
   listRules,
   createRule,
   updateRule,
@@ -41,11 +38,11 @@ import { getAccessToken } from "@/auth/tokenManager";
    Admin Console — system management dashboard
    ═══════════════════════════════════════════════════════════════════ */
 
-type Tab = "overview" | "audit" | "queues" | "webhooks" | "rules" | "calendars" | "permissions" | "sso" | "identity" | "marketplace";
+type Tab = "overview" | "audit" | "queues" | "webhooks" | "rules" | "permissions" | "sso" | "identity" | "marketplace";
 
 const TAB_LABELS: Record<Tab, string> = {
   overview: "Overview", audit: "Audit", queues: "Queues",
-  webhooks: "Webhooks", rules: "Business Rules", calendars: "Calendars",
+  webhooks: "Webhooks", rules: "Business Rules",
   permissions: "Permissions", sso: "SSO", identity: "Identity",
   marketplace: "Marketplace Sources",
 };
@@ -60,7 +57,7 @@ export default function AdminConsole() {
         display: "flex", gap: 2, marginBottom: "var(--space-xl)",
         borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0,
       }}>
-        {(["overview", "audit", "queues", "webhooks", "rules", "calendars", "permissions", "sso", "identity", "marketplace"] as Tab[]).map(t => (
+        {(["overview", "audit", "queues", "webhooks", "rules", "permissions", "sso", "identity", "marketplace"] as Tab[]).map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
             textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
@@ -77,7 +74,6 @@ export default function AdminConsole() {
       {tab === "queues"      && <QueuesTab />}
       {tab === "webhooks"    && <WebhooksTab />}
       {tab === "rules"       && <><RulesTab /><div style={{ marginTop: "var(--space-xl)" }}><RuleMigrationReport /></div></>}
-      {tab === "calendars"   && <CalendarsTab />}
       {tab === "permissions" && <PermissionsTab />}
       {tab === "sso"         && <SsoTab />}
       {tab === "identity"    && <IdentityTab />}
@@ -103,6 +99,11 @@ function OverviewTab() {
     { label: "Webhooks", value: data.webhooks },
     { label: "Calendars", value: data.calendars },
     { label: "Audit Entries", value: data.audit_entries },
+    // The console's later tabs — each had a tab and no line here.
+    { label: "Users", value: data.users },
+    { label: "SSO Providers", value: data.sso_providers },
+    { label: "Marketplace Sources", value: data.marketplace_sources },
+    { label: "Configured Permissions", value: data.configured_permissions },
   ];
 
   return (
@@ -1249,180 +1250,14 @@ function SectionTitle({ children, style }: { children: React.ReactNode; style?: 
 
 /* ── Calendars Tab ────────────────────────────────────────────── */
 
-const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const ALL_DAYS  = [1, 2, 3, 4, 5, 6, 7];
-const TZ_GROUPS: Array<{ label: string; zones: string[] }> = [
-  { label: "UTC", zones: ["UTC"] },
-  { label: "Africa", zones: [
-    "Africa/Abidjan","Africa/Accra","Africa/Addis_Ababa","Africa/Algiers","Africa/Cairo",
-    "Africa/Casablanca","Africa/Johannesburg","Africa/Lagos","Africa/Nairobi","Africa/Tripoli","Africa/Tunis",
-  ]},
-  { label: "America", zones: [
-    "America/Anchorage","America/Bogota","America/Buenos_Aires","America/Caracas",
-    "America/Chicago","America/Costa_Rica","America/Denver","America/El_Salvador",
-    "America/Guatemala","America/Guayaquil","America/Halifax","America/Indiana/Indianapolis",
-    "America/La_Paz","America/Lima","America/Los_Angeles","America/Manaus",
-    "America/Mexico_City","America/Monterrey","America/New_York","America/Panama",
-    "America/Phoenix","America/Puerto_Rico","America/Santiago","America/Sao_Paulo",
-    "America/St_Johns","America/Toronto","America/Vancouver",
-  ]},
-  { label: "Asia", zones: [
-    "Asia/Almaty","Asia/Amman","Asia/Baghdad","Asia/Baku","Asia/Bangkok",
-    "Asia/Beirut","Asia/Colombo","Asia/Dhaka","Asia/Dubai","Asia/Hong_Kong",
-    "Asia/Irkutsk","Asia/Jakarta","Asia/Jerusalem","Asia/Kabul","Asia/Karachi",
-    "Asia/Kathmandu","Asia/Kolkata","Asia/Krasnoyarsk","Asia/Kuala_Lumpur",
-    "Asia/Kuwait","Asia/Macau","Asia/Magadan","Asia/Manila","Asia/Muscat",
-    "Asia/Nicosia","Asia/Novosibirsk","Asia/Phnom_Penh","Asia/Rangoon",
-    "Asia/Riyadh","Asia/Seoul","Asia/Shanghai","Asia/Singapore","Asia/Taipei",
-    "Asia/Tashkent","Asia/Tbilisi","Asia/Tehran","Asia/Tokyo","Asia/Ulaanbaatar",
-    "Asia/Vladivostok","Asia/Yakutsk","Asia/Yekaterinburg","Asia/Yerevan",
-  ]},
-  { label: "Atlantic", zones: [
-    "Atlantic/Azores","Atlantic/Cape_Verde","Atlantic/Reykjavik",
-  ]},
-  { label: "Australia", zones: [
-    "Australia/Adelaide","Australia/Brisbane","Australia/Darwin",
-    "Australia/Hobart","Australia/Lord_Howe","Australia/Melbourne",
-    "Australia/Perth","Australia/Sydney",
-  ]},
-  { label: "Europe", zones: [
-    "Europe/Amsterdam","Europe/Athens","Europe/Belgrade","Europe/Berlin",
-    "Europe/Brussels","Europe/Bucharest","Europe/Budapest","Europe/Copenhagen",
-    "Europe/Dublin","Europe/Helsinki","Europe/Istanbul","Europe/Kiev",
-    "Europe/Lisbon","Europe/London","Europe/Luxembourg","Europe/Madrid",
-    "Europe/Minsk","Europe/Monaco","Europe/Moscow","Europe/Oslo",
-    "Europe/Paris","Europe/Prague","Europe/Rome","Europe/Samara","Europe/Sofia",
-    "Europe/Stockholm","Europe/Tallinn","Europe/Vienna","Europe/Vilnius",
-    "Europe/Warsaw","Europe/Zurich",
-  ]},
-  { label: "Pacific", zones: [
-    "Pacific/Auckland","Pacific/Chatham","Pacific/Fiji","Pacific/Guam",
-    "Pacific/Honolulu","Pacific/Midway","Pacific/Noumea","Pacific/Pago_Pago",
-    "Pacific/Port_Moresby","Pacific/Tongatapu",
-  ]},
-];
-
-function CalendarsTab() {
-  const { data, loading, refetch } = useApi(listCalendars);
-  const calendars = (data ?? []) as any[];
-  const [editing, setEditing] = useState<any | null>(null);
-  const [form, setForm] = useState({ name: "", timezone: "UTC", work_days: [1,2,3,4,5], work_start_hour: 9, work_end_hour: 17, description: "" });
-  const [saving, setSaving] = useState(false);
-
-  const openNew = () => {
-    setForm({ name: "", timezone: "UTC", work_days: [1,2,3,4,5], work_start_hour: 9, work_end_hour: 17, description: "" });
-    setEditing({});
-  };
-  const openEdit = (c: any) => {
-    setForm({ name: c.name, timezone: c.timezone, work_days: c.work_days || [1,2,3,4,5], work_start_hour: c.work_start_hour ?? 9, work_end_hour: c.work_end_hour ?? 17, description: c.description || "" });
-    setEditing(c);
-  };
-
-  const toggleDay = (d: number) => setForm(f => ({ ...f, work_days: f.work_days.includes(d) ? f.work_days.filter(x => x !== d) : [...f.work_days, d].sort() }));
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      if (editing?.id) await updateCalendar(editing.id, form);
-      else await createCalendar(form as any);
-      setEditing(null); refetch();
-    } catch (e: any) { alert(e.message); }
-    setSaving(false);
-  };
-
-  return (
-    <div>
-      {/* Explainer */}
-      <Card style={{ marginBottom: "var(--space-lg)", background: "var(--bg-elevated)" }}>
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-          <strong style={{ color: "var(--text-primary)" }}>Business Calendars</strong> define what counts as a "working hour" for SLA calculations.
-          When an SLA says "resolve within 8 business hours", it counts only the hours within the calendar's work window — weekends and holidays don't count.
-          <br />
-          <strong style={{ color: "var(--text-primary)" }}>Not location-based automatically</strong> — you set the timezone explicitly. Create one calendar per timezone/region if your team spans multiple locations (e.g. "India Office: Asia/Kolkata, 9am–6pm Mon–Sat" and "London Office: Europe/London, 9am–5pm Mon–Fri").
-          Each SLA policy in the Case Designer can be linked to a specific calendar.
-        </div>
-      </Card>
-
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "var(--space-lg)" }}>
-        <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{calendars.length} calendar{calendars.length !== 1 ? "s" : ""}</span>
-        <Button size="sm" onClick={openNew}>+ New Calendar</Button>
-      </div>
-
-      {loading && <Spinner size={28} />}
-      {!loading && calendars.length === 0 && <EmptyState title="No calendars" description="Create at least one calendar so SLAs can calculate business hours correctly." />}
-
-      {calendars.map((c: any) => (
-        <Card key={c.id} style={{ marginBottom: "var(--space-sm)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{c.name}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
-                {c.timezone} · {c.work_start_hour}:00–{c.work_end_hour}:00
-              </div>
-              <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: 4, display: "flex", gap: 4 }}>
-                {ALL_DAYS.map(d => (
-                  <span key={d} style={{ padding: "1px 5px", borderRadius: 3, background: (c.work_days || []).includes(d) ? "var(--accent-dim)" : "var(--bg-elevated)", color: (c.work_days || []).includes(d) ? "var(--accent)" : "var(--text-muted)" }}>
-                    {DAY_NAMES[d]}
-                  </span>
-                ))}
-              </div>
-              {c.description && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>{c.description}</div>}
-            </div>
-            <Button size="sm" variant="secondary" onClick={() => openEdit(c)}>Edit</Button>
-          </div>
-        </Card>
-      ))}
-
-      {/* Create/Edit modal */}
-      {editing !== null && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "var(--bg-panel)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", width: 480, maxHeight: "80vh", overflow: "auto" }}>
-            <div style={{ padding: "var(--space-lg)", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between" }}>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>{editing?.id ? "Edit Calendar" : "New Calendar"}</div>
-              <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--text-muted)" }}>✕</button>
-            </div>
-            <div style={{ padding: "var(--space-lg)", display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>
-              <AdminField label="Name"><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={inputStyle} placeholder="e.g. India Office" /></AdminField>
-              <AdminField label="Timezone">
-                <select value={form.timezone} onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))} style={inputStyle}>
-                  {TZ_GROUPS.map(g => (
-                    <optgroup key={g.label} label={g.label}>
-                      {g.zones.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-                <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>Determines when "working hours" start and end. SLA clocks run in this timezone.</div>
-              </AdminField>
-              <AdminField label="Working days">
-                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                  {ALL_DAYS.map(d => (
-                    <button key={d} onClick={() => toggleDay(d)} style={{ width: 36, height: 32, borderRadius: 4, border: "1px solid var(--border-default)", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 600, background: form.work_days.includes(d) ? "var(--accent)" : "transparent", color: form.work_days.includes(d) ? "#fff" : "var(--text-secondary)" }}>
-                      {DAY_NAMES[d]}
-                    </button>
-                  ))}
-                </div>
-              </AdminField>
-              <div style={{ display: "flex", gap: "var(--space-md)" }}>
-                <AdminField label="Work start hour" style={{ flex: 1 }}>
-                  <input type="number" min={0} max={23} value={form.work_start_hour} onChange={e => setForm(f => ({ ...f, work_start_hour: parseInt(e.target.value) || 9 }))} style={{ ...inputStyle, width: "100%" }} />
-                </AdminField>
-                <AdminField label="Work end hour" style={{ flex: 1 }}>
-                  <input type="number" min={1} max={24} value={form.work_end_hour} onChange={e => setForm(f => ({ ...f, work_end_hour: parseInt(e.target.value) || 17 }))} style={{ ...inputStyle, width: "100%" }} />
-                </AdminField>
-              </div>
-              <AdminField label="Description (optional)"><input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} /></AdminField>
-              <div style={{ display: "flex", gap: "var(--space-sm)", justifyContent: "flex-end" }}>
-                <Button variant="secondary" onClick={() => setEditing(null)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || !form.name}>{saving ? "Saving…" : editing?.id ? "Save Changes" : "Create Calendar"}</Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
+/* ── Business calendars moved to the Calendar module (2026-08-21) ──────────
+ *
+ * Org hours and people's absence are edited in one place now, under
+ * `/calendar`. `business_calendars` itself did not move — SLA policies,
+ * escalation and the deployment packager reference it by id — only the screen
+ * did, and this one was deleted rather than left behind as a second editing
+ * path that would drift.
+ */
 /* ── Permissions Tab ──────────────────────────────────────────── */
 
 function PermissionsTab() {

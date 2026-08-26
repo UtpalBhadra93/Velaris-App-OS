@@ -22,17 +22,17 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from case_service.db.models import Base
-from case_service.db.session import get_session
+from velaris_shared.db.models import Base
+from velaris_shared.db.session import get_session
 from case_service.main import app
-from case_service.auth.jwt_handler import create_dev_token
-from case_service.middleware.rate_limit import RateLimitMiddleware
+from velaris_shared.auth.jwt_handler import create_dev_token
+from velaris_shared.middleware.rate_limit import RateLimitMiddleware
 
 # ── Auth + DB setup ──────────────────────────────────────────────────────────
 
 # Sign tokens with the SAME settings the app decodes with, so they validate
 # whether the env configures RS256 (RSA keys) or HS256 (shared secret).
-from case_service.config import get_settings as _get_settings
+from velaris_shared.config import get_settings as _get_settings
 
 def _admin_token() -> str:
     s = _get_settings()

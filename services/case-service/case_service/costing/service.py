@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import RateCardModel
+from velaris_shared.db.models import RateCardModel
 from case_service.hxreplay import trace as trace_mod
 
 COST_BASIS = ("manual recorded activity durations × tenant default hourly rate; "
@@ -121,7 +121,7 @@ async def _rate_for(session: AsyncSession, tenant_id: str | None, role: str | No
 
 
 async def running_timer(session: AsyncSession, case_id: uuid.UUID, user_id: str):
-    from case_service.db.models import CaseTimeEntryModel
+    from velaris_shared.db.models import CaseTimeEntryModel
     return (await session.execute(
         select(CaseTimeEntryModel).where(
             CaseTimeEntryModel.case_id == case_id,
@@ -136,7 +136,7 @@ async def start_timer(session: AsyncSession, *, tenant_id: str | None,
                       case_id: uuid.UUID, user_id: str, role: str | None,
                       note: str | None):
     """One running timer per user per case; returns the new entry."""
-    from case_service.db.models import CaseTimeEntryModel
+    from velaris_shared.db.models import CaseTimeEntryModel
     entry = CaseTimeEntryModel(
         tenant_id=tenant_id, case_id=case_id, user_id=user_id, role=role,
         source="timer", started_at=datetime.now(timezone.utc), note=note,
@@ -160,7 +160,7 @@ async def stop_timer(session: AsyncSession, entry) -> None:
 
 
 async def list_entries(session: AsyncSession, case_id: uuid.UUID) -> list:
-    from case_service.db.models import CaseTimeEntryModel
+    from velaris_shared.db.models import CaseTimeEntryModel
     return list((await session.execute(
         select(CaseTimeEntryModel)
         .where(CaseTimeEntryModel.case_id == case_id)
@@ -214,7 +214,7 @@ async def billing_export(session: AsyncSession, tenant_id: str | None, *,
     Commercially sensitive (per-case cost): the router gates this behind the
     same HxGuard ``costing.rates.access`` capability as the rate card.
     """
-    from case_service.db.models import CaseInstanceModel, CaseTimeEntryModel
+    from velaris_shared.db.models import CaseInstanceModel, CaseTimeEntryModel
     stmt = select(CaseTimeEntryModel).where(
         CaseTimeEntryModel.tenant_id == tenant_id,
         CaseTimeEntryModel.ended_at.isnot(None) | (CaseTimeEntryModel.source == "timesheet"),

@@ -13,6 +13,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=__VELARIS_USER__
 WorkingDirectory=__VELARIS_DIR__
+# Historical default; .env below overrides it when the install sets a port.
+Environment=VELARIS_ENGINE_PORT=8100
 EnvironmentFile=__VELARIS_DIR__/.env
 Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -24,7 +26,7 @@ Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr
 # ExecStartPre blocks until the database is accepting connections — see the note
 # in velaris-case-service.service and the header of velaris-wait-deps.sh.
 ExecStartPre=__WAITDEPS__ __VELARIS_DIR__
-ExecStart=__EXEC__ __VELARIS_DIR__ __UV__ run uvicorn helix_engine.main:app --host 0.0.0.0 --port 8100
+ExecStart=__EXEC__ __VELARIS_DIR__ __UV__ run uvicorn helix_engine.main:app --host 127.0.0.1 --port ${VELARIS_ENGINE_PORT} --proxy-headers
 
 Restart=always
 RestartSec=5

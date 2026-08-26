@@ -170,7 +170,7 @@ class DecisionPoint:
         """Decision trail on the case audit log (hash-chained, Timeline-visible).
         Best-effort: an audit failure must not lose the decision."""
         try:
-            from case_service.db import repository as repo
+            from velaris_shared.db import repository as repo
             await repo.append_audit_entry(session, data={
                 "case_id": case_id,
                 "action": "decision_point",

@@ -95,7 +95,7 @@ class OutboxRelay:
             await asyncio.sleep(_POLL_INTERVAL)
 
     async def _deliver_batch(self) -> None:
-        from case_service.db.models import OutboxEventModel
+        from velaris_shared.db.models import OutboxEventModel
 
         now             = datetime.now(timezone.utc)
         stale_threshold = now - timedelta(seconds=_CLAIM_TTL)

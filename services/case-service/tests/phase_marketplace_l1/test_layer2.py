@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     MarketplaceCapabilityGrantModel,
     MarketplaceContainerModel,
 )

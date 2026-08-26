@@ -396,6 +396,9 @@ step "Step 8 — Removing temporary log files..."
 LOG_FILES=(
   /tmp/velaris-engine.log
   /tmp/velaris-case-service.log
+  /tmp/velaris-analytics-service.log
+  /tmp/velaris-hxgraph-service.log
+  /tmp/velaris-hxmigrate-service.log
   /tmp/velaris-studio.log
 )
 

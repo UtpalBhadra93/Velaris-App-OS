@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseEventLogModel,
     CaseInstanceVariableModel,
     CaseTypeVariableModel,

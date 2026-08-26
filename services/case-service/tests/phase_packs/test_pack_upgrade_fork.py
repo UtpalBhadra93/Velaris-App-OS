@@ -155,7 +155,7 @@ async def test_upgrade_records_history(session):
     await packs.upgrade(session, tenant_id="tU3", package_id="acme/p",
                         pack=packs.read_pack(_pack_bytes(v2, "2.0.0")), upgraded_by="dev")
     from sqlalchemy import select
-    from case_service.db.models import MarketplacePackUpgradeModel as U
+    from velaris_shared.db.models import MarketplacePackUpgradeModel as U
     rows = (await session.execute(select(U).where(U.tenant_id == "tU3"))).scalars().all()
     assert len(rows) == 1 and rows[0].to_version == "2.0.0"
 

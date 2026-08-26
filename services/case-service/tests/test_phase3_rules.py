@@ -501,8 +501,8 @@ class TestFormsAPI:
 
 
 def _token_for(roles: list[str]) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
 
     s = get_settings()
     token = create_dev_token(

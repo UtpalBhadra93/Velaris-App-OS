@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.api.routers import auth_real
-from case_service.db.models import HelixUserModel, SsoProviderModel
+from velaris_shared.db.models import HelixUserModel, SsoProviderModel
 
 
 # ── Provider doubles ──────────────────────────────────────────────
@@ -167,7 +167,7 @@ class TestState:
         """An empty HMAC key signs deterministically, so anyone could forge a
         state. Failing closed is the only safe reading."""
         from fastapi import HTTPException
-        from case_service import config as cfg
+        from velaris_shared import config as cfg
 
         real = cfg.get_settings()
 
@@ -533,7 +533,7 @@ class TestResetIsClosedToFederatedAccounts:
     async def test_no_code_is_minted_for_an_account_with_no_local_password(
         self, anon_client, session,
     ):
-        from case_service.db.models import AuthOtpModel
+        from velaris_shared.db.models import AuthOtpModel
 
         await self._users(session)
         assert (await self._forgot(anon_client, self.FEDERATED)).status_code == 200
@@ -545,7 +545,7 @@ class TestResetIsClosedToFederatedAccounts:
 
     @pytest.mark.asyncio
     async def test_a_local_account_still_gets_one(self, anon_client, session):
-        from case_service.db.models import AuthOtpModel
+        from velaris_shared.db.models import AuthOtpModel
 
         await self._users(session)
         assert (await self._forgot(anon_client, self.LOCAL)).status_code == 200
@@ -581,7 +581,7 @@ class TestResetIsClosedToFederatedAccounts:
         await self._users(session)
         assert (await self._forgot(anon_client, self.LOCAL)).status_code == 200
 
-        from case_service.db.models import AuthOtpModel
+        from velaris_shared.db.models import AuthOtpModel
         otp_row = (await session.execute(
             select(AuthOtpModel).where(AuthOtpModel.purpose == "password_reset")
         )).scalar_one()
@@ -734,8 +734,8 @@ class TestRoleGate:
 
     @staticmethod
     def _viewer_headers():
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
         s = get_settings()
         tok = create_dev_token(
             user_id="viewer-1", username="viewer-1", roles=["viewer"],
@@ -873,7 +873,7 @@ class TestSamlProviderWrites:
         """"Who widened auto-provisioning, and to what" is the whole point of
         the record. It logged `allowed_domains`, which a SAML row never has, so
         every SAML edit was recorded as an empty allowlist."""
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
 
         created = (await client.post(
             "/api/v1/auth/real/sso/providers",

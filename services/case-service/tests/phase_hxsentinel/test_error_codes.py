@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from case_service.core import error_codes
+from velaris_shared.core import error_codes
 
 RISK = "/api/v1/risk"
 

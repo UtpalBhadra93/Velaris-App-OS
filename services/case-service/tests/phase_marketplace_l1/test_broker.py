@@ -20,8 +20,9 @@ import uuid
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     MarketplaceCapabilityGrantModel,
+    MarketplaceInstallModel,
     MarketplaceNetworkLogModel,
 )
 from case_service.marketplace import grants as mkt_grants
@@ -199,3 +200,103 @@ class TestBrokerAudit:
                 break
         assert rows
         assert rows[0].is_declared is False
+
+
+class TestManifestPermissionCeiling:
+    """#29 — the package's own declaration, enforced at the only data path.
+
+    Until 2026-08-24 `_permissions` was resolved at install, validated, and
+    then discarded: a package could declare `viewer` on `report` and still read
+    every case the operator's grant exposed. These tests hold the two halves
+    apart — the grant says what is on offer, the manifest says what the package
+    may accept — and prove the manifest can only ever narrow.
+    """
+
+    async def _install_for(self, session, grant, permissions):
+        """Anchor the grant to an install carrying a declaration."""
+        install = MarketplaceInstallModel(
+            tenant_id=grant.tenant_id, package_id=grant.package_id,
+            package_version="1.0.0", package_type="module",
+            approved_by="user:test-admin",
+            declared_permissions=permissions,
+        )
+        session.add(install)
+        await session.commit()
+        await session.refresh(install)
+        grant.install_id = install.id
+        await session.commit()
+        return install
+
+    async def test_a_declared_package_reads_its_cases(self, client, session):
+        ct, case = await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, [
+            {"relation": "viewer", "object_type": "case", "subject_type": "package"},
+        ])
+        r = await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        assert r.status_code == 200
+        assert any(c["id"] == case["id"] for c in r.json()["cases"])
+
+    async def test_an_undeclared_package_is_refused_despite_a_full_grant(
+            self, client, session):
+        """The defect, as a test. The grant says `cases.read`; the package
+        never declared `case`, and that is now the end of it."""
+        await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, [
+            {"relation": "editor", "object_type": "report", "subject_type": "package"},
+        ])
+        r = await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        assert r.status_code == 403
+        assert "manifest" in r.json()["detail"].lower()
+
+    async def test_declaring_nothing_reaches_nothing(self, client, session):
+        await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, [])
+        r = await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        assert r.status_code == 403
+
+    async def test_an_install_from_before_enforcement_still_works(
+            self, client, session):
+        """NULL is 'not recorded', not 'declared nothing'. An upgrade must not
+        revoke access from a package that is working today."""
+        ct, case = await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, None)
+        r = await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        assert r.status_code == 200
+
+    async def test_the_manifest_cannot_widen_a_narrow_grant(self, client, session):
+        """A ceiling only lowers. Declaring `case` does not grant `cases.read`."""
+        await _seeded_case(client)
+        grant, raw = await _granted_broker(session, [])
+        await self._install_for(session, grant, [
+            {"relation": "editor", "object_type": "case", "subject_type": "package"},
+        ])
+        r = await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        assert r.status_code == 403
+
+    async def test_the_single_case_route_hides_behind_a_404(self, client, session):
+        """The broker never confirms the existence of anything out of scope."""
+        ct, case = await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, [
+            {"relation": "viewer", "object_type": "form", "subject_type": "package"},
+        ])
+        r = await client.get(f"{BROKER}/cases/{case['id']}", headers=_hdr(raw))
+        assert r.status_code == 404
+
+    async def test_the_refusal_is_written_to_the_network_log(self, client, session):
+        """Same ledger as egress — a denial nobody can audit is not enforcement."""
+        from velaris_shared.db.models import MarketplaceNetworkLogModel
+
+        await _seeded_case(client)
+        grant, raw = await _granted_broker(session, ["cases.read"])
+        await self._install_for(session, grant, [])
+        await client.get(f"{BROKER}/cases", headers=_hdr(raw))
+        rows = (await session.execute(
+            select(MarketplaceNetworkLogModel).where(
+                MarketplaceNetworkLogModel.grant_id == str(grant.id))
+        )).scalars().all()
+        assert any(row.status == "blocked" for row in rows)

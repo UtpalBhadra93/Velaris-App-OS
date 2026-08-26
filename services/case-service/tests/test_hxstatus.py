@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from case_service.db.models import HealthCheckResultModel
+from velaris_shared.db.models import HealthCheckResultModel
 from case_service.integrations import health_sampler as hs
 
 pytestmark = pytest.mark.asyncio

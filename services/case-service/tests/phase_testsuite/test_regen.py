@@ -11,7 +11,7 @@ import pytest
 
 from sqlalchemy import select
 
-from case_service.db.models import TestSuiteModel
+from velaris_shared.db.models import TestSuiteModel
 from case_service.testsuite import regen
 
 

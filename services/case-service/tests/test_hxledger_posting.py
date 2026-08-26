@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.compliance import ledger, ledger_posting
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     LedgerAccountModel,
     LedgerEntryModel,
@@ -115,7 +115,7 @@ class TestCapture:
         assert await ledger_posting.post_capture(session, pr) is None
 
     async def test_disabled_flag_posts_nothing(self, session, monkeypatch):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         get_settings.cache_clear()
         monkeypatch.setenv("VELARIS_CASE_LEDGER_POSTING_ENABLED", "false")

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ConnectorRegistryModel, IntegrationCallModel, DeadLetterQueueModel,
     FieldPopulationAuditModel,
 )
@@ -50,7 +50,7 @@ def normalize_response(response: dict, connector_type: str = "") -> dict:
 
 def _check_response_size(response: dict) -> tuple[bool, int]:
     """Return (is_overflow, size_bytes). Raises RuntimeError if hard limit exceeded."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     cfg = get_settings()
     try:
         size = len(json.dumps(response).encode())
@@ -112,9 +112,22 @@ async def execute_connector(
         if new_rt or token_refreshed:
             now = datetime.now(timezone.utc)
             if new_rt:
-                updated_creds = dict(decrypt_credentials(connector.credentials or {}))
+                stored = connector.credentials or {}
+                updated_creds = dict(decrypt_credentials(stored))
                 updated_creds["refresh_token"] = new_rt
-                connector.credentials = encrypt_credentials(updated_creds)
+                # Re-encrypt in the format it was ALREADY in. Without this a
+                # connector stored under HxVault (hxv2, per-tenant DEK) was
+                # silently rewritten under the platform key the first time the
+                # provider rotated its refresh token — Xero rotates on every
+                # use — and from then on crypto-shredding that tenant no longer
+                # covered these credentials. A token refresh must never change
+                # who can read a secret.
+                was_vaulted = str(stored.get("_enc", "")).startswith("hxv2:")
+                connector.credentials = encrypt_credentials(
+                    updated_creds,
+                    tenant_id=connector.tenant_id,
+                    vault=was_vaulted,
+                )
             connector.credentials_updated_at = now
         await session.commit()
 
@@ -189,7 +202,7 @@ async def _push_dlq(
 async def _store_overflow(response: dict, call_id: uuid.UUID) -> str:
     """Persist an oversized response payload to local storage; return a ref URL."""
     import os
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     cfg = get_settings()
     try:
         path = os.path.join(cfg.storage_local_path, "connector-overflow")
@@ -245,7 +258,7 @@ async def _emit_hxstream(
 ) -> None:
     """Fire an integration_call event into HxStream."""
     try:
-        from case_service.hxstream.emitter import emit_event
+        from velaris_shared.hxstream.emitter import emit_event
         payload = {
             "connector":  connector_name,
             "status":     status,

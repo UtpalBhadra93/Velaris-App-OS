@@ -23,11 +23,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.config import get_settings
-from case_service.core.error_codes import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.config import get_settings
+from velaris_shared.core.error_codes import (
     MEET_ASR_501,
     MEET_CONSENT_409,
     MEET_DRIVER_501,
@@ -43,11 +43,11 @@ from case_service.core.error_codes import (
     MEET_TAMPER_409,
     coded,
 )
-from case_service.db import repository as repo
-from case_service.db.models import CaseSessionModel
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseSessionModel
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.llm.guard import _RateLimiter
 from case_service.meet import livekit
 from case_service.meet import service as meet
 
@@ -197,15 +197,44 @@ async def end_session(
     )).scalar_one_or_none()
     if row is None or (row.tenant_id is not None and row.tenant_id != _tenant(user)):
         raise coded(404, MEET_NOTFOUND_404, "Session not found")
-    case = await _authorized_case(session, user, str(row.case_id), "meet.start")
+    case = await _authorize_session(session, user, row, "meet.start")
     if row.status in ("ended", "cancelled"):
         return _session_view(row)
     return _session_view(await meet.end_session(
-        session, row=row, case_type_id=case.case_type_id, actor=user.user_id, cancelled=cancelled,
+        session, row=row, case_type_id=getattr(case, "case_type_id", None),
+        actor=user.user_id, cancelled=cancelled,
     ))
 
 
 # ── P2: embedded driver (LiveKit) ─────────────────────────────────────────────
+
+async def _authorize_session(
+    session: AsyncSession, user: AuthenticatedUser, row: CaseSessionModel, action: str,
+):
+    """Authorize by whichever anchor the session has.
+
+    A case-anchored session goes through the case check, exactly as before. A
+    session anchored to a **calendar event** has no case to check, so the test
+    is the meeting's own: you organised it, you are on it, or you are an admin.
+    Falling back to the case path would call `_authorized_case(..., "None")`,
+    which is how a nullable column quietly becomes a 500.
+    """
+    if row.case_id is not None:
+        return await _authorized_case(session, user, str(row.case_id), action)
+
+    from velaris_shared.db.models import CalendarEventModel
+
+    ev = await session.get(CalendarEventModel, row.calendar_event_id) if row.calendar_event_id else None
+    if ev is None:
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
+    mine = {str(i) for i in (getattr(user, "user_id", None), getattr(user, "username", None),
+                             getattr(user, "email", None)) if i}
+    roles = {str(r).lower() for r in (getattr(user, "roles", None) or [])}
+    allowed = bool(mine & ({ev.organiser_user_id} | set(ev.attendee_user_ids or [])))
+    if not (allowed or roles & {"admin", "superadmin"}):
+        raise coded(404, MEET_NOTFOUND_404, "Session not found")
+    return ev
+
 
 async def _visible_session(
     session: AsyncSession, user: AuthenticatedUser, session_id: str,
@@ -241,7 +270,7 @@ async def session_token(
     """Room token for a worker (`meet.join`). The LiveKit API secret never
     leaves the server — this returns a minted, room-scoped, expiring token."""
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.join")
+    await _authorize_session(session, user, row, "meet.join")
     _require_active_embedded(row)
     return await meet.mint_worker_token(
         session, row=row, user_id=user.user_id,
@@ -265,7 +294,7 @@ async def invite_guest(
     """Invite an external guest (`meet.start` — inviting is hosting work).
     Returns the raw single-use token exactly once; only its hash is stored."""
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.start")
+    await _authorize_session(session, user, row, "meet.start")
     _require_active_embedded(row)
 
     customer_id = None
@@ -281,11 +310,19 @@ async def invite_guest(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # `join_path` is relative and stays that way for the browser, which knows
+    # its own origin. Anything **server-side** that hands the link on — an email,
+    # an SMS, a webhook — cannot use a path, so the absolute form is offered
+    # beside it whenever the deployment has said where Studio lives. The page is
+    # a front-end route, so it is Studio's address that matters, never this API's.
+    base = get_settings().public_base_url
+    join_path = f"/meet/join?token={raw_token}"
     return {
         "participant_id": str(participant.id),
         "identity":       participant.identity,
         "invite_token":   raw_token,
-        "join_path":      f"/meet/join?token={raw_token}",
+        "join_path":      join_path,
+        "join_url":       f"{base.rstrip('/')}{join_path}" if base else None,
         "expires_at":     participant.invite_expires_at.isoformat(),
     }
 
@@ -297,7 +334,7 @@ async def participants(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "case.read")
+    await _authorize_session(session, user, row, "case.read")
     return {"participants": [
         {
             "id":           str(p.id),
@@ -347,7 +384,7 @@ async def recording_start(
     """Start the room egress (`meet.start`). Hard-gated on record_intent and
     per-participant consent — 409 with the missing identities otherwise."""
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.start")
+    await _authorize_session(session, user, row, "meet.start")
     _require_active_embedded(row)
     if not meet.recording_available():
         raise coded(501, MEET_RECORDING_501, "Recording is not configured (egress recordings dir)")
@@ -369,7 +406,7 @@ async def recording_stop(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.start")
+    await _authorize_session(session, user, row, "meet.start")
     try:
         return _session_view(await meet.stop_recording(session, row=row, actor=user.user_id))
     except ValueError as exc:
@@ -381,7 +418,7 @@ async def recording_stop(
 async def _sealed_recording(session, user, session_id: str):
     """Common gate for download/verify: meet.recording.view + a sealed doc."""
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
+    await _authorize_session(session, user, row, "meet.recording.view")
     if row.recording_status != "sealed" or row.recording_document_id is None:
         raise coded(404, MEET_NORECORDING_404, "No sealed recording for this session")
     return row
@@ -400,7 +437,7 @@ async def recording_download(
     from case_service.documents.service import DocumentService
     from case_service.hxvault import crypto as vault
     from case_service.hxvault.keyring import ensure_dek
-    from case_service.db.models import TenantModel
+    from velaris_shared.db.models import TenantModel
     from sqlalchemy import select as _select
 
     row = await _sealed_recording(session, user, session_id)
@@ -440,7 +477,7 @@ async def recording_verify(
     from case_service.documents.service import DocumentService
     from case_service.hxvault import crypto as vault
     from case_service.hxvault.keyring import ensure_dek
-    from case_service.db.models import TenantModel
+    from velaris_shared.db.models import TenantModel
     from sqlalchemy import select as _select
 
     row = await _sealed_recording(session, user, session_id)
@@ -470,7 +507,7 @@ async def _sealed_transcript(session, user, session_id: str):
     """Same gate as the recording: meet.recording.view + a sealed doc,
     404 anti-oracle on everything else."""
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
+    await _authorize_session(session, user, row, "meet.recording.view")
     if row.transcript_status != "sealed" or row.transcript_document_id is None:
         raise coded(404, MEET_NORECORDING_404, "No sealed transcript for this session")
     return row
@@ -480,7 +517,7 @@ async def _unseal_transcript(session, row) -> bytes:
     from case_service.documents.service import DocumentService
     from case_service.hxvault import crypto as vault
     from case_service.hxvault.keyring import ensure_dek
-    from case_service.db.models import TenantModel
+    from velaris_shared.db.models import TenantModel
     from sqlalchemy import select as _select
 
     sealed, _name, _ct = await DocumentService().download(session, row.transcript_document_id)
@@ -601,10 +638,10 @@ async def intelligence_run(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import CaseSessionIntelligenceModel
+    from velaris_shared.db.models import CaseSessionIntelligenceModel
 
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.intelligence.run")
+    await _authorize_session(session, user, row, "meet.intelligence.run")
     has_recording = row.recording_status == "sealed" and row.recording_document_id is not None
     has_transcript = row.transcript_status == "sealed" and row.transcript_document_id is not None
     if not has_recording and not has_transcript:
@@ -646,7 +683,7 @@ from case_service.meet import asr as meet_asr  # noqa: E402
 
 
 async def tenant_live_captions_enabled(session: AsyncSession, tenant_slug: str | None) -> bool:
-    from case_service.db.models import TenantModel
+    from velaris_shared.db.models import TenantModel
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == (tenant_slug or "default"))
     )).scalars().first()
@@ -729,11 +766,11 @@ async def intelligence_get(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import CaseSessionIntelligenceModel
+    from velaris_shared.db.models import CaseSessionIntelligenceModel
 
     row = await _visible_session(session, user, session_id)
     # Reading the analysis derives from the recording — same gate as viewing it.
-    await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
+    await _authorize_session(session, user, row, "meet.recording.view")
     intel = await session.get(CaseSessionIntelligenceModel, row.id)
     return meet_intel.intelligence_view(intel)
 
@@ -760,7 +797,7 @@ async def challenges_issue(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.kyc.run")
+    await _authorize_session(session, user, row, "meet.kyc.run")
     _require_active_embedded(row)
     if not await meet_kyc.tenant_kyc_enabled(session, row.tenant_id):
         raise coded(400, MEET_OPTIN_400, "Video-KYC is not enabled for this tenant")
@@ -784,7 +821,7 @@ async def challenges_list(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "case.read")
+    await _authorize_session(session, user, row, "case.read")
     rows = await meet_kyc.list_challenges(session, row.id)
     return {"challenges": [meet_kyc.challenge_view(c) for c in rows]}
 
@@ -801,10 +838,10 @@ async def kyc_analysis_run(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import CaseSessionKycSignalsModel
+    from velaris_shared.db.models import CaseSessionKycSignalsModel
 
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.kyc.run")
+    await _authorize_session(session, user, row, "meet.kyc.run")
     has_recording = row.recording_status == "sealed" and row.recording_document_id is not None
     has_transcript = row.transcript_status == "sealed" and row.transcript_document_id is not None
     if not has_recording and not has_transcript:
@@ -836,11 +873,11 @@ async def kyc_analysis_get(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import CaseSessionKycSignalsModel
+    from velaris_shared.db.models import CaseSessionKycSignalsModel
 
     row = await _visible_session(session, user, session_id)
     # Reading the analysis derives from the recording — same gate as viewing it.
-    await _authorized_case(session, user, str(row.case_id), "meet.recording.view")
+    await _authorize_session(session, user, row, "meet.recording.view")
     signals = await session.get(CaseSessionKycSignalsModel, row.id)
     threshold = await meet_kyc.tenant_review_threshold(session, row.tenant_id)
     return meet_kyc.kyc_view(signals, threshold)
@@ -860,7 +897,7 @@ async def challenge_result(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     row = await _visible_session(session, user, session_id)
-    await _authorized_case(session, user, str(row.case_id), "meet.kyc.run")
+    await _authorize_session(session, user, row, "meet.kyc.run")
     if body.result not in meet_kyc.CHALLENGE_RESULTS:
         raise HTTPException(400, "result must be one of: " + ", ".join(meet_kyc.CHALLENGE_RESULTS))
     challenge = await meet_kyc.record_challenge_result(

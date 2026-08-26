@@ -22,24 +22,20 @@ from case_service.api.routers import (
     sla,
 )
 
-from case_service.observability import (
+from velaris_shared.db.commit_route import install_commit_before_response
+from velaris_shared.observability import (
     ObservabilityMiddleware, configure_logging, configure_telemetry,
 )
 from case_service.api.observability import router as observability_router
 from case_service.api.routers.form_submissions import router as form_submissions_router
-from case_service.api.routers.analytics import router as analytics_router
 from case_service.api.routers.webhooks import router as webhooks_router
 from case_service.api.routers.admin import router as admin_router
 from case_service.api.routers.auth import router as auth_router
-from case_service.api.routers.process_mining import router as process_mining_router
 from case_service.api.routers.nlp import router as nlp_router
-from case_service.api.routers.scout import router as scout_router
 from case_service.api.routers.tenants import router as tenants_router
 from case_service.api.routers.codegen import router as codegen_router
-from case_service.api.routers.scout_ai import router as scout_ai_router
 from case_service.api.routers.enterprise import router as enterprise_router
 from case_service.api.routers.sitemap import router as sitemap_router
-from case_service.api.routers.orchestrator import router as orchestrator_router
 from case_service.api.routers.realtime import router as realtime_router
 from case_service.api.routers.documents import router as documents_router
 from case_service.api.routers.escalation import router as escalation_router
@@ -53,9 +49,7 @@ from case_service.api.routers.access_groups import router as access_groups_route
 from case_service.api.routers.hxstream import router as hxstream_router
 from case_service.api.routers.status import router as status_router
 from case_service.api.routers.knowledge import router as knowledge_router
-from case_service.api.routers.graph import router as graph_router
 from case_service.api.routers.apps import router as apps_router
-from case_service.api.routers.importer import router as importer_router
 from case_service.api.routers.hxbridge import router as hxbridge_router, webhook_router
 from case_service.api.routers.hxsync import router as hxsync_router
 from case_service.api.routers.hxglobal import router as hxglobal_router
@@ -70,7 +64,7 @@ from case_service.api.routers.crm import crm_router, invoice_router
 from case_service.api.routers.comms import router as comms_router
 from case_service.api.routers.docintel import router as docintel_router
 from case_service.api.routers.devconn import router as devconn_router
-from case_service.api.routers.hxmigrate import router as hxmigrate_router
+from case_service.api.routers.calendar import router as calendar_router      # Calendar P1
 from case_service.api.routers.hxdeploy import router as hxdeploy_router
 from case_service.api.routers.hxwork import router as hxwork_router
 from case_service.api.routers.hxcanvas import router as hxcanvas_router
@@ -85,6 +79,7 @@ from case_service.api.routers.scim import router as scim_router  # Enterprise id
 from case_service.api.routers.identity_admin import router as identity_admin_router  # P3
 from case_service.api.routers.channels import router as channels_router  # Omnichannel inbound
 from case_service.api.routers.bots import router as bots_router  # RPA bot runner
+from case_service.api.routers.scheduler import router as scheduler_router  # timed actions
 from case_service.api.routers.permissions import router as permissions_router
 from case_service.api.routers.marketplace import router as marketplace_router  # Marketplace
 from case_service.api.routers.broker import router as broker_router  # Marketplace Layer-2 data broker
@@ -108,13 +103,13 @@ from case_service.api.routers.hxmcp import router as hxmcp_router               
 from starlette.middleware.cors import CORSMiddleware
 
 from case_service.api.health import router as health_router
-from case_service.config import get_settings
-from case_service.middleware.rate_limit import RateLimitMiddleware
-from case_service.middleware.request_tracking import RequestTrackingMiddleware
-from case_service.middleware.security_headers import SecurityHeadersMiddleware
-from case_service.middleware.body_limit import BodyLimitMiddleware
-from case_service.middleware.audit import AuditMiddleware
-from case_service.middleware.superadmin_gate import SuperadminGateMiddleware
+from velaris_shared.config import get_settings
+from velaris_shared.middleware.rate_limit import RateLimitMiddleware
+from velaris_shared.middleware.request_tracking import RequestTrackingMiddleware
+from velaris_shared.middleware.security_headers import SecurityHeadersMiddleware
+from velaris_shared.middleware.body_limit import BodyLimitMiddleware
+from velaris_shared.middleware.audit import AuditMiddleware
+from velaris_shared.middleware.superadmin_gate import SuperadminGateMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -181,15 +176,15 @@ async def lifespan(app: FastAPI):
             "HS256 (shared secret). Any service holding auth_secret can mint admin tokens. "
             "Generate a key pair and set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY + "
             "VELARIS_CASE_AUTH_RSA_PUBLIC_KEY to enable RS256 before deploying to production. "
-            "Run: python -c \"from case_service.auth.jwt_handler import generate_rsa_keypair; generate_rsa_keypair()\""
+            "Run: python -c \"from velaris_shared.auth.jwt_handler import generate_rsa_keypair; generate_rsa_keypair()\""
         )
     else:
         logger.info("JWT signing: RS256 asymmetric (private key present, public key present) ✓")
 
     # ── Boot gate: require superadmin to exist before serving any requests ──
     try:
-        from case_service.db.session import get_session_factory
-        from case_service.db.models import HelixUserModel
+        from velaris_shared.db.session import get_session_factory
+        from velaris_shared.db.models import HelixUserModel
         from sqlalchemy import select, func
 
         factory = get_session_factory()
@@ -216,8 +211,8 @@ async def lifespan(app: FastAPI):
 
     # ── Seed built-in access roles ────────────────────────────────────────────
     try:
-        from case_service.db.session import get_session_factory
-        from case_service.db.models import AccessRoleModel
+        from velaris_shared.db.session import get_session_factory
+        from velaris_shared.db.models import AccessRoleModel
         from sqlalchemy import select
 
         _BUILT_IN_ROLES = [
@@ -257,8 +252,8 @@ async def lifespan(app: FastAPI):
     # so it is announced here instead. Own `try`: this is a report, and a report
     # that can cancel the rest of startup is worse than no report at all.
     try:
-        from case_service.db.session import get_session_factory
-        from case_service.hxguard.role_names import warn_on_collisions
+        from velaris_shared.db.session import get_session_factory
+        from velaris_shared.hxguard.role_names import warn_on_collisions
 
         factory = get_session_factory()
         async with factory() as _collision_session:
@@ -268,7 +263,7 @@ async def lifespan(app: FastAPI):
 
     # ── HxVault (#19): warm per-tenant DEK cache so sync decrypt stays sync ──────
     try:
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
         from case_service import hxvault
 
         factory = get_session_factory()
@@ -291,7 +286,7 @@ async def lifespan(app: FastAPI):
     _vault_resync_interval = settings.vault_cache_resync_seconds
     if _vault_resync_interval and _vault_resync_interval > 0:
         import asyncio as _asyncio
-        from case_service.db.session import get_session_factory as _gsf_vault
+        from velaris_shared.db.session import get_session_factory as _gsf_vault
         from case_service import hxvault as _hxvault_loop
 
         async def _vault_resync_loop():
@@ -310,7 +305,7 @@ async def lifespan(app: FastAPI):
 
     # ── Migration 042: add v2 ownership columns to artifact_branches ─────────
     try:
-        from case_service.db.session import get_engine
+        from velaris_shared.db.session import get_engine
         from sqlalchemy import text as _sql_text
 
         _DDL_042 = [
@@ -329,7 +324,7 @@ async def lifespan(app: FastAPI):
 
     # ── Migration 043: create branch_audit_events table ─────────────────────────
     try:
-        from case_service.db.session import get_engine
+        from velaris_shared.db.session import get_engine
         from sqlalchemy import text as _sql_text
 
         _DDL_043 = """
@@ -359,7 +354,7 @@ async def lifespan(app: FastAPI):
 
     # ── Migration 044: intake trigger fields on case_types + intake_events table ─
     try:
-        from case_service.db.session import get_engine
+        from velaris_shared.db.session import get_engine
         from sqlalchemy import text as _sql_text
 
         _DDL_044_CT = [
@@ -415,6 +410,11 @@ async def lifespan(app: FastAPI):
         temporal_client = await connect_temporal()
         temporal_worker = await start_worker(temporal_client)
         app.state.temporal_client = temporal_client
+        # Also process-wide, for background loops that have no request and so no
+        # `app.state` — a scheduled case still needs its lifecycle workflow.
+        from case_service.temporal.worker import set_client as _set_temporal_client
+
+        _set_temporal_client(temporal_client)
         logger.info("Temporal worker started (embedded)")
     except Exception as e:
         logger.warning(
@@ -427,8 +427,8 @@ async def lifespan(app: FastAPI):
     # >>> P32 realtime Redis bridge
     redis_bridge = None
     try:
-        from case_service.config import get_settings as _gs
-        from case_service.redis_client import get_redis
+        from velaris_shared.config import get_settings as _gs
+        from velaris_shared.redis_client import get_redis
         from case_service.realtime.manager import get_manager
         from case_service.realtime.redis_bridge import RedisBridge
         _s = _gs()
@@ -519,12 +519,43 @@ async def lifespan(app: FastAPI):
     # pre-Phase-6 behaviour, which is why the store is additive rather than a
     # replacement. Nobody is locked out by a cron that failed to schedule.
     try:
-        from case_service.hxguard.role_store import role_privileges_cron
+        from velaris_shared.hxguard.role_store import role_privileges_cron
         _asyncio.create_task(role_privileges_cron())
         logger.info("Role privilege store refresh scheduled")
     except Exception as _e:
         logger.warning("Role privilege store unavailable, seeded privileges only: %s", _e)
     # <<< Phase 6 role privilege store
+
+    # >>> Phase C (#16-C): the shared authorization generation.
+    # case-service is where the mutations happen, so it is the one process that
+    # never needed this to see its own changes. It needs it to see the OTHER
+    # services' — HxGraph writes tuples on sync, and a bot or connector deleted
+    # there is an authz input change here.
+    try:
+        from velaris_shared.hxguard.generation import generation_cron
+        _asyncio.create_task(generation_cron())
+        logger.info("Authz generation poll scheduled")
+    except Exception as _e:
+        logger.warning("Authz generation poll unavailable: %s", _e)
+    # <<< Phase C
+
+    # >>> HxShield detection (roadmap #25)
+    # The engine's eight patterns had never run against real traffic: it had one
+    # caller, the explicit /hxshield/score endpoint. Registering here wires it to
+    # `log_security_event`, the chokepoint 51 sites already use. The registration
+    # is unconditional and the FLAG is checked per event, so detection can be
+    # switched on without a restart — and stays off by default.
+    try:
+        from case_service.hxshield.detector import install as _install_shield
+        _install_shield()
+        logger.info(
+            "HxShield detector registered (scoring %s)",
+            "ON" if get_settings().hxshield_detect_enabled else "OFF — set "
+            "VELARIS_CASE_HXSHIELD_DETECT_ENABLED=true to enable",
+        )
+    except Exception as _e:
+        logger.warning("HxShield detector unavailable: %s", _e)
+    # <<< HxShield
 
     # >>> Group I: daily RFC-3161 anchoring of the audit chain
     try:
@@ -548,11 +579,23 @@ async def lifespan(app: FastAPI):
         logger.warning("Bot runner unavailable: %s", _e)
     # <<< RPA bot runner
 
+    # >>> Scheduler (timed actions)
+    # ON by default, unlike the bot runner: it writes rows and sends mail rather
+    # than starting containers, and everything it can fire is already bounded by
+    # the approval gate — with nothing approved, an enabled loop does nothing.
+    _scheduler_loop = None
+    try:
+        from case_service.scheduler.runner import loop as _scheduler_loop
+        _scheduler_loop.start()
+    except Exception as _e:
+        logger.warning("Scheduler unavailable: %s", _e)
+    # <<< Scheduler
+
     # >>> C1 outbox relay
     _outbox_relay = None
     try:
         from case_service.integrations.outbox_relay import OutboxRelay
-        from case_service.db.session import get_session_factory as _gsf
+        from velaris_shared.db.session import get_session_factory as _gsf
         _outbox_relay = OutboxRelay(_gsf())
         _outbox_relay.start()
     except Exception as _e:
@@ -565,7 +608,7 @@ async def lifespan(app: FastAPI):
     # is not measurable without a history, so this writes one.
     _health_sampler = None
     try:
-        from case_service.db.session import get_session_factory as _gsf3
+        from velaris_shared.db.session import get_session_factory as _gsf3
         from case_service.integrations.health_sampler import HealthSampler
         _hs = get_settings()
         if _hs.health_sampler_enabled:
@@ -587,7 +630,7 @@ async def lifespan(app: FastAPI):
     # running it unattended safe.
     _pii_scanner = None
     try:
-        from case_service.db.session import get_session_factory as _gsf4
+        from velaris_shared.db.session import get_session_factory as _gsf4
         from case_service.integrations.pii_scanner import PIIScanner
         _ps = get_settings()
         if _ps.pii_scanner_enabled:
@@ -602,7 +645,7 @@ async def lifespan(app: FastAPI):
     # >>> retention scheduler (opt-in twice — it deletes)
     _retention_runner = None
     try:
-        from case_service.db.session import get_session_factory as _gsf5
+        from velaris_shared.db.session import get_session_factory as _gsf5
         from case_service.integrations.retention_runner import RetentionRunner
         _rs = get_settings()
         if _rs.retention_scheduler_enabled:
@@ -625,7 +668,7 @@ async def lifespan(app: FastAPI):
     try:
         _s = get_settings()
         if _s.event_bus_enabled:
-            from case_service.db.session import get_session_factory as _gsf2
+            from velaris_shared.db.session import get_session_factory as _gsf2
             from case_service.integrations.event_bus import EventBusRelay
             _event_bus_relay = EventBusRelay(
                 _gsf2(), brokers=_s.event_bus_brokers,
@@ -640,7 +683,7 @@ async def lifespan(app: FastAPI):
     _puo_watcher = None
     try:
         from case_service.integrations.platform_update_watcher import PlatformUpdateWatcher
-        from case_service.db.session import get_analytics_session_factory as _gasf
+        from velaris_shared.db.session import get_analytics_session_factory as _gasf
         _puo_watcher = PlatformUpdateWatcher(_gasf())
         _puo_watcher.start()
     except Exception as _e:
@@ -651,7 +694,7 @@ async def lifespan(app: FastAPI):
     _puo_engine = None
     try:
         from case_service.integrations.platform_update_plan_engine import PlatformUpdatePlanEngine
-        from case_service.db.session import get_analytics_session_factory as _gasf2
+        from velaris_shared.db.session import get_analytics_session_factory as _gasf2
         _puo_engine = PlatformUpdatePlanEngine(_gasf2())
         _puo_engine.start()
     except Exception as _e:
@@ -685,6 +728,8 @@ async def lifespan(app: FastAPI):
         # credential lease and a running container, and both need the teardown
         # path rather than a cancelled task.
         await _bot_runner.stop()
+    if _scheduler_loop is not None:
+        await _scheduler_loop.stop()
     # <<< C1 outbox relay stop
 
     # >>> PUO Phase 2 stop
@@ -727,6 +772,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Commit each request's database work BEFORE its response is sent. Must be
+    # set before any include_router below: FastAPI captures the route class at
+    # registration time. See velaris_shared/db/commit_route.py.
+    install_commit_before_response(app)
+
     # Error catalog wiring: attach the stable code to the response body and
     # the log line, so the identifier in `docs/Future/error-catalog.md` is the
     # same string a support engineer sees in both places. Uncoded
@@ -735,7 +785,7 @@ def create_app() -> FastAPI:
     from fastapi.encoders import jsonable_encoder
     from fastapi.responses import JSONResponse
 
-    from case_service.core.error_codes import (
+    from velaris_shared.core.error_codes import (
         DB_UNAVAILABLE_503,
         SYS_UNHANDLED_500,
         VAULT_DEK_503,
@@ -757,7 +807,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(request, exc: RequestValidationError):  # noqa: ANN001
-        from case_service.core.error_codes import DOC_UUID_422, error_payload
+        from velaris_shared.core.error_codes import DOC_UUID_422, error_payload
 
         errors = exc.errors()
         uuid_path_error = any(
@@ -924,19 +974,18 @@ def create_app() -> FastAPI:
     app.include_router(forms.router, prefix=prefix)
     app.include_router(data_models.router, prefix=prefix)
     app.include_router(form_submissions_router, prefix=prefix)
-    app.include_router(analytics_router, prefix=prefix)
     app.include_router(webhooks_router, prefix=prefix)
     app.include_router(admin_router, prefix=prefix)
     app.include_router(auth_router, prefix=prefix)
-    app.include_router(process_mining_router, prefix=prefix)
+    # /analytics and /process-mining are served by analytics-service since 13c.
+    # The gateway routes both prefixes there; nothing is mounted here, so a
+    # direct hit on case-service 404s rather than silently answering with a
+    # second copy of the same endpoints.
     app.include_router(nlp_router, prefix=prefix)
-    app.include_router(scout_router, prefix=prefix)
     app.include_router(tenants_router, prefix=prefix)
     app.include_router(codegen_router, prefix=prefix)
-    app.include_router(scout_ai_router, prefix=prefix)
     app.include_router(enterprise_router, prefix=prefix)
     app.include_router(sitemap_router, prefix=prefix)
-    app.include_router(orchestrator_router, prefix=prefix)
     app.include_router(realtime_router, prefix=prefix)
     app.include_router(documents_router, prefix=prefix)
     app.include_router(escalation_router, prefix=prefix)
@@ -955,9 +1004,13 @@ def create_app() -> FastAPI:
     app.include_router(hxstream_router, prefix=prefix)
     app.include_router(status_router, prefix=prefix)
     app.include_router(knowledge_router, prefix=prefix)
-    app.include_router(graph_router, prefix=prefix)
+    # /graph is served by hxgraph-service since 13d. The gateway routes the
+    # prefix there; nothing is mounted here.
+
+    # /hxmigrate, /importer, /scout, /scout-ai and /orchestrator are served by
+    # hxmigrate-service since 13e — the migration domain left as one unit
+    # because its four packages import each other.
     app.include_router(apps_router, prefix=prefix)
-    app.include_router(importer_router, prefix=prefix)
     app.include_router(hxbridge_router, prefix=prefix)
     app.include_router(webhook_router, prefix=prefix)
     app.include_router(hxsync_router, prefix=prefix)
@@ -972,7 +1025,7 @@ def create_app() -> FastAPI:
     app.include_router(comms_router,    prefix=prefix)   # P51
     app.include_router(docintel_router, prefix=prefix)   # P52
     app.include_router(devconn_router,   prefix=prefix)   # P53
-    app.include_router(hxmigrate_router, prefix=prefix)   # P54
+    app.include_router(calendar_router, prefix=prefix)  # Calendar P1
     app.include_router(hxdeploy_router,  prefix=prefix)   # P55
     app.include_router(hxdbmigrate_router, prefix=prefix)  # HxDBMigrate
     app.include_router(hxreplay_router, prefix=prefix)      # HxReplay
@@ -999,6 +1052,7 @@ def create_app() -> FastAPI:
     app.include_router(identity_admin_router, prefix=prefix)  # P3 (mappings + log)
     app.include_router(channels_router, prefix=prefix)        # Omnichannel inbound
     app.include_router(bots_router, prefix=prefix)            # RPA bot runner
+    app.include_router(scheduler_router, prefix=prefix)       # timed actions
     app.include_router(permissions_router, prefix=prefix)
     app.include_router(marketplace_router, prefix=prefix)  # Marketplace
     app.include_router(broker_router, prefix=prefix)  # Layer-2 scoped data broker (container-only surface)
@@ -1021,7 +1075,7 @@ def create_app() -> FastAPI:
     if not settings.debug and "PYTEST_CURRENT_TEST" not in os.environ:
         # >>> P32 scaling: backend selector
         if getattr(settings, "rate_limit_backend", "memory") == "redis" and getattr(settings, "redis_enabled", False):
-            from case_service.middleware.rate_limit_redis import RedisRateLimitMiddleware
+            from velaris_shared.middleware.rate_limit_redis import RedisRateLimitMiddleware
             app.add_middleware(
                 RedisRateLimitMiddleware,
                 requests_per_minute=120, burst=30,
@@ -1049,6 +1103,17 @@ def create_app() -> FastAPI:
         max_upload_bytes=settings.max_upload_bytes,
         max_migrate_upload_bytes=settings.max_migrate_upload_bytes,
     )
+    # >>> Workload identity (#18): the gateway is the only permitted CALLER,
+    # not merely the only route. Second to last so it runs second — refusing
+    # before AuditMiddleware opens a session for a caller that has no business
+    # being here. Inert until VELARIS_GATEWAY_IDENTITY_SECRET is set.
+    from velaris_shared.middleware.gateway_identity import GatewayIdentityMiddleware
+    app.add_middleware(
+        GatewayIdentityMiddleware,
+        secret=settings.gateway_identity_secret,
+        service_name="case-service",
+    )
+    # <<<
     app.add_middleware(SecurityHeadersMiddleware)
     # <<< Group D
 

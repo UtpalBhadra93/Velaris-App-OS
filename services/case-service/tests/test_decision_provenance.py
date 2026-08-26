@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from case_service.db import repository as repo
+from velaris_shared.db import repository as repo
 from case_service.decisions.service import DecisionPoint
 
 pytestmark = pytest.mark.asyncio
@@ -131,7 +131,7 @@ class TestAuditTrail:
 class TestActiveModel:
     async def test_reports_the_side_that_actually_answered(self):
         """The egress ladder answers locally first — provenance must follow it."""
-        from case_service.hxnexus.factory import active_model
+        from velaris_shared.llm.factory import active_model
 
         class _B:
             backend_name = "ollama"
@@ -150,7 +150,7 @@ class TestActiveModel:
 
     async def test_never_raises(self):
         """Audit metadata must not be able to fail a decision."""
-        from case_service.hxnexus.factory import active_model
+        from velaris_shared.llm.factory import active_model
 
         class _Hostile:
             def __getattr__(self, name):

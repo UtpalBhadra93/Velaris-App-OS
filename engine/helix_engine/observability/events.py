@@ -5,7 +5,7 @@ from .context import get_context
 
 
 async def emit_event(session, event_type: str, payload: dict[str, Any] | None = None, severity: str = "INFO"):
-    from case_service.db.models import TelemetryEventModel
+    from velaris_shared.db.models import TelemetryEventModel
     ctx = get_context()
     row = TelemetryEventModel(
         id=uuid.uuid4(),

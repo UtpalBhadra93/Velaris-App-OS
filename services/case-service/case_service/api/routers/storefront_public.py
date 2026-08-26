@@ -20,15 +20,15 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
+from velaris_shared.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     StorefrontAnalyticsEventModel, StorefrontCategoryModel, StorefrontNavigationModel,
     StorefrontPageModel, StorefrontProductImageModel, StorefrontProductModel,
     StorefrontProductVariantModel, StorefrontSubscriberModel, StorefrontThemeModel,
     StorefrontVariantOptionModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.storefront import service as sf_service
 from case_service.storefront.checkout import place_storefront_order
 from case_service.storefront.common import get_public_store
@@ -150,7 +150,7 @@ async def public_category_products(
         StorefrontCategoryModel.slug == cat_slug).limit(1))).scalar_one_or_none()
     if cat is None:
         raise HTTPException(404, "Category not found")
-    from case_service.db.models import StorefrontProductCategoryModel
+    from velaris_shared.db.models import StorefrontProductCategoryModel
     rows = (await session.execute(
         select(StorefrontProductModel)
         .join(StorefrontProductCategoryModel, StorefrontProductCategoryModel.product_id == StorefrontProductModel.id)

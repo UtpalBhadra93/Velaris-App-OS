@@ -23,15 +23,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.hxguard import lockout
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.hxguard import generation as _hxguard_generation
+from velaris_shared.hxguard import lockout
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     PortalModel, AccessRoleModel, AccessGroupModel,
     OperatorAccessGroupModel, UserDirectoryModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 router = APIRouter(tags=["access-groups"])
 
@@ -328,8 +329,8 @@ def _platform_catalog_resources() -> list[dict]:
     action the boundary rejects would render as a checkbox that silently grants
     nothing, which is worse than its absence.
     """
-    from case_service.hxguard.actions import ACTIONS, resource_of, verb_of
-    from case_service.hxguard.privileges import _crosses_into_platform_namespace
+    from velaris_shared.hxguard.actions import ACTIONS, resource_of, verb_of
+    from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
 
     by_resource: dict[str, dict[str, str]] = {}
     for name, action in ACTIONS.items():
@@ -541,6 +542,14 @@ async def update_access_group(
     g.is_default = body.is_default
     g.is_active = body.is_active
     await session.flush()
+    # The evaluator reads access-group membership and the group's own
+    # allowed_case_type_ids directly (hxguard/service.py), and caches the
+    # answer for 30s in EVERY service. Without these two lines a revocation
+    # kept working for half a minute platform-wide — the same defect #16-C
+    # closed for role privileges, on a different input.
+    hxguard.invalidate_cache()   # this process
+    await _hxguard_generation.bump(
+        session, reason=f"access_group.update:{group_id}", actor=_user.user_id)
     return _group_out(g)
 
 
@@ -565,6 +574,14 @@ async def delete_access_group(
             context=f"deactivating access group {group_id}")
         g.is_active = False
         await session.flush()
+        # The evaluator reads access-group membership and the group's own
+        # allowed_case_type_ids directly (hxguard/service.py), and caches the
+        # answer for 30s in EVERY service. Without these two lines a revocation
+        # kept working for half a minute platform-wide — the same defect #16-C
+        # closed for role privileges, on a different input.
+        hxguard.invalidate_cache()   # this process
+        await _hxguard_generation.bump(
+            session, reason=f"access_group.delete:{group_id}", actor=_user.user_id)
     from starlette.responses import Response
     return Response(status_code=204)
 
@@ -620,6 +637,15 @@ async def add_member(
         session.add(m)
 
     await session.flush()
+    # The evaluator reads access-group membership and the group's own
+    # allowed_case_type_ids directly (hxguard/service.py), and caches the
+    # answer for 30s in EVERY service. Without these two lines a revocation
+    # kept working for half a minute platform-wide — the same defect #16-C
+    # closed for role privileges, on a different input.
+    hxguard.invalidate_cache()   # this process
+    await _hxguard_generation.bump(
+        session, reason=f"access_group.member.add:{group_id}",
+        actor=current_user.user_id)
     return _member_out(m)
 
 
@@ -644,6 +670,15 @@ async def remove_member(
             context=f"removing {operator_id} from access group {group_id}")
         await session.delete(m)
         await session.flush()
+        # The evaluator reads access-group membership and the group's own
+        # allowed_case_type_ids directly (hxguard/service.py), and caches the
+        # answer for 30s in EVERY service. Without these two lines a revocation
+        # kept working for half a minute platform-wide — the same defect #16-C
+        # closed for role privileges, on a different input.
+        hxguard.invalidate_cache()   # this process
+        await _hxguard_generation.bump(
+            session, reason=f"access_group.member.remove:{group_id}",
+            actor=_user.user_id)
     from starlette.responses import Response
     return Response(status_code=204)
 
@@ -692,7 +727,7 @@ async def switch_context(
         await session.flush()
 
     # Re-enrich and return
-    from case_service.auth.dependencies import _enrich_with_access_group
+    from velaris_shared.auth.dependencies import _enrich_with_access_group
     user = await _enrich_with_access_group(user, session)
     return user.to_dict()
 
@@ -717,8 +752,8 @@ class RolePrivilegesBody(BaseModel):
 
 
 def _role_privilege_view(role: str) -> dict:
-    from case_service.hxguard import role_store
-    from case_service.hxguard.privileges import (
+    from velaris_shared.hxguard import role_store
+    from velaris_shared.hxguard.privileges import (
         SEEDED_ROLE_PRIVILEGES, effective_privileges,
     )
     return {
@@ -738,7 +773,7 @@ async def list_role_privileges(
     _user: AuthenticatedUser = Depends(hxguard.guard("identity.roles.read")),
 ):
     """Every platform role, with its seeded, stored and effective privileges."""
-    from case_service.hxguard.privileges import KNOWN_ROLES
+    from velaris_shared.hxguard.privileges import KNOWN_ROLES
     return {"roles": [_role_privilege_view(r) for r in KNOWN_ROLES]}
 
 
@@ -756,9 +791,9 @@ async def put_role_privileges(
     once**, which is the fastest route to nobody holding `identity.groups.write`
     that the platform has.
     """
-    from case_service.enterprise.security_events import log_security_event
-    from case_service.hxguard import role_store
-    from case_service.hxguard.privileges import KNOWN_ROLES
+    from velaris_shared.db.security_events import log_security_event
+    from velaris_shared.hxguard import role_store
+    from velaris_shared.hxguard.privileges import KNOWN_ROLES
 
     if role not in KNOWN_ROLES:
         raise HTTPException(404, f"Unknown platform role {role!r}")
@@ -786,9 +821,18 @@ async def put_role_privileges(
         action="identity.roles.write",
         details={"before": before, "after": stored},
     )
+    # The generation bump rides the same transaction as the privilege change:
+    # committed together, or neither. Without it the other services would keep
+    # answering from their 30s decision cache and, worse, would not reload the
+    # role store until their next 60s cron tick — an admin's grant appearing to
+    # work on some routes and not others, which is exactly what the #16-C audit
+    # found and is the reason this row exists.
+    await _hxguard_generation.bump(
+        session, reason=f"role.privileges:{role}", actor=user.user_id)
     await session.commit()
 
     # Refresh from committed state so this worker answers with the new grants
-    # immediately; the cron carries it to the others.
+    # immediately; the generation carries it to the others.
     await role_store.refresh(session)
+    hxguard.invalidate_cache()
     return _role_privilege_view(role)

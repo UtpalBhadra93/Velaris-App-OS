@@ -16,10 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.core.error_codes import (
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.hxguard import generation as hxguard_generation
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.core.error_codes import (
     VAR_EXISTS_409,
     VAR_NOTFOUND_404,
     VAR_NSSTATUS_400,
@@ -35,12 +36,12 @@ from case_service.case_vars.service import (
     RESERVED_NAMESPACES,
     SENSITIVITY_ORDER,
 )
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeVariableModel,
     NamespaceGrantModel,
     VariableNamespaceModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/variables", tags=["case-variables"])
 
@@ -188,7 +189,9 @@ async def create_grant(
         await session.flush()
     except Exception:
         raise coded(409, VAR_EXISTS_409, "Grant already exists")
-    hxguard.invalidate_cache()   # grant mutations invalidate cached decisions
+    hxguard.invalidate_cache()   # this process
+    await hxguard_generation.bump(session, reason="namespace.grant.create",
+                                  actor=user.user_id)   # the other services
     return {"id": str(grant.id)}
 
 
@@ -203,7 +206,9 @@ async def delete_grant(
     if g is None or g.namespace_id != namespace_id:
         raise coded(404, VAR_NOTFOUND_404, "Grant not found")
     await session.delete(g)
-    hxguard.invalidate_cache()   # grant mutations invalidate cached decisions
+    hxguard.invalidate_cache()   # this process
+    await hxguard_generation.bump(session, reason="namespace.grant.delete",
+                                  actor=user.user_id)   # the other services
 
 
 # ── Variable definitions (Case Designer) ─────────────────────────────

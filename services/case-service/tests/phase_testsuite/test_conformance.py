@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from case_service.testsuite import conformance
-from case_service.db.models import MarketplaceWorkspaceModel
+from velaris_shared.db.models import MarketplaceWorkspaceModel
 
 
 def _clean_package() -> dict:

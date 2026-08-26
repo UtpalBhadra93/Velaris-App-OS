@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ArtifactBranchModel,
     CaseTypeModel,
     HxEvolveInsightModel,
@@ -147,7 +147,7 @@ async def test_dismiss_transitions(client, session):
 async def test_prover_respects_tenant_cohort_cap(session):
     """Parity with the manual cohort endpoint: a busy tenant gets an honest
     insufficient-evidence verdict, never a second concurrent cohort."""
-    from case_service.db.models import ReplayRunModel
+    from velaris_shared.db.models import ReplayRunModel
     from case_service.hxevolve import prover
 
     session.add(ReplayRunModel(tenant_id="default", kind="cohort",

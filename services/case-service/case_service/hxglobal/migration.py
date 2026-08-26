@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import RegionModel, TenantRegionAssignmentModel
+from velaris_shared.db.models import RegionModel, TenantRegionAssignmentModel
 from case_service.hxglobal import regions as _  # noqa: F401
 from case_service.hxglobal.protocol import get_region_adapter
 
@@ -70,7 +70,7 @@ async def migrate_tenant(
         session.add(assignment)
 
     try:
-        from case_service.hxstream.emitter import emit_event
+        from velaris_shared.hxstream.emitter import emit_event
         await emit_event(session, "tenant_migration_completed", {
             "tenant_id": tenant_id,
             "target_region_id": str(target_region_id),

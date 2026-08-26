@@ -22,14 +22,14 @@ pytestmark = pytest.mark.asyncio
 
 class TestLLMOps:
     async def test_cost_is_zero_but_flagged_for_unknown_models(self):
-        from case_service.hxnexus import llmops
+        from velaris_shared.llm import llmops
 
         assert llmops.estimate_cost_usd("llama3.2", 1000, 500) == (0.0, True)
         cost, known = llmops.estimate_cost_usd("some-new-model", 1000, 500)
         assert (cost, known) == (0.0, False)   # silent zero would hide spend
 
     async def test_token_estimate_never_zero_for_real_text(self):
-        from case_service.hxnexus import llmops
+        from velaris_shared.llm import llmops
 
         assert llmops.estimate_tokens_from_chars(0) == 0
         assert llmops.estimate_tokens_from_chars(1) == 1
@@ -37,7 +37,7 @@ class TestLLMOps:
 
     async def test_queue_never_raises(self):
         """A metrics failure must not turn a working completion into a failure."""
-        from case_service.hxnexus import llmops
+        from velaris_shared.llm import llmops
 
         llmops.queue_call(
             provider="x", model="y", route="direct", purpose="p",
@@ -46,7 +46,7 @@ class TestLLMOps:
         )   # must not raise
 
     async def test_flush_writes_rows_and_metrics_aggregate(self, session):
-        from case_service.hxnexus import llmops
+        from velaris_shared.llm import llmops
 
         llmops._PENDING.clear()
         for _ in range(3):
@@ -70,7 +70,7 @@ class TestLLMOps:
         assert out["tokens_estimated"] is True
 
     async def test_bad_group_by_is_rejected(self, session):
-        from case_service.hxnexus import llmops
+        from velaris_shared.llm import llmops
 
         with pytest.raises(ValueError, match="group_by"):
             await llmops.metrics(session, group_by="; DROP TABLE")
@@ -209,13 +209,13 @@ class TestManifestV2:
 class TestErrorCodes:
     async def test_undocumented_code_is_refused(self):
         """A code deep-linking to a page that documents nothing is worse than none."""
-        from case_service.core import error_codes as ec
+        from velaris_shared.core import error_codes as ec
 
         with pytest.raises(ValueError, match="not a documented error code"):
             ec.coded(500, "VEL-MADE-UP-500", "boom")
 
     async def test_coded_error_carries_code_and_status(self):
-        from case_service.core import error_codes as ec
+        from velaris_shared.core import error_codes as ec
 
         exc = ec.coded(503, ec.DOC_STORAGE_503, "storage down")
         assert exc.code == ec.DOC_STORAGE_503
@@ -226,12 +226,12 @@ class TestErrorCodes:
         """Additive by design — existing handlers and tests must keep working."""
         from fastapi import HTTPException
 
-        from case_service.core import error_codes as ec
+        from velaris_shared.core import error_codes as ec
 
         assert isinstance(ec.coded(404, ec.DOC_NOTFOUND_404, "x"), HTTPException)
 
     async def test_payload_shape_keeps_detail_where_it_was(self):
-        from case_service.core import error_codes as ec
+        from velaris_shared.core import error_codes as ec
 
         body = ec.error_payload(ec.DOC_UUID_422, "bad uuid")
         assert body["detail"] == "bad uuid"
@@ -243,7 +243,7 @@ class TestErrorCodes:
         import pathlib
         import re
 
-        from case_service.core import error_codes as ec
+        from velaris_shared.core import error_codes as ec
 
         catalog = pathlib.Path(__file__).resolve().parents[3] / "docs/Future/error-catalog.md"
         if not catalog.exists():          # docs/ is not shipped in the mirror
@@ -306,7 +306,7 @@ class TestSecurityRegressions:
     async def test_crdt_sync_reenforces_the_value_cap(self, session):
         """Writing rows directly skips the façade, so the 64KB cap had to be redone."""
         from case_service.core import crdt
-        from case_service.db.models import (
+        from velaris_shared.db.models import (
             CaseInstanceModel, CaseInstanceVariableModel, CaseTypeModel,
         )
 
@@ -334,7 +334,7 @@ class TestSecurityRegressions:
     async def test_crdt_sync_applies_a_legitimate_edit(self, session):
         """The cap must not have broken the normal path."""
         from case_service.core import crdt
-        from case_service.db.models import (
+        from velaris_shared.db.models import (
             CaseInstanceModel, CaseInstanceVariableModel, CaseTypeModel,
         )
 
@@ -393,7 +393,7 @@ class TestAIActionEndToEnd:
     """
 
     async def _seed_namespace(self, session):
-        from case_service.db.models import NamespaceGrantModel, VariableNamespaceModel
+        from velaris_shared.db.models import NamespaceGrantModel, VariableNamespaceModel
         from sqlalchemy import select
 
         ns = (await session.execute(
@@ -427,7 +427,7 @@ class TestAIActionEndToEnd:
         flush deadlocks SQLite — the documented flush -> client-call -> commit
         anti-pattern in this suite.
         """
-        from case_service.db.models import CaseInstanceModel, CaseTypeModel
+        from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
 
         ct = CaseTypeModel(name=f"AIA {uuid.uuid4().hex[:6]}", version="1.0.0",
                            definition_json={"stages": []})
@@ -443,7 +443,7 @@ class TestAIActionEndToEnd:
         """The whole point of the step type — an accepted answer lands."""
         from case_service.case_vars import service as case_vars
         from case_service.core import ai_action
-        from case_service.db.models import AIActionProposalModel
+        from velaris_shared.db.models import AIActionProposalModel
 
         await self._seed_namespace(session)
         case_id = await self._case(session)
@@ -472,7 +472,7 @@ class TestAIActionEndToEnd:
     async def test_override_writes_the_humans_value_not_the_models(self, session):
         from case_service.case_vars import service as case_vars
         from case_service.core import ai_action
-        from case_service.db.models import AIActionProposalModel
+        from velaris_shared.db.models import AIActionProposalModel
 
         await self._seed_namespace(session)
         case_id = await self._case(session)

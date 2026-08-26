@@ -19,7 +19,7 @@ TOKENS = "/api/v1/mcp/tokens"
 
 @pytest.fixture
 def _ext_on(monkeypatch):
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     monkeypatch.setattr(get_settings(), "mcp_external_tokens_enabled", True)
     return get_settings()
 
@@ -44,7 +44,7 @@ class TestKillSwitch:
 
     async def test_outstanding_token_dies_when_disabled(self, client, _ext_on, monkeypatch):
         minted = await _mint(client, ["case_search"])
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_external_tokens_enabled", False)
         resp = await client.post(MCP, json=rpc("ping"), headers=_hdr(minted["token"]))
         assert resp.status_code == 401
@@ -77,7 +77,7 @@ class TestMinting:
 
     async def test_ttl_capped_at_max(self, client, _ext_on):
         from datetime import datetime, timedelta, timezone
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         minted = await _mint(client, ["case_search"], ttl_minutes=100000)
         exp = datetime.fromisoformat(minted["grant"]["expires_at"])
         if exp.tzinfo is None:
@@ -123,7 +123,7 @@ class TestScopedSurface:
     async def test_scope_cannot_resurface_disabled_tool(self, client, _ext_on, monkeypatch):
         # grant minted while writes were ON, then writes get switched OFF:
         # the intersection must drop the write tool even though it's in scope
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_writes_enabled", True)
         minted = await _mint(client, ["case_update_data", "case_search"])
         monkeypatch.setattr(get_settings(), "mcp_writes_enabled", False)
@@ -182,7 +182,7 @@ class TestRevocation:
     async def test_expired_grant_rejected(self, client, _ext_on, session):
         from datetime import timedelta
         from sqlalchemy import update
-        from case_service.db.models import MCPTokenGrantModel, _utcnow
+        from velaris_shared.db.models import MCPTokenGrantModel, _utcnow
 
         minted = await _mint(client, ["case_search"])
         await session.execute(
@@ -201,7 +201,7 @@ class TestRevocation:
 class TestExternalRateLimit:
     async def test_per_jti_budget_429(self, client, _ext_on, monkeypatch):
         from case_service.api.routers import hxmcp as transport
-        from case_service.hxnexus.guard import _RateLimiter
+        from velaris_shared.llm.guard import _RateLimiter
         monkeypatch.setattr(transport, "_ext_rate_limiter",
                             _RateLimiter(max_calls=3, window_seconds=60))
         minted = await _mint(client, ["case_search"])

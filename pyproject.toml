@@ -42,5 +42,10 @@ addopts = "-v --tb=short"
 
 [tool.uv.sources]
 velaris-ir = { workspace = true }
+velaris-shared = { workspace = true }
+velaris-case-service = { workspace = true }
+velaris-analytics-service = { workspace = true }
+velaris-hxgraph-service = { workspace = true }
+velaris-hxmigrate-service = { workspace = true }
 velaris-sdk = { workspace = true }
 velaris-engine = { workspace = true }

@@ -5,6 +5,8 @@ description = "Velaris Case Management Service"
 requires-python = ">=3.12"
 license = "LicenseRef-BSL-1.1"
 dependencies = [
+    # The shared layer carved out at 13b: config, db, auth, hxguard.
+    "velaris-shared",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.30",
@@ -27,6 +29,7 @@ dependencies = [
     "Pillow>=10.4",
     "reportlab>=4.2",
     "python-multipart>=0.0.9",
+    "pyotp>=2.9.0",           # MFA — imported at module scope by auth_real
     "aiofiles>=23.2",
     "redis>=5.0",
     "locust>=2.31",
@@ -56,6 +59,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # The extracted services, for tests only. `tests/phase_authz/
+    # test_ungated_routes.py` sweeps the PLATFORM's route table, which after
+    # 13c-e means all four apps — a sweep of one would silently stop watching
+    # the 80 routes that left.
+    "velaris-analytics-service",
+    "velaris-hxgraph-service",
+    "velaris-hxmigrate-service",
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",

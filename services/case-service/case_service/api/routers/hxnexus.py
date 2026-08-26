@@ -26,17 +26,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     CaseInstanceModel, DocumentModel, DocumentVersionModel,
     CopilotConversationModel, CopilotMessageModel,
     CaseAssignmentModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
-from case_service.hxnexus.factory import get_llm_backend, get_ai_info, check_ai_available
-from case_service.hxnexus.guard import (
+from velaris_shared.llm.factory import get_llm_backend, get_ai_info, check_ai_available
+from velaris_shared.llm.guard import (
     chat_rate_limiter, regen_rate_limiter, global_rate_limiter,
     validate_message_length, scan_input,
 )
@@ -47,7 +47,7 @@ from case_service.storage import get_storage_backend
 
 log = logging.getLogger(__name__)
 
-from case_service import hxguard
+from velaris_shared import hxguard
 
 router = APIRouter(prefix="/hxnexus", tags=["hxnexus"])
 
@@ -142,7 +142,7 @@ async def llmops_metrics(
     """
     from datetime import datetime, timedelta, timezone
 
-    from case_service.hxnexus import llmops
+    from velaris_shared.llm import llmops
 
     since = (
         datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -206,7 +206,7 @@ async def index_case_documents(
     session: AsyncSession = Depends(get_session),
 ):
     """Fetch all documents for a case, extract text, embed, and store chunks."""
-    from case_service.db.models import DocumentChunkModel
+    from velaris_shared.db.models import DocumentChunkModel
 
     _check_global_rate(current_user)
     case = await _assert_case_access(case_id, current_user, session)
@@ -259,7 +259,7 @@ async def upload_and_index(
     session: AsyncSession = Depends(get_session),
 ):
     """Upload a document (PDF, DOCX, TXT) and immediately index it for RAG."""
-    from case_service.db.models import DocumentChunkModel
+    from velaris_shared.db.models import DocumentChunkModel
 
     data = await file.read()
     content_type = file.content_type or "application/octet-stream"
@@ -328,7 +328,7 @@ async def case_ask(
     `local_only` (default — forced local Ollama) or `external_allowed`
     (tenant consented to external processing; egress is pseudonymized,
     minimized, and audited). Feature itself is opt-in via `ai.case_qa`."""
-    from case_service import hxguard
+    from velaris_shared import hxguard
     from case_service.hxnexus.case_qa import ask_case
 
     _check_global_rate(current_user)
@@ -405,7 +405,7 @@ async def hxnexus_chat(
     # meet.recording.view; withheld sources are disclosed to the model).
     case_context = None
     if body.case_id:
-        from case_service import hxguard
+        from velaris_shared import hxguard
         from case_service.hxnexus.case_qa import _gather_sources
 
         case = await _assert_case_access(body.case_id, current_user, session)
@@ -570,8 +570,8 @@ async def delete_conversation(
 
 from case_service.hxnexus.polyglot import translate, analyze, compare
 from case_service.hxnexus.autodoc import get_business_guide, get_dev_guide
-from case_service.db.models import BpmConceptModel
-from case_service.core.error_codes import (
+from velaris_shared.db.models import BpmConceptModel
+from velaris_shared.core.error_codes import (
     CONSENT_REFUSED_403,
     LLM_NOTFOUND_404,
     LLM_NOT_ASSIGNED_403,

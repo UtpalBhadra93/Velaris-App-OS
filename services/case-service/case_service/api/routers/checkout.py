@@ -35,22 +35,22 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.checkout import service as order_svc
 from case_service.checkout import tokens as token_svc
 from case_service.checkout import webhooks as wh
 from case_service.checkout.tokens import require_service_token
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CheckoutOrderModel, CheckoutServiceTokenModel, CheckoutWebhookEventModel,
     CheckoutWebhookIntegrationModel, MarketplaceInstallModel, _utcnow,
 )
-from case_service.db.session import get_session
-from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
+from velaris_shared.db.session import get_session
+from velaris_shared.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
 
-from case_service.hxguard import service as hxguard
+from velaris_shared.hxguard import service as hxguard
 
 router = APIRouter(prefix="/checkout", tags=["checkout"])
 

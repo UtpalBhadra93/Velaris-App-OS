@@ -19,10 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from case_service.api.schemas.cases import SLAStatusResponse
 from case_service.core import sla_tracker
 from case_service.core.sla_tracker import start_sla as sla_start, start_sla_v2
-from case_service.db import repository as repo
-from case_service.db.models import CaseSLAInstanceModel
-from case_service.auth.dependencies import get_current_user
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseSLAInstanceModel
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db.session import get_session
 
 router = APIRouter(tags=["sla"], dependencies=[Depends(get_current_user)])
 

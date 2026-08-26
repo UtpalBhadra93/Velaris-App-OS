@@ -43,7 +43,7 @@ async def regenerate_structural(session: AsyncSession, case_type_id) -> bool:
     """Rebuild the structural test(s) of a case type's EXISTING generated suite,
     preserving any AI scenarios and flagging them stale. No-op if no generated
     suite exists yet (nothing has been generated for this case type)."""
-    from case_service.db.models import CaseTypeModel, TestSuiteModel
+    from velaris_shared.db.models import CaseTypeModel, TestSuiteModel
     from case_service.testsuite.generator import generate_structural
 
     ctid = _as_uuid(case_type_id)
@@ -71,7 +71,7 @@ async def mark_ai_stale(session: AsyncSession, case_type_id=None) -> int:
     """Flag AI scenarios stale on generated suite(s) that actually contain AI tests.
     `case_type_id=None` flags ALL generated suites (used for connector/email changes,
     which can affect any case type's scenarios). Returns the count flagged."""
-    from case_service.db.models import TestSuiteModel
+    from velaris_shared.db.models import TestSuiteModel
 
     q = select(TestSuiteModel).where(TestSuiteModel.suite_type == "generated")
     ctid = _as_uuid(case_type_id)
@@ -114,7 +114,7 @@ async def on_scenario_source_changed(session: AsyncSession, case_type_id=None) -
 # host request's committed state. get_engine() gives an independent connection.
 
 def _bg_session_factory():
-    from case_service.db.session import get_engine
+    from velaris_shared.db.session import get_engine
     from sqlalchemy.ext.asyncio import AsyncSession as _S, async_sessionmaker
     return async_sessionmaker(get_engine(), class_=_S, expire_on_commit=False)
 

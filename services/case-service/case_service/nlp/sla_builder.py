@@ -26,7 +26,7 @@ import re
 from typing import Any
 
 from case_service.core.sla_tracker import parse_iso8601_duration
-from case_service.hxnexus.factory import generate_json as _ai_generate_json
+from velaris_shared.llm.factory import generate_json as _ai_generate_json
 from case_service.nlp.case_type_builder import _slug
 
 logger = logging.getLogger(__name__)

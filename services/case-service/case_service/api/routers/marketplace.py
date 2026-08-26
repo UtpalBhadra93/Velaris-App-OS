@@ -82,12 +82,12 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.config import get_settings
-from case_service.db.session import get_session
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.config import get_settings
+from velaris_shared.db.session import get_session
+from velaris_shared.db.models import (
     MarketplaceSourceModel,
     MarketplacePackageCacheModel,
     MarketplaceWorkspaceModel,
@@ -100,7 +100,7 @@ from case_service.db.models import (
     MarketplaceBlacklistModel,
     MarketplaceAccessRuleModel,
 )
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     MKT_ACCESS_403,
     MKT_BLOCKED_403,
     MKT_CONFORMANCE_422,
@@ -163,12 +163,26 @@ def _get_encryption_key() -> bytes | None:
 
 def _encrypt_token(token: str) -> str:
     """Encrypt a source PAT or licence key with AES-256-GCM.
-    Falls back to base64 (dev mode) when no key is configured.
+
+    When no dedicated key is configured this used to store the token as plain
+    **base64** — a personal access token sitting in the database in a form
+    anyone can read, labelled `b64:` as if that were a cipher. An install that
+    never set `VELARIS_CASE_MARKETPLACE_TOKEN_KEY` or
+    `VELARIS_CASE_STORAGE_MASTER_KEY` had no encryption here at all and nothing
+    said so.
+
+    The fallback is now hxv3 (AES-256-GCM under a key derived from
+    `auth_secret`, which every install has), so there is no configuration under
+    which this writes plaintext. Existing `b64:` values are still read — see
+    `_decrypt_token` — because refusing them would lock an install out of its
+    own sources.
     """
     key = _get_encryption_key()
     if not key:
-        import base64
-        return "b64:" + base64.b64encode(token.encode()).decode()
+        import json as _json
+
+        from case_service.hxbridge.encryption import encrypt_credentials
+        return "hxv3json:" + _json.dumps(encrypt_credentials({"t": token}))
 
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     import os, base64
@@ -180,7 +194,15 @@ def _encrypt_token(token: str) -> str:
 def _decrypt_token(enc: str) -> str:
     if not enc:
         return enc
-    if enc.startswith("b64:"):
+    if enc.startswith("hxv3json:"):
+        import json as _json
+
+        from case_service.hxbridge.encryption import decrypt_credentials
+        try:
+            return decrypt_credentials(_json.loads(enc[len("hxv3json:"):]))["t"]
+        except Exception:
+            return enc
+    if enc.startswith("b64:"):   # legacy plaintext — read, never written again
         import base64
         try:
             return base64.b64decode(enc[4:].encode()).decode()
@@ -1108,6 +1130,13 @@ async def install_package(
         raise coded(403, MKT_BLOCKED_403, ar_reason)
 
     # Download + verify checksum + validate manifest before touching the container
+    # #29: what the package DECLARES it needs, resolved from the verified
+    # manifest and carried to the install row so the broker can hold it to it.
+    # `None` stays None when there is nothing to verify (no download URL, no
+    # checksum) — an absent declaration is not an empty one, and only the
+    # second means "may touch nothing".
+    declared_permissions: list[dict[str, str]] | None = None
+
     if pkg.download_url and pkg.checksum_sha256:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1117,6 +1146,9 @@ async def install_package(
             from case_service.marketplace.checksum import verify_checksum, parse_and_validate_manifest
             verify_checksum(hxapp_bytes, pkg.checksum_sha256)
             manifest = parse_and_validate_manifest(hxapp_bytes)
+            # Attached by parse_and_validate_manifest, never read from the
+            # manifest itself — the underscore marks it as derived.
+            declared_permissions = manifest.get("_permissions")
             # Roadmap #15: wasm is a declarable runtime (schema locked ahead
             # of HxSandbox) but cannot EXECUTE until HxSandbox (#17) ships —
             # reject at install, not at first run.
@@ -1143,7 +1175,7 @@ async def install_package(
                 # accumulating versions.
                 import hashlib as _hashlib
 
-                from case_service.db.models import HxSandboxModuleModel
+                from velaris_shared.db.models import HxSandboxModuleModel
                 existing_mod = (await session.execute(
                     select(HxSandboxModuleModel).where(
                         HxSandboxModuleModel.tenant_id == ws.tenant_id,
@@ -1218,6 +1250,7 @@ async def install_package(
         package_version=pkg.version,
         status="installed",
         licence_key_enc=_encrypt_token(body.licence_key) if body.licence_key else None,
+        declared_permissions=declared_permissions,
     )
     session.add(item)
     await session.commit()
@@ -1371,7 +1404,7 @@ class GrantRevokeReq(BaseModel):
 
 async def _visible_grant(session: AsyncSession, user: AuthenticatedUser, grant_id: str):
     """Tenant-scoped grant lookup — 404 anti-oracle."""
-    from case_service.db.models import MarketplaceCapabilityGrantModel
+    from velaris_shared.db.models import MarketplaceCapabilityGrantModel
     try:
         gid = uuid.UUID(grant_id)
     except ValueError:
@@ -1389,7 +1422,7 @@ async def list_grants(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    from case_service.db.models import MarketplaceCapabilityGrantModel
+    from velaris_shared.db.models import MarketplaceCapabilityGrantModel
     from case_service.marketplace import grants as mkt_grants
     q = select(MarketplaceCapabilityGrantModel).where(
         MarketplaceCapabilityGrantModel.tenant_id == (user.tenant_id or "default"))
@@ -1407,7 +1440,7 @@ async def get_grant(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    from case_service.db.models import MarketplaceNetworkLogModel
+    from velaris_shared.db.models import MarketplaceNetworkLogModel
     from case_service.marketplace import egress as mkt_egress
     from case_service.marketplace import grants as mkt_grants
     grant = await _visible_grant(session, user, grant_id)
@@ -1613,6 +1646,9 @@ async def approve_workspace(
                 licence_key_enc=item.licence_key_enc,
                 approved_by=user.user_id,
                 workspace_id=ws.id,
+                # #29: the ceiling travels with the package. Approving an
+                # install is not the moment to widen what it declared.
+                declared_permissions=item.declared_permissions,
             )
             session.add(install_row)
             await session.flush()
@@ -2101,7 +2137,7 @@ async def request_release(
         raise coded(400, MKT_OFFICIAL_400, "Only official packages use the release-request flow. Community packages use the sandbox workflow.")
 
     # Write a release request — picked up by HxDeploy on next deployment build
-    from case_service.db.models import MarketplaceReleaseRequestModel
+    from velaris_shared.db.models import MarketplaceReleaseRequestModel
     existing = await session.execute(
         select(MarketplaceReleaseRequestModel).where(
             MarketplaceReleaseRequestModel.tenant_id == (user.tenant_id or "default"),
@@ -2134,7 +2170,7 @@ async def list_release_requests(
 ):
     """List pending official package release requests — visible to admins for inclusion in HxDeploy."""
     _require_admin(user)
-    from case_service.db.models import MarketplaceReleaseRequestModel
+    from velaris_shared.db.models import MarketplaceReleaseRequestModel
     result = await session.execute(
         select(MarketplaceReleaseRequestModel).where(
             MarketplaceReleaseRequestModel.tenant_id == (user.tenant_id or "default"),
@@ -2170,7 +2206,7 @@ async def approve_release_request(
     next request cycle.
     """
     _require_admin(user)
-    from case_service.db.models import MarketplaceReleaseRequestModel
+    from velaris_shared.db.models import MarketplaceReleaseRequestModel
     try:
         rid = uuid.UUID(request_id)
     except ValueError:
@@ -2222,7 +2258,7 @@ async def reject_release_request(
     without tripping the (tenant_id, package_id, status) unique constraint.
     """
     _require_admin(user)
-    from case_service.db.models import MarketplaceReleaseRequestModel
+    from velaris_shared.db.models import MarketplaceReleaseRequestModel
     try:
         rid = uuid.UUID(request_id)
     except ValueError:
@@ -2533,7 +2569,7 @@ async def conformance_results(
     unverified ones. Nothing here uninstalls or delists anything (§6.5).
     """
     _can_view(user)
-    from case_service.db.models import MarketplaceConformanceModel as M
+    from velaris_shared.db.models import MarketplaceConformanceModel as M
     from case_service.marketplace import conformance_gate as conf
 
     tenant_id = user.tenant_id or "default"
@@ -2692,7 +2728,7 @@ async def list_provisioned_packs(
 ):
     """Packs provisioned into this tenant, newest first."""
     _can_view(user)
-    from case_service.db.models import MarketplacePackInstallModel as P
+    from velaris_shared.db.models import MarketplacePackInstallModel as P
 
     rows = (await session.execute(
         select(P).where(P.tenant_id == (user.tenant_id or "default"))
@@ -2764,7 +2800,7 @@ async def pack_upgrade_history(
 ):
     """Upgrade history for a pack, newest first."""
     _can_view(user)
-    from case_service.db.models import MarketplacePackUpgradeModel as U
+    from velaris_shared.db.models import MarketplacePackUpgradeModel as U
 
     rows = (await session.execute(
         select(U).where(U.tenant_id == (user.tenant_id or "default"),

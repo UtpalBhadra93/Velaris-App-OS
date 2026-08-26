@@ -19,7 +19,7 @@ import uuid
 import pytest
 
 from case_service.compliance import dr, dr_cli
-from case_service.db.models import RegionModel
+from velaris_shared.db.models import RegionModel
 
 #: Applied per class rather than module-wide: `main()` is deliberately
 #: synchronous (it owns the event loop), so its tests must not run inside one.

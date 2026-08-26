@@ -12,14 +12,14 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.db.models import CaseTypeModel, CaseInstanceModel, TenantModel
-from case_service.auth.dependencies import get_current_user
+from velaris_shared.db.models import CaseTypeModel, CaseInstanceModel, TenantModel
+from velaris_shared.auth.dependencies import get_current_user
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _fake_admin(user_id: str = "admin-1"):
-    from case_service.auth.models import AuthenticatedUser
+    from velaris_shared.auth.models import AuthenticatedUser
     return AuthenticatedUser(user_id=user_id, email="admin@test.local", roles=["admin"])
 
 
@@ -309,7 +309,7 @@ async def test_24_admin_toggle_case_type_portal_enabled(client: AsyncClient, por
 
 async def test_25_non_admin_cannot_access_portal_admin(client: AsyncClient):
     from case_service.main import app
-    from case_service.auth.models import AuthenticatedUser
+    from velaris_shared.auth.models import AuthenticatedUser
     viewer = AuthenticatedUser(user_id="v", email="v@v.com", roles=["viewer"])
     app.dependency_overrides[get_current_user] = lambda: viewer
     resp = await client.get("/api/v1/portal-admin/tenants")

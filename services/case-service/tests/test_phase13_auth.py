@@ -14,7 +14,7 @@ class TestAuthModels:
         all returned True. That was the shipped behaviour, and it is the defect
         the phase removes: no gate could distinguish "holds the designer role"
         from "is an admin". The flags are now literal and display-only."""
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         admin = AuthenticatedUser(user_id="u1", roles=["admin"])
         assert admin.is_admin is True
         assert admin.is_designer is False
@@ -22,20 +22,20 @@ class TestAuthModels:
         assert not hasattr(admin, "has_role")
 
     def test_designer_role(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u2", roles=["designer"])
         assert user.is_admin is False
         assert user.is_designer is True
         assert user.is_case_worker is False
 
     def test_case_worker_role(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u3", roles=["case_worker"])
         assert user.is_case_worker is True
         assert user.is_designer is False
 
     def test_to_dict(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u1", username="test", email="t@e.com", roles=["admin"])
         d = user.to_dict()
         assert d["user_id"] == "u1"
@@ -45,19 +45,19 @@ class TestAuthModels:
 
 class TestJWTHandler:
     def test_create_dev_token(self):
-        from case_service.auth.jwt_handler import create_dev_token
+        from velaris_shared.auth.jwt_handler import create_dev_token
         token = create_dev_token("test-user", roles=["admin"])
         assert isinstance(token, str)
         assert len(token) > 10
 
     def test_decode_dev_token(self):
-        from case_service.auth.jwt_handler import create_dev_token, decode_jwt_token
+        from velaris_shared.auth.jwt_handler import create_dev_token, decode_jwt_token
         token = create_dev_token("test-user", roles=["admin"], secret="test-secret")
         claims = decode_jwt_token(token, secret="test-secret")
         assert claims["sub"] == "test-user"
 
     def test_decode_invalid_token(self):
-        from case_service.auth.jwt_handler import decode_jwt_token
+        from velaris_shared.auth.jwt_handler import decode_jwt_token
         try:
             decode_jwt_token("invalid-token", secret="test-secret")
             assert False, "Should have raised"
@@ -65,7 +65,7 @@ class TestJWTHandler:
             pass
 
     def test_extract_keycloak_claims(self):
-        from case_service.auth.jwt_handler import extract_user_from_claims
+        from velaris_shared.auth.jwt_handler import extract_user_from_claims
         claims = {
             "sub": "user-123",
             "preferred_username": "john",
@@ -79,7 +79,7 @@ class TestJWTHandler:
         assert info["email"] == "john@example.com"
 
     def test_extract_simple_claims(self):
-        from case_service.auth.jwt_handler import extract_user_from_claims
+        from velaris_shared.auth.jwt_handler import extract_user_from_claims
         claims = {"sub": "u1", "roles": ["viewer"], "name": "Test"}
         info = extract_user_from_claims(claims)
         assert info["roles"] == ["viewer"]
@@ -89,7 +89,7 @@ class TestJWTHandler:
 async def _mk_login_user(session, username: str, roles: list[str], password: str = "S3cure-pass!") -> str:
     """Real-auth era: login validates against velaris_users with a bcrypt hash."""
     from case_service.api.routers.auth_real import _hash_password
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     session.add(HelixUserModel(
         username=username, email=f"{username}@test.local",
         password_hash=_hash_password(password), roles=roles, is_active=True,
@@ -164,17 +164,17 @@ class TestRoleBasedAccess:
     phase exists to remove. The flags that remain are display-only."""
 
     def test_role_flags_are_literal_not_inherited(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u1", roles=["admin"])
         assert user.is_admin is True
         assert user.is_designer is False, "admin must not imply designer any more"
 
     def test_flags_are_false_for_an_unprivileged_user(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         user = AuthenticatedUser(user_id="u1", roles=["viewer"])
         assert user.is_admin is False
         assert user.is_designer is False
 
     def test_has_role_is_gone(self):
-        from case_service.auth.models import AuthenticatedUser
+        from velaris_shared.auth.models import AuthenticatedUser
         assert not hasattr(AuthenticatedUser(user_id="u1", roles=[]), "has_role")

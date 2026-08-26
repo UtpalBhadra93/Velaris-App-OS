@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 from case_service.core.assignment_router import _RESOLVERS
-from case_service.db.models import CaseAssignmentModel, UserDirectoryModel
+from velaris_shared.db.models import CaseAssignmentModel, UserDirectoryModel
 
 pytestmark = pytest.mark.asyncio
 

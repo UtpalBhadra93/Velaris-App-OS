@@ -7,7 +7,7 @@
 # start-velaris.sh derives them at runtime, and a service that skipped them
 # would behave differently under systemd than under the script:
 #
-#   DATABASE_BACKEND       read from velaris.yaml. case_service/config.py reads
+#   DATABASE_BACKEND       read from velaris.yaml. velaris_shared/config.py reads
 #                          it (AliasChoices DATABASE_BACKEND) and DEFAULTS TO
 #                          postgresql when absent — so on a MySQL/MariaDB
 #                          install, omitting it would silently dispatch the
@@ -43,5 +43,29 @@ esac
 export DATABASE_BACKEND
 
 export VELARIS_SERVICE_REGISTRY="${VELARIS_SERVICE_REGISTRY:-{\"order-service\":\"http://localhost:3001\",\"notification-service\":\"http://localhost:3002\"}}"
+
+# Internal TLS (#18) — appended here rather than baked into each unit's
+# ExecStart, so turning it on is one .env line and not five unit edits.
+# The service name comes from the uvicorn module argument, which is the one
+# thing every unit's command line already carries.
+_svc=""
+for _a in "$@"; do
+  case "$_a" in
+    case_service.main:app)      _svc="case-service" ;;
+    analytics_service.main:app) _svc="analytics-service" ;;
+    hxgraph_service.main:app)   _svc="hxgraph-service" ;;
+    hxmigrate_service.main:app) _svc="hxmigrate-service" ;;
+  esac
+done
+if [ -n "$_svc" ] && [ -f "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh"
+  _tls_args="$(VELARIS_DIR="$VELARIS_DIR" _velaris_tls_args "$_svc")"
+  if [ -n "$_tls_args" ]; then
+    echo "Internal TLS enabled for $_svc" >&2
+    # shellcheck disable=SC2086 - deliberate word splitting; the values are ours
+    exec "$@" $_tls_args
+  fi
+fi
 
 exec "$@"

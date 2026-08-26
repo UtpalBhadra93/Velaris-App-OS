@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseRiskSignalModel
+from velaris_shared.db.models import CaseRiskSignalModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import official_packs, packs
 from tests.conftest import create_case, deploy_case_type

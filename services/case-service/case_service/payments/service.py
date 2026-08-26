@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseStepCompletionModel,
     ConnectorRegistryModel,
@@ -61,7 +61,7 @@ async def _get_stripe_connector(
 async def _emit_hxstream(case_id: uuid.UUID, event_type: str, data: dict) -> None:
     """Fire an HxStream event without blocking."""
     try:
-        from case_service.hxstream.emitter import emit_event
+        from velaris_shared.hxstream.emitter import emit_event
         await emit_event(str(case_id), event_type, data)
     except Exception as exc:
         logger.warning("HxStream emit failed (%s): %s", event_type, exc)
@@ -245,7 +245,7 @@ async def handle_stripe_webhook(
 
 async def _on_payment_succeeded(session: AsyncSession, pr: PaymentRequestModel) -> None:
     """Create step completion and attempt stage auto-advance."""
-    from case_service.db.models import CaseTypeModel
+    from velaris_shared.db.models import CaseTypeModel
 
     now      = _utcnow()
     stage_id = (await _get_current_stage(session, pr.case_id)) or "unknown"
@@ -443,7 +443,7 @@ async def create_disbursement(
                 select(CaseInstanceModel).where(CaseInstanceModel.id == case_id)
             )).scalar_one_or_none()
             if case and case.case_type_id:
-                from case_service.db.models import CaseTypeModel
+                from velaris_shared.db.models import CaseTypeModel
                 ct = (await session.execute(
                     select(CaseTypeModel).where(CaseTypeModel.id == case.case_type_id)
                 )).scalar_one_or_none()

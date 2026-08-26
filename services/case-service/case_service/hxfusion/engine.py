@@ -41,7 +41,7 @@ async def start_instance(
     session,
 ) -> "ProcessInstanceModel":  # type: ignore[name-defined]
     """Create a ProcessInstance and launch execution as a background task."""
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         ProcessDefinitionModel, ProcessInstanceModel, ProcessCaseBindingModel,
     )
     defn = await session.get(ProcessDefinitionModel, definition_id)
@@ -104,7 +104,7 @@ async def resume_instance(
     session,
 ) -> "ProcessInstanceModel":  # type: ignore[name-defined]
     """Resume a suspended/failed instance from the node it stopped at."""
-    from case_service.db.models import ProcessInstanceModel, ProcessDefinitionModel
+    from velaris_shared.db.models import ProcessInstanceModel, ProcessDefinitionModel
 
     instance = await session.get(ProcessInstanceModel, instance_id)
     if not instance:
@@ -155,8 +155,8 @@ async def _run_instance(
     start_node: str | None = None,
 ) -> None:
     """Execute the process instance node-by-node until end or suspension."""
-    from case_service.db.session import get_session_factory as _get_sf
-    from case_service.db.models import ProcessInstanceModel
+    from velaris_shared.db.session import get_session_factory as _get_sf
+    from velaris_shared.db.models import ProcessInstanceModel
 
     async with _get_sf()() as session:
         try:
@@ -256,7 +256,7 @@ async def _execute_node(
 
     Returns (result_dict | None, suspended: bool, error_msg | None).
     """
-    from case_service.db.models import ProcessTaskLogModel
+    from velaris_shared.db.models import ProcessTaskLogModel
 
     log = ProcessTaskLogModel(
         instance_id=instance.id,
@@ -341,7 +341,7 @@ async def _run_service_task(
         return {"_service_task_stub": node.id}, None
 
     try:
-        from case_service.db.session import get_session_factory as _get_sf
+        from velaris_shared.db.session import get_session_factory as _get_sf
         from case_service.hxbridge.protocol import get_connector
 
         async with _get_sf()() as session:
@@ -379,8 +379,8 @@ async def _enqueue_bot_task(instance, node, context) -> str | None:
     from sqlalchemy import select
 
     from case_service.bots import service as bot_service
-    from case_service.db.models import BotDefinitionModel
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.models import BotDefinitionModel
+    from velaris_shared.db.session import get_session_factory
 
     ext = node.extensions or {}
     bot_name = str(ext.get("bot") or ext.get("botName") or "").strip()
@@ -414,8 +414,8 @@ async def _spawn_child_case(instance: Any, node: BpmnNode, context: dict) -> Non
     if not case_type_id:
         return
     try:
-        from case_service.db.session import get_session_factory as _get_sf
-        from case_service.db.models import CaseInstanceModel, ProcessCaseBindingModel, ProcessInstanceModel
+        from velaris_shared.db.session import get_session_factory as _get_sf
+        from velaris_shared.db.models import CaseInstanceModel, ProcessCaseBindingModel, ProcessInstanceModel
         async with _get_sf()() as session:
             child = CaseInstanceModel(
                 case_type_id=case_type_id,
@@ -449,7 +449,7 @@ async def _fail(session, instance: Any, node_id: str, node_name: str | None, err
 
 async def _resolve_bindings(session, instance: Any) -> None:
     from sqlalchemy import select, update
-    from case_service.db.models import ProcessCaseBindingModel
+    from velaris_shared.db.models import ProcessCaseBindingModel
     await session.execute(
         update(ProcessCaseBindingModel)
         .where(ProcessCaseBindingModel.instance_id == instance.id)
@@ -460,7 +460,7 @@ async def _resolve_bindings(session, instance: Any) -> None:
 
 async def _emit(event_type: str, instance: Any, payload: dict) -> None:
     try:
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.hxstream.emitter import emit_trace
         await emit_trace(
             event_type,
             {**payload, "instance_id": str(instance.id), "definition_id": str(instance.definition_id)},

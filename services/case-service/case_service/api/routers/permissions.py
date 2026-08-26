@@ -9,11 +9,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import SystemConfigModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import SystemConfigModel
+from velaris_shared.db.session import get_session
 
 router = APIRouter(tags=["permissions"])
 
@@ -63,6 +63,11 @@ _DEFAULTS: dict[str, list[str]] = {
     "/push-admin":     ["admin"],
     "/hxglobal":       ["admin"],
     "/escalation":     ["admin", "designer"],
+    "/bots":           ["admin", "developer"],
+    # Read-only for a manager: seeing what runs overnight is not the same as
+    # being able to change it. The server gates each call by privilege anyway —
+    # this map is what the UI hides, never what protects the data.
+    "/scheduler":      ["admin", "developer", "manager"],
 }
 
 

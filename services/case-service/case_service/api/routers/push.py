@@ -24,16 +24,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     DeviceTokenModel,
     NotificationPreferenceModel,
     CaseTypeNotificationOverrideModel,
     NotificationLogModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.push.service import get_vapid_public_key, send_to_user
 from case_service.push.protocol import PushPayload
 

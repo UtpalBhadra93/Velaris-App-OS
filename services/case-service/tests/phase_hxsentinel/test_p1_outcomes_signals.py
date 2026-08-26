@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import CaseOutcomeModel, CaseRiskSignalModel
+from velaris_shared.db.models import CaseOutcomeModel, CaseRiskSignalModel
 from case_service.sentinel import service as sentinel
 from case_service.sentinel import taxonomy
 from case_service.sentinel.hashing import normalize, signal_digest
@@ -124,7 +124,7 @@ class TestOutcomes:
         assert len(rows) == 2, "re-labelling must INSERT, never UPDATE"
 
     async def test_labelling_writes_audit(self, client, session, case):
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         await client.put(f"{RISK}/cases/{case['id']}/outcome", json={"outcome": "abuse"})
         actions = [r.action for r in (await session.execute(
             select(CaseAuditLogModel).where(
@@ -174,9 +174,9 @@ class TestBulkLabelling:
         """
         import uuid as _uuid
         from datetime import datetime, timedelta, timezone
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
 
         # Create everything through the API FIRST, so no write transaction is
         # held open across a client call (the request has its own connection now
@@ -209,7 +209,7 @@ class TestBulkLabelling:
     async def test_unlabelled_queue_excludes_labelled(self, client, session):
         ct = await deploy_case_type(client, name="Queue CT")
         c = await create_case(client, ct["id"])
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
         row = await session.get(CaseInstanceModel, uuid.UUID(c["id"]))
         row.status = "closed"
         await session.commit()

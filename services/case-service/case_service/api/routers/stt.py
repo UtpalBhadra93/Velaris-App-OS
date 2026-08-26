@@ -28,13 +28,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.llm.guard import _RateLimiter
 from case_service.meet import asr as meet_asr
 from sqlalchemy.ext.asyncio import AsyncSession
 

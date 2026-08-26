@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Any
 
-from case_service.hxnexus.factory import generate_json as _ai_generate_json
+from velaris_shared.llm.factory import generate_json as _ai_generate_json
 
 logger = logging.getLogger(__name__)
 

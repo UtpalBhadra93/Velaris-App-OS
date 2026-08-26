@@ -22,15 +22,20 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     CaseAuditLogModel, ConnectorRegistryModel,
     PaymentDisbursementModel, PaymentRequestModel, PaymentWebhookEventModel,
 )
-from case_service.db.session import get_session
-from case_service.hxbridge.encryption import decrypt_credentials, encrypt_credentials, mask_credentials
+from velaris_shared.db.session import get_session
+from case_service.hxbridge.encryption import (
+    decrypt_credentials,
+    encrypt_credentials,
+    encrypt_credentials_vaulted,
+    mask_credentials,
+)
 from case_service.payments import service as payment_svc
 
 import logging
@@ -39,9 +44,21 @@ logger = logging.getLogger(__name__)
 
 # ── Bank reference encryption helpers (SD-1) ─────────────────────────────────
 
-def _encrypt_bank_ref(value: str) -> str:
-    """Encrypt a bank reference string for TEXT column storage using hxv1: scheme."""
-    return json.dumps(encrypt_credentials({"v": value}))
+async def _encrypt_bank_ref(session, value: str, tenant_id) -> str:
+    """Encrypt a bank reference for TEXT column storage, under the TENANT's key.
+
+    A bank reference is a data subject's banking detail, so it belongs under a
+    key that can be destroyed: erasing a tenant should make this unreadable,
+    which is the entire point of the per-tenant DEK. It sat on the platform-wide
+    key until 2026-08-24 — sound encryption, but nothing about it could be
+    crypto-shredded for one person.
+
+    Falls back to the platform key when no tenant DEK can be resolved, so a
+    disbursement never fails over key material and never stores plaintext.
+    `_decrypt_bank_ref` reads every format, so existing rows are untouched.
+    """
+    return json.dumps(
+        await encrypt_credentials_vaulted(session, {"v": value}, tenant_id=tenant_id))
 
 
 def _decrypt_bank_ref(stored: str) -> str:
@@ -227,8 +244,14 @@ async def initiate_disbursement(
     Actual fund transfer is fulfilled externally (bank transfer, SWIFT, etc.) —
     tracked here for audit and case lifecycle purposes.
     """
-    # SD-1: encrypt bank_reference before storage
-    encrypted_ref = _encrypt_bank_ref(body.bank_reference) if body.bank_reference else None
+    # SD-1: encrypt bank_reference before storage, under this tenant's DEK.
+    # Resolved once, so the key the value is written under and the tenant
+    # recorded on the row cannot disagree about whose data this is.
+    _tenant = getattr(user, "tenant_id", None) or "default"
+    encrypted_ref = (
+        await _encrypt_bank_ref(session, body.bank_reference, _tenant)
+        if body.bank_reference else None
+    )
     try:
         d = await payment_svc.create_disbursement(
             session        = session,
@@ -237,7 +260,7 @@ async def initiate_disbursement(
             amount_cents   = body.amount_cents,
             currency       = body.currency,
             description    = body.description,
-            tenant_id      = getattr(user, "tenant_id", None) or "default",
+            tenant_id      = _tenant,
             actor          = user.email or user.user_id or "unknown",
             bank_reference = encrypted_ref,
             notes          = body.notes,
@@ -512,7 +535,7 @@ async def list_all_payment_requests(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import PaymentRequestModel
+    from velaris_shared.db.models import PaymentRequestModel
     q = select(PaymentRequestModel).order_by(PaymentRequestModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(PaymentRequestModel.status == status)
@@ -528,7 +551,7 @@ async def list_all_disbursements(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import PaymentDisbursementModel
+    from velaris_shared.db.models import PaymentDisbursementModel
     q = select(PaymentDisbursementModel).order_by(PaymentDisbursementModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(PaymentDisbursementModel.status == status)

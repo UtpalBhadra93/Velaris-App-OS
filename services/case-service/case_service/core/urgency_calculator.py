@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseAssignmentModel,
     CaseInstanceModel,
     CaseRelationshipModel,

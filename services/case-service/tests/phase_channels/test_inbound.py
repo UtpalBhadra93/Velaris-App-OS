@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.channels import optout, service, signatures
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ChannelConversationModel,
     ChannelEndpointModel,
     ChannelMessageModel,

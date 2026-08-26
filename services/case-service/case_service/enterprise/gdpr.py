@@ -21,7 +21,7 @@ async def export_user_data(
     session: AsyncSession, user_id: str,
 ) -> dict[str, Any]:
     """Compile all data about a user for GDPR export (Article 15)."""
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseInstanceModel, CaseAuditLogModel, CaseAssignmentModel,
         TenantMembershipModel, SecurityEventModel,
     )
@@ -39,7 +39,7 @@ async def export_user_data(
 
     # User directory profile (covers internal operators; also match by email)
     try:
-        from case_service.db.models import UserDirectoryModel
+        from velaris_shared.db.models import UserDirectoryModel
         from sqlalchemy import or_
         ud_stmt = select(UserDirectoryModel).where(
             or_(UserDirectoryModel.user_id == user_id, UserDirectoryModel.email == user_id)
@@ -132,7 +132,7 @@ async def anonymize_user_data(
     Replaces user_id with 'anon-{short-hash}' to preserve audit trail integrity
     while removing personal identification.
     """
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseInstanceModel, CaseAuditLogModel, CaseAssignmentModel,
         TenantMembershipModel,
     )
@@ -173,7 +173,7 @@ async def anonymize_user_data(
 
     # HxReplay traces are DERIVED case data (design §9 retention): anonymize the
     # run creator and any recorded actor ids inside stored counterfactual traces.
-    from case_service.db.models import ReplayResultModel, ReplayRunModel
+    from velaris_shared.db.models import ReplayResultModel, ReplayRunModel
 
     stmt = update(ReplayRunModel).where(
         ReplayRunModel.created_by == user_id
@@ -213,7 +213,7 @@ async def create_request(
     reason: str | None = None,
 ) -> uuid.UUID:
     """Record a GDPR data subject request."""
-    from case_service.db.models import GDPRRequestModel
+    from velaris_shared.db.models import GDPRRequestModel
 
     req = GDPRRequestModel(
         subject_id=subject_id,
@@ -233,7 +233,7 @@ async def complete_request(
     result_file: str | None = None,
 ) -> None:
     """Mark a GDPR request as completed."""
-    from case_service.db.models import GDPRRequestModel
+    from velaris_shared.db.models import GDPRRequestModel
 
     stmt = update(GDPRRequestModel).where(
         GDPRRequestModel.id == request_id,

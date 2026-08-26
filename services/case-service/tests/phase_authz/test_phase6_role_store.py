@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from case_service.hxguard import role_store
-from case_service.hxguard.privileges import (
+from velaris_shared.hxguard import role_store
+from velaris_shared.hxguard.privileges import (
     SEEDED_ROLE_PRIVILEGES,
     effective_privileges,
     evaluate_privileges,
@@ -225,8 +225,8 @@ class TestCacheGenerationInvalidatesDecisions:
         assert role_store.generation() != before
 
     async def test_the_subject_carries_it(self):
-        from case_service.auth.models import AuthenticatedUser
-        from case_service.hxguard.service import subject_from_user
+        from velaris_shared.auth.models import AuthenticatedUser
+        from velaris_shared.hxguard.service import subject_from_user
 
         user = AuthenticatedUser(user_id="u1", username="u1", email="u@x.com",
                                  roles=["developer"])
@@ -337,7 +337,7 @@ class TestRolePrivilegeEndpoints:
 
     async def test_the_change_is_audited(self, client, session):
         from sqlalchemy import select
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
 
         await client.put("/api/v1/role-privileges/developer", json={
             "privileges": [{"resource": "risk.taxonomy", "actions": ["write"]}]})
@@ -370,7 +370,7 @@ class TestCatalogueExposesPlatformActions:
 
     async def test_every_offered_platform_resource_can_actually_be_granted(self, client):
         """A checkbox that grants nothing is worse than no checkbox."""
-        from case_service.hxguard.privileges import _crosses_into_platform_namespace
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
 
         r = await client.get("/api/v1/access-roles/catalog")
         for res in r.json()["resources"]:
@@ -389,8 +389,8 @@ class TestCatalogueExposesPlatformActions:
 
     async def test_the_catalogue_tracks_the_registry(self, client):
         """Generated, not hand-listed — so a new action is grantable at once."""
-        from case_service.hxguard.actions import ACTIONS, resource_of, verb_of
-        from case_service.hxguard.privileges import _crosses_into_platform_namespace
+        from velaris_shared.hxguard.actions import ACTIONS, resource_of, verb_of
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
 
         r = await client.get("/api/v1/access-roles/catalog")
         offered = {(x["id"], a["id"]) for x in r.json()["resources"]
@@ -411,7 +411,7 @@ class TestLockoutGuardCoversTheStore:
 
     async def _an_admin(self, session):
         import uuid as _uuid
-        from case_service.db.models import HelixUserModel
+        from velaris_shared.db.models import HelixUserModel
 
         user = HelixUserModel(
             username=f"adm-{_uuid.uuid4().hex[:8]}",

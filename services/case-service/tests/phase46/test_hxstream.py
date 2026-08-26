@@ -20,12 +20,12 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from case_service.main import app
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel, TraceEventModel,
 )
-from case_service.hxstream.emitter import emit_trace, _subscribers
+from velaris_shared.hxstream.emitter import emit_trace, _subscribers
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────

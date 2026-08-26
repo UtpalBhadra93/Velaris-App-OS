@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ArtifactBranchModel,
     BranchAuditEventModel,
     BranchReviewModel,
@@ -30,10 +30,10 @@ from case_service.db.models import (
     HelixUserModel,
     HxWorkStoryModel,
 )
-from case_service.db.session import get_session
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.core.error_codes import (
+from velaris_shared.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.core.error_codes import (
     BRANCH_ACTOR_403,
     BRANCH_ARTIFACT_404,
     BRANCH_CONFLICT_409,
@@ -47,8 +47,8 @@ from case_service.core.error_codes import (
     BRANCH_UNSUPPORTED_400,
     coded,
 )
-from case_service.auth.models import AuthenticatedUser
-from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials
+from velaris_shared.auth.models import AuthenticatedUser
+from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials, encrypt_credentials_vaulted
 
 router = APIRouter(prefix="/branches", tags=["hxbranch"])
 
@@ -262,7 +262,7 @@ async def _fetch_remote(env: EnvironmentRegistryModel, path: str) -> Any:
 async def _get_local_artifact(session: AsyncSession, artifact_type: str, artifact_id: str) -> dict:
     """Fetch the current main version of an artifact from the local dev environment."""
     if artifact_type == "case_type":
-        from case_service.db.models import CaseTypeModel
+        from velaris_shared.db.models import CaseTypeModel
         ct = await session.get(CaseTypeModel, uuid.UUID(artifact_id))
         if not ct:
             return {}
@@ -273,26 +273,26 @@ async def _get_local_artifact(session: AsyncSession, artifact_type: str, artifac
             "description": ct.description,
         }
     if artifact_type == "form":
-        from case_service.db.models import FormDefinitionModel
+        from velaris_shared.db.models import FormDefinitionModel
         f = await session.get(FormDefinitionModel, uuid.UUID(artifact_id))
         if not f:
             return {}
         return {"id": str(f.id), "name": f.name, "version": f.version, "definition_json": f.definition_json}
     if artifact_type == "rule":
-        from case_service.db.models import RuleDefinitionModel
+        from velaris_shared.db.models import RuleDefinitionModel
         r = await session.get(RuleDefinitionModel, uuid.UUID(artifact_id))
         if not r:
             return {}
         return {"id": str(r.id), "name": r.name, "version": r.version, "rule_type": r.rule_type, "definition_json": r.definition_json, "enabled": r.enabled}
     if artifact_type in ("integration", "connector"):
-        from case_service.db.models import ConnectorRegistryModel
+        from velaris_shared.db.models import ConnectorRegistryModel
         c = await session.get(ConnectorRegistryModel, uuid.UUID(artifact_id))
         if not c:
             return {}
         # Never include credentials — they contain encrypted secrets
         return {"id": str(c.id), "name": c.name, "connector_type": c.connector_type, "description": c.description, "config": c.config, "enabled": c.enabled}
     if artifact_type == "escalation":
-        from case_service.db.models import EscalationTreeModel
+        from velaris_shared.db.models import EscalationTreeModel
         e = await session.get(EscalationTreeModel, uuid.UUID(artifact_id))
         if not e:
             return {}
@@ -303,7 +303,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
     """Write branch content into the local dev artifact (the merge operation)."""
     now = datetime.now(timezone.utc)
     if artifact_type == "case_type":
-        from case_service.db.models import CaseTypeModel
+        from velaris_shared.db.models import CaseTypeModel
         ct = await session.get(CaseTypeModel, uuid.UUID(artifact_id))
         if not ct:
             raise coded(404, BRANCH_ARTIFACT_404, f"Case type {artifact_id} not found in dev — cannot merge.")
@@ -314,7 +314,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         ct.updated_at = now
         return
     if artifact_type == "form":
-        from case_service.db.models import FormDefinitionModel
+        from velaris_shared.db.models import FormDefinitionModel
         f = await session.get(FormDefinitionModel, uuid.UUID(artifact_id))
         if not f:
             raise coded(404, BRANCH_ARTIFACT_404, f"Form {artifact_id} not found in dev — cannot merge.")
@@ -323,7 +323,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         f.updated_at = now
         return
     if artifact_type == "rule":
-        from case_service.db.models import RuleDefinitionModel
+        from velaris_shared.db.models import RuleDefinitionModel
         r = await session.get(RuleDefinitionModel, uuid.UUID(artifact_id))
         if not r:
             raise coded(404, BRANCH_ARTIFACT_404, f"Rule {artifact_id} not found in dev — cannot merge.")
@@ -334,7 +334,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         r.updated_at = now
         return
     if artifact_type in ("integration", "connector"):
-        from case_service.db.models import ConnectorRegistryModel
+        from velaris_shared.db.models import ConnectorRegistryModel
         c = await session.get(ConnectorRegistryModel, uuid.UUID(artifact_id))
         if not c:
             raise coded(404, BRANCH_ARTIFACT_404, f"Connector {artifact_id} not found in dev — cannot merge.")
@@ -348,7 +348,7 @@ async def _apply_artifact_to_main(session: AsyncSession, artifact_type: str, art
         c.updated_at = now
         return
     if artifact_type == "escalation":
-        from case_service.db.models import EscalationTreeModel
+        from velaris_shared.db.models import EscalationTreeModel
         e = await session.get(EscalationTreeModel, uuid.UUID(artifact_id))
         if not e:
             raise coded(404, BRANCH_ARTIFACT_404, f"Escalation tree {artifact_id} not found in dev — cannot merge.")
@@ -371,7 +371,7 @@ async def _queue_rule_regen(
     if artifact_type != "rule" or not artifact_id:
         return
     try:
-        from case_service.db.models import RuleDefinitionModel
+        from velaris_shared.db.models import RuleDefinitionModel
         rule = await session.get(RuleDefinitionModel, uuid.UUID(artifact_id))
         from case_service.testsuite import regen
         background_tasks.add_task(
@@ -978,7 +978,8 @@ async def set_env_token(
 ):
     """Store an encrypted API token for a registered environment (for live sync)."""
     env = await _get_env_or_404(session, env_id)
-    env.api_token_enc = encrypt_credentials({"token": body.api_token})
+    env.api_token_enc = await encrypt_credentials_vaulted(
+        session, {"token": body.api_token}, tenant_id=getattr(env, "tenant_id", None))
     await session.commit()
     return {"env_id": str(env_id), "label": env.label, "token_set": True}
 

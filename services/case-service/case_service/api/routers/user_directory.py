@@ -9,11 +9,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import UserDirectoryModel, HelixUserModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import UserDirectoryModel, HelixUserModel
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/user-directory", tags=["user-directory"])
 

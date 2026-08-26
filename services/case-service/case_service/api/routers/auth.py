@@ -1,13 +1,13 @@
 """Auth API router — production credential-only login."""
 from __future__ import annotations
 
-from case_service import hxguard
+from velaris_shared import hxguard
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/auth", tags=["auth"])

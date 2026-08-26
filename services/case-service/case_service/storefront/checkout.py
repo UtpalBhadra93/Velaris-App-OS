@@ -16,7 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.checkout import service as checkout_svc
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CheckoutOrderModel, StorefrontAnalyticsEventModel, StorefrontInventoryLogModel,
     StorefrontProductModel, StorefrontProductVariantModel, StorefrontPromotionUseModel,
     StorefrontStoreModel,

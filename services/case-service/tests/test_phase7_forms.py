@@ -5,7 +5,7 @@ SPDX-License-Identifier: BSL-1.1
 from __future__ import annotations
 import uuid
 import pytest
-from case_service.db import repository as repo
+from velaris_shared.db import repository as repo
 
 
 # ─── Form CRUD Tests ─────────────────────────────────────────────

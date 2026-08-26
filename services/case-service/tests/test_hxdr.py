@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from case_service.compliance import dr
-from case_service.db.models import BackupRecordModel, RegionModel, SovereigntyRuleModel
+from velaris_shared.db.models import BackupRecordModel, RegionModel, SovereigntyRuleModel
 
 pytestmark = pytest.mark.asyncio
 

@@ -104,6 +104,26 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
         related: ["VEL-CASE-GUARD-403"],
       },
       {
+        code: "VEL-SYS-GATEWAY-REQUIRED-403",
+        http: "403",
+        symptom:
+          "403 — 'This service is reachable only through the Velaris API gateway.'",
+        rootCause:
+          "The request reached a service port (8201-8204) without the credential the gateway " +
+          "injects on every request it proxies. Either something addressed the service " +
+          "directly instead of the gateway on 8200, or the gateway and the service disagree " +
+          "about VELARIS_GATEWAY_IDENTITY_SECRET — usually because one was restarted after " +
+          "the value changed and the other was not.",
+        resolution:
+          "Operator: send the request to the gateway on 8200. If it already was, the two " +
+          "halves are out of step — confirm the secret matches in .env and in the gateway " +
+          "container's environment, then restart the gateway and the services. Health, " +
+          "readiness and metrics are exempt, so a green /health on a service whose API " +
+          "returns this is the expected symptom, not a contradiction. " +
+          "User: nothing to do — this is a deployment setting, not a permission on the account.",
+        related: ["VEL-CASE-GUARD-403"],
+      },
+      {
         code: "VEL-SYS-UNHANDLED-500",
         http: "500",
         symptom:
@@ -386,6 +406,45 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
           "public domain such as gmail.com — that grants an account to anyone with a mailbox. " +
           "User: ask your administrator for access.",
         related: ["VEL-AUTH-SSO-UNVERIFIED-403"],
+      },
+      {
+        code: "VEL-AUTH-SAML-ASSERTION-400",
+        http: "400",
+        symptom:
+          "\"Sign-in could not be verified.\" — or, for a rejected landing target, " +
+          "\"That sign-in destination is not allowed.\"",
+        rootCause:
+          "The assertion did not survive verification: signature invalid or absent, issuer or " +
+          "audience mismatch, outside the permitted clock skew, an InResponseTo matching no " +
+          "request we made, or already consumed (replay). The same code covers a RelayState " +
+          "landing path that is not same-origin, refused before anything is signed. One code " +
+          "and one message on purpose — which check failed must not be probeable.",
+        resolution:
+          "Operator: the reason is in the security event, never in the response. Check the IdP " +
+          "certificate against the stored one first (an IdP rotation with no metadata re-import " +
+          "is the usual cause), then issuer, audience and clock_skew_seconds. Repeated replay " +
+          "refusals from one address are an attack, not a misconfiguration. " +
+          "User: start the sign-in again — an assertion is single-use and short-lived.",
+        related: ["VEL-AUTH-SAML-PROVISION-403", "VEL-AUTH-SSO-STATE-400"],
+      },
+      {
+        code: "VEL-AUTH-SAML-PROVISION-403",
+        http: "403",
+        symptom:
+          "\"This account is not provisioned in Velaris.\" — or \"An account already uses this " +
+          "email address and is not linked to your identity provider.\"",
+        rootCause:
+          "The identity is genuine and the platform still refuses it: JIT provisioning is off " +
+          "and no account exists, the email domain is not allowlisted, or a local account holds " +
+          "that email and is not linked to this provider. The last one is deliberate — adopting " +
+          "an account by email alone would let anyone controlling a matching mailbox at the IdP " +
+          "inherit a local admin.",
+        resolution:
+          "Operator: create the account, allowlist the domain, or link the existing account " +
+          "deliberately (Studio → Linked accounts). link_by_email defaults to off; leave it off " +
+          "unless you own every domain on the allowlist. " +
+          "User: your provider signed you in correctly, but the account does not exist here yet.",
+        related: ["VEL-AUTH-SSO-PROVISION-403", "VEL-AUTH-EMAIL-TAKEN-409"],
       },
       {
         code: "VEL-AUTH-EMAIL-TAKEN-409",
@@ -1819,6 +1878,55 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
   },
 
   // System-wide errors that can surface on any page.
+  channels: {
+    label: "Omnichannel",
+    entries: [
+      {
+        code: "VEL-CHANNEL-NOTFOUND-404",
+        http: "404",
+        symptom: "\"Not found.\" on a provider webhook; \"Conversation not found.\" on a reply.",
+        rootCause:
+          "On a webhook: unsupported provider, malformed endpoint id, no matching endpoint, or a " +
+          "signature that did not verify — all four answer the same bare 404 deliberately, so an " +
+          "unauthenticated caller cannot learn which endpoints exist or whether the signature was " +
+          "the problem. On a reply: the conversation does not exist, or belongs to another tenant.",
+        resolution:
+          "Operator: compare the URL the provider calls with the endpoint row, then the signing " +
+          "secret. The real reason is in the security event; the response will never tell you.",
+        related: ["VEL-CHANNEL-OPTED-OUT-403", "VEL-CHANNEL-WINDOW-409"],
+      },
+      {
+        code: "VEL-CHANNEL-OPTED-OUT-403",
+        http: "403",
+        symptom:
+          "\"This number has opted out of messages. They can text START to opt back in.\"",
+        rootCause:
+          "The recipient sent STOP and the platform holds an opt-out for that address. Checked " +
+          "before the provider window, because it is a legal obligation rather than a provider " +
+          "preference.",
+        resolution:
+          "Operator: do not work around it — reach the customer on a channel they have not opted " +
+          "out of. Only their own START re-subscribes them. User: text START to that number.",
+        related: ["VEL-CHANNEL-WINDOW-409"],
+      },
+      {
+        code: "VEL-CHANNEL-WINDOW-409",
+        http: "409",
+        symptom:
+          "\"More than 24 hours have passed since this customer's last message, so WhatsApp only " +
+          "accepts a pre-approved template. Choose one to reply.\"",
+        rootCause:
+          "Meta allows free-form replies only within 24 hours of the customer's last inbound " +
+          "message. The platform refuses here rather than at the provider because Meta accepts " +
+          "the message and silently never delivers it.",
+        resolution:
+          "Operator: reply with an approved template, or wait for the customer to message again, " +
+          "which reopens the window. Approve templates at Meta before they are needed.",
+        related: ["VEL-CHANNEL-OPTED-OUT-403", "VEL-CHANNEL-NOTFOUND-404"],
+      },
+    ],
+  },
+
   system: {
     label: "System",
     entries: [

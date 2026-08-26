@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseAuditLogModel, CaseEventLogModel
+from velaris_shared.db.models import CaseAuditLogModel, CaseEventLogModel
 
 MC_SAMPLES = 500
 _STATS_CASE_CAP = 500      # cases sampled for the historical distribution
@@ -92,7 +92,7 @@ async def stage_remaining_stats(session: AsyncSession, case_type_id, stage_id: s
                 CaseEventLogModel.activity_type.in_(("stage_enter", "case_end"))))
     if tenant_id is not None:
         from sqlalchemy import or_
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
         q = q.where(CaseEventLogModel.case_id.in_(
             select(CaseInstanceModel.id).where(
                 or_(CaseInstanceModel.tenant_id == tenant_id,

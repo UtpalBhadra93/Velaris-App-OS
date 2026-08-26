@@ -35,10 +35,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_analytics_session as get_session
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_analytics_session as get_session
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def _next_after_hours_slot(cal, now: datetime) -> datetime:
 
 
 async def _resolve_calendar(session: AsyncSession, calendar_id: str | None):
-    from case_service.db.models import BusinessCalendarModel
+    from velaris_shared.db.models import BusinessCalendarModel
 
     if calendar_id:
         cal = await session.get(BusinessCalendarModel, calendar_id)
@@ -327,7 +327,7 @@ async def _env_for_peer_key(session: AsyncSession, authorization: str | None):
     Mirrors HxDeploy's import_bundle trust model — the same key an admin
     configured for artifact push authorises platform-update peer calls.
     """
-    from case_service.db.models import EnvironmentRegistryModel
+    from velaris_shared.db.models import EnvironmentRegistryModel
 
     key = None
     if authorization and authorization.lower().startswith("bearer "):
@@ -409,7 +409,7 @@ async def peer_status(
 #    code. Brute force on the password field is capped by a D4 sliding-window
 #    limiter (5 attempts / 5 min / IP).
 
-from case_service.middleware.endpoint_rate_limit import rate_limit  # noqa: E402
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit  # noqa: E402
 
 _stepup_rl = rate_limit(max_calls=5, window_seconds=300, name="step-up approval")
 
@@ -426,7 +426,7 @@ class StepUpBody(BaseModel):
 async def _verify_step_up(session: AsyncSession, user: AuthenticatedUser, body: StepUpBody) -> None:
     import bcrypt
     import pyotp
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     from case_service.hxbridge.encryption import decrypt_credentials
 
     # Group J: passkey path — the assertion must verify against a challenge
@@ -435,7 +435,7 @@ async def _verify_step_up(session: AsyncSession, user: AuthenticatedUser, body: 
     # User verification (biometric/PIN) is REQUIRED: step-up replaces
     # password+TOTP, so possession of the authenticator alone is not enough.
     if body.webauthn_credential is not None:
-        from case_service.auth.webauthn_service import complete_authentication
+        from velaris_shared.auth.webauthn_service import complete_authentication
         try:
             _cred, user_verified = await complete_authentication(
                 session, body.webauthn_credential, purpose="stepup",
@@ -501,7 +501,7 @@ def _plan_out(plan, runs, env_labels) -> dict:
 
 
 async def _load_plan(session: AsyncSession, plan_id: uuid.UUID):
-    from case_service.db.models import PlatformUpdatePlanModel
+    from velaris_shared.db.models import PlatformUpdatePlanModel
     plan = await session.get(PlatformUpdatePlanModel, plan_id)
     if plan is None:
         raise HTTPException(404, "Plan not found")
@@ -509,14 +509,14 @@ async def _load_plan(session: AsyncSession, plan_id: uuid.UUID):
 
 
 async def _plan_runs(session: AsyncSession, plan_id: uuid.UUID):
-    from case_service.db.models import PlatformUpdateRunModel
+    from velaris_shared.db.models import PlatformUpdateRunModel
     return (await session.execute(
         select(PlatformUpdateRunModel).where(PlatformUpdateRunModel.plan_id == plan_id)
     )).scalars().all()
 
 
 async def _env_labels(session: AsyncSession) -> dict:
-    from case_service.db.models import EnvironmentRegistryModel
+    from velaris_shared.db.models import EnvironmentRegistryModel
     envs = (await session.execute(select(EnvironmentRegistryModel))).scalars().all()
     return {e.id: e.label or e.name for e in envs}
 
@@ -526,7 +526,7 @@ async def list_plans(
     session: AsyncSession = Depends(get_session),
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
-    from case_service.db.models import PlatformUpdatePlanModel
+    from velaris_shared.db.models import PlatformUpdatePlanModel
     plans = (await session.execute(
         select(PlatformUpdatePlanModel).order_by(PlatformUpdatePlanModel.created_at.desc()).limit(20)
     )).scalars().all()
@@ -670,7 +670,7 @@ async def get_update_settings(
     session: AsyncSession = Depends(get_session),
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
-    from case_service.db.models import PlatformUpdateSettingsModel
+    from velaris_shared.db.models import PlatformUpdateSettingsModel
     row = await session.get(PlatformUpdateSettingsModel, 1)
     if row is None:
         row = PlatformUpdateSettingsModel(id=1)
@@ -685,7 +685,7 @@ async def put_update_settings(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.configure")),
 ):
-    from case_service.db.models import PlatformUpdateSettingsModel
+    from velaris_shared.db.models import PlatformUpdateSettingsModel
     if body.mode is not None and body.mode not in ("auto-soak", "per-env", "manual"):
         raise HTTPException(400, "mode must be auto-soak, per-env, or manual")
     if body.default_soak_hours is not None and not (1 <= body.default_soak_hours <= 24 * 30):
@@ -710,7 +710,7 @@ async def approve_run(
     user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.approve")),
 ):
     """per-env mode: each ring waits for its own explicit approval."""
-    from case_service.db.models import PlatformUpdateRunModel
+    from velaris_shared.db.models import PlatformUpdateRunModel
     run = await session.get(PlatformUpdateRunModel, run_id)
     if run is None:
         raise HTTPException(404, "Run not found")
@@ -731,7 +731,7 @@ async def fleet_versions(
 ):
     """Platform version + last update outcome of every registered environment."""
     import asyncio as _asyncio
-    from case_service.db.models import EnvironmentRegistryModel
+    from velaris_shared.db.models import EnvironmentRegistryModel
 
     envs = (await session.execute(
         select(EnvironmentRegistryModel).order_by(EnvironmentRegistryModel.order_index)

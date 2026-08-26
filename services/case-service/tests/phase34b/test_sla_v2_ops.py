@@ -16,7 +16,7 @@ from case_service.core.user_directory import (
     get_user, get_manager, users_in_access_group, users_with_role,
     get_current_assignee_for_case,
 )
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel, CaseSLAInstanceModel, CaseAssignmentModel,
     EscalationTreeModel, UserDirectoryModel,
 )

@@ -30,12 +30,30 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parents[2] / "case_service"
+#: Where the code actually lives. `velaris_shared` is in this list because the
+#: 13b-e service split moved two `decode_jwt_token` call sites out of
+#: case-service — including the one in `auth/dependencies.py`, the dependency
+#: every authenticated route hangs off. Scanning only case_service left the
+#: guard blind to them, and quietly dropped the non-vacuity count from 5 to 3.
+_CASE_SERVICE = Path(__file__).resolve().parents[2] / "case_service"
+SRC_ROOTS = [
+    _CASE_SERVICE,
+    Path(__file__).resolve().parents[3] / "_shared" / "velaris_shared",
+]
+
+#: Kept for the relative paths in failure messages.
+SRC = _CASE_SERVICE
+
+
+def _python_files():
+    for root in SRC_ROOTS:
+        if root.is_dir():
+            yield from root.rglob("*.py")
 
 
 def _decode_calls_missing_public_key() -> list[str]:
     out: list[str] = []
-    for path in SRC.rglob("*.py"):
+    for path in _python_files():
         try:
             tree = ast.parse(path.read_text())
         except SyntaxError:                      # pragma: no cover
@@ -52,7 +70,11 @@ def _decode_calls_missing_public_key() -> list[str]:
             if any(k.arg is None for k in node.keywords):
                 continue
             if "public_key" not in kwargs:
-                out.append(f"{path.relative_to(SRC)}:{node.lineno}")
+                try:
+                    label = str(path.relative_to(SRC))
+                except ValueError:
+                    label = str(path.relative_to(SRC.parents[2]))
+                out.append(f"{label}:{node.lineno}")
     return out
 
 
@@ -67,7 +89,7 @@ def test_the_scan_is_not_vacuous():
     """A scanner that matched no call at all would pass the test above while
     proving nothing — the same trap the authz parity table guards against."""
     found = 0
-    for path in SRC.rglob("*.py"):
+    for path in _python_files():
         try:
             tree = ast.parse(path.read_text())
         except SyntaxError:                      # pragma: no cover
@@ -77,12 +99,15 @@ def test_the_scan_is_not_vacuous():
             name = getattr(fn, "attr", None) or getattr(fn, "id", None)
             if isinstance(node, ast.Call) and name == "decode_jwt_token":
                 found += 1
-    assert found >= 4, f"expected several decode_jwt_token call sites, saw {found}"
+    assert found >= 5, (
+        f"expected every decode_jwt_token call site, saw {found}. If this "
+        "dropped, code moved to another package and the scan above stopped "
+        "covering it — widen SRC_ROOTS rather than lowering this number.")
 
 
 def test_rs256_token_fails_hs256_only_verification():
     """Pins *why* the argument matters, so the scan above is not folklore."""
-    from case_service.auth.jwt_handler import (create_dev_token, decode_jwt_token,
+    from velaris_shared.auth.jwt_handler import (create_dev_token, decode_jwt_token,
                                                generate_rsa_keypair)
 
     private_key, public_key = generate_rsa_keypair()

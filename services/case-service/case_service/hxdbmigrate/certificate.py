@@ -25,8 +25,8 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseTypeModel,
     HxDBMigrateAnalysisModel,
     HxDBMigrateMigrationRunModel,

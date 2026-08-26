@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import TenantModel
+from velaris_shared.db.models import TenantModel
 
 #: The tenantless caller's token. Matches HxSentinel's DEFAULT_TENANT.
 DEFAULT_TENANT = "default"
@@ -93,6 +93,68 @@ async def tenant_slug(session: AsyncSession, token: str | uuid.UUID | None) -> s
     """
     resolved = await resolve_tenant(session, token)
     return resolved[1] if resolved else (str(token) if token is not None else DEFAULT_TENANT)
+
+
+def is_superadmin(user: Any) -> bool:
+    """Break-glass, and the only way across a tenant boundary.
+
+    A token with **no** tenant is not a superuser: `same_tenant` already reads it
+    as the platform-default tenant, and treating "unset" as "all tenants" is how
+    a missing claim becomes an authorization bypass. Crossing has to be a role
+    somebody was deliberately given.
+    """
+    roles = getattr(user, "roles", None) or []
+    return "superadmin" in roles
+
+
+async def may_reach_tenant(
+    session: AsyncSession, user: Any, row_tenant_id: Any,
+) -> bool:
+    """May this caller see or act on a row belonging to that tenant?"""
+    if is_superadmin(user):
+        return True
+    return await same_tenant(session, row_tenant_id, getattr(user, "tenant_id", None))
+
+
+async def caller_tenant_or_refuse(
+    session: AsyncSession, user: Any, requested: str | None,
+) -> str:
+    """The tenant a write may be attributed to.
+
+    A caller-supplied ``tenant_id`` on a create or update body is a tenant-choice
+    the caller does not have. Where the row it writes is later used to *resolve
+    other rows* — as a schedule's tenant resolves the bots, connectors, cases and
+    sync destinations its action may touch — accepting the field verbatim turns
+    one string into a cross-tenant reach.
+
+    So: a caller whose token names a tenant may only write into that tenant, and
+    a token with no tenant at all (a platform-level operator) keeps the value it
+    asked for. Raises ``PermissionError`` on a mismatch; callers map it to 403.
+    """
+    token = getattr(user, "tenant_id", None)
+    asked = (requested or "").strip() or DEFAULT_TENANT
+    if is_superadmin(user):
+        # Break-glass writes into any tenant, deliberately: this is the role the
+        # installer and platform operators hold, and it is auditable.
+        return asked
+    if not token:
+        # No tenant claim is the platform-default tenant, not "any tenant".
+        return DEFAULT_TENANT if asked == DEFAULT_TENANT else _refuse()
+
+    mine = await resolve_tenant(session, token)
+    theirs = await resolve_tenant(session, asked)
+    if mine is not None and theirs is not None and mine[0] == theirs[0]:
+        return asked
+    if mine is not None and asked == DEFAULT_TENANT:
+        # "default" is the shape a UI sends when it has no opinion; attribute it
+        # to the caller's own tenant rather than to the platform's.
+        return str(mine[1])
+    return _refuse()
+
+
+def _refuse() -> str:
+    raise PermissionError(
+        "This may only be written into your own tenant.")
 
 
 async def same_tenant(

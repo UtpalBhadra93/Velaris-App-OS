@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import pytest
 
-from case_service import hxguard
-from case_service.auth import dependencies as deps
-from case_service.auth.models import ActiveAccessGroup, AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth import dependencies as deps
+from velaris_shared.auth.models import ActiveAccessGroup, AuthenticatedUser
 
 
 def _user(roles, privileges=None):
@@ -136,7 +136,7 @@ class TestNoRouterDecidesOnRoleNames:
         """The ledger permits `roles` reads (superadmin tests, display). It must
         permit no `is_admin` / `is_designer` / `has_role` read at all — those
         are the three that no longer mean what a caller would assume."""
-        from case_service.hxguard.legacy_sites import scan
+        from case_service.hxguard_ledger.legacy_sites import scan
 
         offenders = [f"{s.file}::{s.function}" for s in scan()
                      if {"is_admin", "is_designer", "has_role"} & set(s.direct)]
@@ -203,7 +203,7 @@ class TestPhase4Parity:
         assert answers == {True, False}
 
     def test_every_migrated_action_is_registered(self):
-        from case_service.hxguard.actions import ACTIONS
+        from velaris_shared.hxguard.actions import ACTIONS
         assert not (set(self.LEGACY) - set(ACTIONS))
 
 
@@ -219,12 +219,12 @@ class TestTheTwoNamespacesDoNotCollide:
     theoretical."""
 
     def test_no_action_name_is_in_both_registries(self):
-        from case_service.hxguard.service import CASE_ACTIONS, PLATFORM_ACTIONS
+        from velaris_shared.hxguard.service import CASE_ACTIONS, PLATFORM_ACTIONS
         assert not (set(CASE_ACTIONS) & set(PLATFORM_ACTIONS))
 
     def test_user_allows_refuses_a_case_action_rather_than_answering_it(self):
         """`user_allows` cannot evaluate ReBAC — it has no session and no
         resource. Answering anyway would be the collision's damage in miniature."""
-        from case_service.hxguard.service import CASE_ACTIONS
+        from velaris_shared.hxguard.service import CASE_ACTIONS
         for action in CASE_ACTIONS:
             assert hxguard.user_allows(_user(["admin"]), action) is False, action

@@ -80,18 +80,18 @@ echo ""
 # GATE 1: Product key verification (MUST PASS — first check, always)
 # ════════════════════════════════════════════════════════════════════
 # If systemd already supervises Velaris, starting a second copy from a shell
-# gives two processes racing for 8100/8201/5173. The nohup copy usually wins
+# gives two processes racing for 8100/8201/8202/8203/8204/5173. The nohup copy usually wins
 # the bind, systemd's restarts fail quietly, and the whole thing disappears at
 # the next logout. Refuse instead.
 if systemctl is-active --quiet velaris-case-service 2>/dev/null \
    || systemctl is-active --quiet velaris-engine 2>/dev/null; then
   yellow "  ⚠ Velaris is already running under systemd."
-  echo   "    Status:   sudo systemctl status velaris-engine velaris-case-service velaris-studio"
-  echo   "    Restart:  sudo systemctl restart velaris-engine velaris-case-service velaris-studio"
+  echo   "    Status:   sudo systemctl status velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio"
+  echo   "    Restart:  sudo systemctl restart velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio"
   echo   "    Logs:     sudo journalctl -u velaris-case-service -f"
   echo ""
   echo   "    To run from this shell instead:"
-  echo   "      sudo systemctl stop velaris-engine velaris-case-service velaris-studio"
+  echo   "      sudo systemctl stop velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio"
   exit 0
 fi
 
@@ -203,7 +203,7 @@ docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" down --remove-o
 sudo systemctl stop postgresql 2>/dev/null || true
 
 # Host processes only — these ports belong to uvicorn/vite, not to Docker.
-for port in 8100 8201 5173; do
+for port in 8100 8201 8202 8203 8204 5173; do
   fuser -k "${port}/tcp" 2>/dev/null || true
 done
 
@@ -431,7 +431,7 @@ export VELARIS_SERVICE_REGISTRY='{"order-service":"http://localhost:3001","notif
 
 # DB SDK: the database backend was already detected, allowlist-gated, and exported
 # near the top (so Steps 3/4/4b/Gate-2 could branch). The Python layer
-# (case_service.db.backends) enforces the same allowlist — fail-closed both sides.
+# (velaris_shared.db.backends) enforces the same allowlist — fail-closed both sides.
 green "  ✓ Environment ready (database: $DATABASE_BACKEND)"
 
 # ── Step 5b: Check Ollama ─────────────────────────────────────────
@@ -453,11 +453,39 @@ else
 fi
 echo ""
 
+# ── Internal TLS (roadmap #18) ────────────────────────────────────
+# Off by default. `_velaris_tls_args` prints nothing unless
+# VELARIS_INTERNAL_TLS_ENABLED=true, so the launch commands below are byte-for-
+# byte what they were. Defined as a no-op FIRST so the script still runs if the
+# helper file is absent — a missing optional file must not stop the platform.
+# One source for the ports (2026-08-24). Defaults are the historical values, so
+# an install that sets none of these keeps exactly the ports it had.
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/ports/velaris-ports.sh" ] && . "$VELARIS_DIR/deploy/ports/velaris-ports.sh"
+: "${VELARIS_ENGINE_PORT:=8100}" "${VELARIS_CASE_PORT:=8201}" "${VELARIS_ANALYTICS_PORT:=8202}"
+: "${VELARIS_HXGRAPH_PORT:=8203}" "${VELARIS_HXMIGRATE_PORT:=8204}" "${VELARIS_STUDIO_PORT:=5173}"
+
+_velaris_tls_args() { :; }
+# Same reasoning: a plain http probe is exactly what the script did before.
+_velaris_probe() { curl -sf --max-time 3 "http://localhost:$1/health" >/dev/null 2>&1; }
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh" ] && . "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh"
+
 # ── Step 6: Start Engine ──────────────────────────────────────────
 echo "▶ Starting Velaris Engine (port 8100)..."
 cd "$VELARIS_DIR"
+# Loopback-only: the engine is called by case-service (VELARIS_CASE_ENGINE_API_URL)
+# and by Studio's vite proxy, both from this host. Bound to 0.0.0.0 it was a
+# public, unauthenticated port on any server whose firewall was not up.
+# Watch only this service's own source and the shared package. Without
+# --reload-dir the reloader watches the whole repo — .venv, node_modules,
+# Velaris/, dist — which is ~18,600 inotify watches EACH. Since #13b-e made
+# this four processes that is 65,000+ of the kernel's 65,536 default, and the
+# next thing to start (Studio's vite) dies with ENOSPC. Seen 2026-08-24.
 nohup uv run uvicorn helix_engine.main:app \
-  --host 0.0.0.0 --port 8100 --reload \
+  --host 127.0.0.1 --port "${VELARIS_ENGINE_PORT}" --reload \
+  --reload-dir engine \
+  --proxy-headers \
   > /tmp/velaris-engine.log 2>&1 &
 echo "  PID: $! | Logs: tail -f /tmp/velaris-engine.log"
 for i in $(seq 1 20); do
@@ -471,16 +499,85 @@ echo ""
 
 # ── Step 7: Start Case Service ────────────────────────────────────
 echo "▶ Starting Case Service (loopback 127.0.0.1:8201, only reachable via API gateway on 8200)..."
-nohup uv run uvicorn case_service.main:app \
-  --host 127.0.0.1 --port 8201 --reload \
+# shellcheck disable=SC2046 - deliberate word splitting; the values are ours
+nohup uv run uvicorn case_service.main:app $(_velaris_tls_args case-service) \
+  --host 127.0.0.1 --port "${VELARIS_CASE_PORT}" --reload \
+  --reload-dir services/case-service --reload-dir services/_shared \
+  --proxy-headers \
   --app-dir services/case-service \
   > /tmp/velaris-case-service.log 2>&1 &
 echo "  PID: $! | Logs: tail -f /tmp/velaris-case-service.log"
 for i in $(seq 1 20); do
-  if curl -s http://localhost:8201/health > /dev/null 2>&1; then
+  if _velaris_probe "${VELARIS_CASE_PORT}"; then
     green "  ✓ Case Service ready on port 8201"; break
   fi
   [ "$i" -eq 20 ] && yellow "  ⚠ Case Service not ready after 20s"
+  sleep 1
+done
+echo ""
+
+# ── Step 7b: Start Analytics Service ──────────────────────────────
+# Extracted from case-service at roadmap 13c. Loopback-only for the same
+# reason case-service is: the API gateway on 8200 is the only door, and a
+# second door on 0.0.0.0 would go around it.
+echo "▶ Starting Analytics Service (loopback 127.0.0.1:8202, reachable via the gateway on 8200)..."
+cd "$VELARIS_DIR"
+# shellcheck disable=SC2046 - deliberate word splitting; the values are ours
+nohup uv run uvicorn analytics_service.main:app $(_velaris_tls_args analytics-service) \
+  --host 127.0.0.1 --port "${VELARIS_ANALYTICS_PORT}" --reload \
+  --reload-dir services/analytics-service --reload-dir services/_shared \
+  --proxy-headers \
+  --app-dir services/analytics-service \
+  > /tmp/velaris-analytics-service.log 2>&1 &
+echo "  PID: $! | Logs: tail -f /tmp/velaris-analytics-service.log"
+for i in $(seq 1 20); do
+  if _velaris_probe "${VELARIS_ANALYTICS_PORT}"; then
+    green "  ✓ Analytics Service ready on port 8202"; break
+  fi
+  [ "$i" -eq 20 ] && yellow "  ⚠ Analytics Service not ready after 20s"
+  sleep 1
+done
+echo ""
+
+# ── Step 7c: Start HxGraph Service ────────────────────────────────
+# Extracted from case-service at roadmap 13d. Loopback-only, like the rest.
+echo "▶ Starting HxGraph Service (loopback 127.0.0.1:8203, reachable via the gateway on 8200)..."
+cd "$VELARIS_DIR"
+# shellcheck disable=SC2046 - deliberate word splitting; the values are ours
+nohup uv run uvicorn hxgraph_service.main:app $(_velaris_tls_args hxgraph-service) \
+  --host 127.0.0.1 --port "${VELARIS_HXGRAPH_PORT}" --reload \
+  --reload-dir services/hxgraph-service --reload-dir services/_shared \
+  --proxy-headers \
+  --app-dir services/hxgraph-service \
+  > /tmp/velaris-hxgraph-service.log 2>&1 &
+echo "  PID: $! | Logs: tail -f /tmp/velaris-hxgraph-service.log"
+for i in $(seq 1 20); do
+  if _velaris_probe "${VELARIS_HXGRAPH_PORT}"; then
+    green "  ✓ HxGraph Service ready on port 8203"; break
+  fi
+  [ "$i" -eq 20 ] && yellow "  ⚠ HxGraph Service not ready after 20s"
+  sleep 1
+done
+echo ""
+
+# ── Step 7d: Start HxMigrate Service ──────────────────────────────
+# Extracted from case-service at roadmap 13e — the migration domain
+# (hxmigrate + bpm_importer + scout + orchestrator). Loopback-only.
+echo "▶ Starting HxMigrate Service (loopback 127.0.0.1:8204, reachable via the gateway on 8200)..."
+cd "$VELARIS_DIR"
+# shellcheck disable=SC2046 - deliberate word splitting; the values are ours
+nohup uv run uvicorn hxmigrate_service.main:app $(_velaris_tls_args hxmigrate-service) \
+  --host 127.0.0.1 --port "${VELARIS_HXMIGRATE_PORT}" --reload \
+  --reload-dir services/hxmigrate-service --reload-dir services/_shared \
+  --proxy-headers \
+  --app-dir services/hxmigrate-service \
+  > /tmp/velaris-hxmigrate-service.log 2>&1 &
+echo "  PID: $! | Logs: tail -f /tmp/velaris-hxmigrate-service.log"
+for i in $(seq 1 20); do
+  if _velaris_probe "${VELARIS_HXMIGRATE_PORT}"; then
+    green "  ✓ HxMigrate Service ready on port 8204"; break
+  fi
+  [ "$i" -eq 20 ] && yellow "  ⚠ HxMigrate Service not ready after 20s"
   sleep 1
 done
 echo ""
@@ -523,7 +620,8 @@ else
   green "  ✓ Studio dependencies up to date"
 fi
 
-nohup npm run dev -- --host 0.0.0.0 > /tmp/velaris-studio.log 2>&1 &
+nohup npm run dev -- --host 0.0.0.0 --port "$VELARIS_STUDIO_PORT" --strictPort \
+  > /tmp/velaris-studio.log 2>&1 &
 echo "  PID: $! | Logs: tail -f /tmp/velaris-studio.log"
 sleep 3
 echo ""

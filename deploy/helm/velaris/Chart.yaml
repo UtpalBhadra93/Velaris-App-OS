@@ -1,15 +1,23 @@
 apiVersion: v2
 name: helix
-description: HELIX BPM platform — case-service, engine, worker, Postgres, Valkey
+description: HELIX BPM platform — case-service, engine, worker, database, Valkey
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
   - name: postgresql
-    version: "15.5.14"
+    version: "18.8.13"
     repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
+  - name: mysql
+    version: "14.0.3"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: mysql.enabled
+  - name: mariadb
+    version: "27.0.7"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: mariadb.enabled
   - name: valkey
-    version: "4.0.2"
+    version: "6.2.12"
     repository: "https://charts.bitnami.com/bitnami"
     condition: valkey.enabled

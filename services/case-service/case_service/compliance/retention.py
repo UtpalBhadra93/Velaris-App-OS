@@ -62,7 +62,7 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import RetentionPolicyModel
+from velaris_shared.db.models import RetentionPolicyModel
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
     Idempotent: a case already carrying `ANON_MARKER` is skipped, so re-running
     is free and cannot double-scrub.
     """
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
 
     terminal = ("closed", "resolved", "cancelled", "rejected")
     q = select(CaseInstanceModel).where(
@@ -203,7 +203,7 @@ async def _resolved_cases(session: AsyncSession, cutoff: datetime, apply: bool,
     Scoped to terminal states only. A retention job that could delete an open
     case would destroy live work, and no retention period justifies that.
     """
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
 
     terminal = ("closed", "resolved", "cancelled", "rejected")
     where = [
@@ -233,7 +233,7 @@ async def _audit_log(session: AsyncSession, cutoff: datetime, apply: bool,
     own hashed rows and stays verifiable after this runs; what is lost is the
     unsealed operational detail, which is what a retention period is about.
     """
-    from case_service.db.models import CaseAuditLogModel
+    from velaris_shared.db.models import CaseAuditLogModel
 
     where = [CaseAuditLogModel.timestamp < cutoff]
     if tenant_id and hasattr(CaseAuditLogModel, "tenant_id"):
@@ -252,7 +252,7 @@ async def _event_log(session: AsyncSession, cutoff: datetime, apply: bool,
                     tenant_id: str | None = None,
                     exclude_tenants: Sequence[str] | None = None) -> int:
     """Process-mining event log — high volume, lowest sensitivity."""
-    from case_service.db.models import CaseEventLogModel
+    from velaris_shared.db.models import CaseEventLogModel
 
     where = [CaseEventLogModel.timestamp < cutoff]
     if hasattr(CaseEventLogModel, "tenant_id"):
@@ -273,7 +273,7 @@ async def _event_log(session: AsyncSession, cutoff: datetime, apply: bool,
 async def _security_events(session: AsyncSession, cutoff: datetime, apply: bool,
                     tenant_id: str | None = None,
                     exclude_tenants: Sequence[str] | None = None) -> int:
-    from case_service.db.models import SecurityEventModel
+    from velaris_shared.db.models import SecurityEventModel
 
     where = [SecurityEventModel.timestamp < cutoff]
     if tenant_id and hasattr(SecurityEventModel, "tenant_id"):

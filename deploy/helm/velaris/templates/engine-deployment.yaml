@@ -14,15 +14,45 @@ spec:
   template:
     metadata: { labels: { app: engine } }
     spec:
+      terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
       containers:
         - name: engine
           image: "{{ .Values.image.engine.repository }}:{{ .Values.image.engine.tag }}"
           imagePullPolicy: {{ .Values.image.engine.pullPolicy }}
+          # Stop accepting new work, then linger while the endpoint is
+          # withdrawn from every node's kube-proxy. Without this a deleted pod
+          # closes connections that are still in flight: measured at 29 of
+          # 26,561 requests (0.11%) on a three-node cluster, and invisible on
+          # one node because the replacement is local.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.terminationDrainSeconds | default 5 }}"]
           ports:
             - containerPort: {{ .Values.engine.port }}
           env:
+            # The engine reads plain DATABASE_URL (helix_engine/db/session.py) and
+            # defaults to localhost:5432 — which in a pod is the pod itself. It
+            # does not fail on that: it logs "database unavailable", falls back
+            # to an IN-MEMORY store and reports itself ready, so every engine pod
+            # runs with no persistence and nothing says so. Nothing anywhere reads
+            # VELARIS_ENGINE_DATABASE_URL; it is kept because an install may
+            # already carry it, and removing a variable an install holds is not
+            # something an update gets to do.
+            - name: DATABASE_URL
+              value: {{ include "helix.databaseUrl" . | quote }}
             - name: VELARIS_ENGINE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
+            # Which engine that URL speaks, for the portable-SQL layer. Every
+            # other workload gets this; the engine was left out.
+            - name: VELARIS_CASE_DATABASE_BACKEND
+              value: {{ include "helix.databaseBackend" . | quote }}
+            # The engine reads plain TEMPORAL_HOST (helix_engine/temporal/client.py),
+            # not the worker's setting, and defaults to localhost:7233 — which in a pod
+            # is the pod itself. Without this it reports temporal "unavailable" forever
+            # while a perfectly healthy Temporal runs next door.
+            - name: TEMPORAL_HOST
+              value: {{ .Values.worker.temporalHost | quote }}
           resources:
             {{- toYaml .Values.engine.resources | nindent 12 }}
           readinessProbe:

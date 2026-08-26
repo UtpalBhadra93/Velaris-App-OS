@@ -18,11 +18,11 @@ from case_service.api.schemas.forms import (
     DataModelResponse,
     DataModelUpdate,
 )
-from case_service.db import repository as repo
-from case_service.auth.dependencies import require_role
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared.db.session import get_session
 
-from case_service import hxguard
+from velaris_shared import hxguard
 
 router = APIRouter(prefix="/data-models", tags=["data-models"], dependencies=[Depends(hxguard.guard("design.data_models.access"))])
 

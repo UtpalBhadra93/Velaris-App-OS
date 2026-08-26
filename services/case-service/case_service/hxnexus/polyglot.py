@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import BpmConceptModel
+from velaris_shared.db.models import BpmConceptModel
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ async def translate(
         # Enrich with LLM explanation if available (non-blocking)
         if llm is None:
             try:
-                from case_service.hxnexus.factory import get_llm_backend
+                from velaris_shared.llm.factory import get_llm_backend
                 llm = get_llm_backend()
             except Exception:
                 pass
@@ -141,7 +141,7 @@ async def translate(
     # No KB match — try LLM
     if llm is None:
         try:
-            from case_service.hxnexus.factory import get_llm_backend
+            from velaris_shared.llm.factory import get_llm_backend
             llm = get_llm_backend()
         except Exception:
             pass
@@ -210,7 +210,7 @@ async def analyze(
 
     if llm is None:
         try:
-            from case_service.hxnexus.factory import get_llm_backend
+            from velaris_shared.llm.factory import get_llm_backend
             llm = get_llm_backend()
         except Exception:
             pass
@@ -263,7 +263,7 @@ async def compare(
 
     if llm is None:
         try:
-            from case_service.hxnexus.factory import get_llm_backend
+            from velaris_shared.llm.factory import get_llm_backend
             llm = get_llm_backend()
         except Exception:
             pass

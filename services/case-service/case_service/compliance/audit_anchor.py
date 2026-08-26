@@ -29,8 +29,8 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service.db.models import AuditAnchorModel
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import AuditAnchorModel
 
 log = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ async def audit_anchor_loop() -> None:
     period = max(1, settings.audit_anchor_interval_hours) * 3600
     while True:
         try:
-            from case_service.db.session import get_analytics_session_factory
+            from velaris_shared.db.session import get_analytics_session_factory
             async with get_analytics_session_factory()() as session:
                 # commit unconditionally — anchor_chain_tip also seals
                 # pending audit rows, which must persist even on a skip

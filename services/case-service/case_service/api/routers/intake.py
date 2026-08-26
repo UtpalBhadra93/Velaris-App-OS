@@ -13,19 +13,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
     IntakeEventModel,
     ProcessDefinitionModel,
     ProcessInstanceModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.intake import service as intake_service
 
 router = APIRouter(prefix="/intake", tags=["intake"])

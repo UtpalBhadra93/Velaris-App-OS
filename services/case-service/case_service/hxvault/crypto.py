@@ -58,7 +58,7 @@ def get_kek() -> bytes:
     if _kek_cache is not None:
         return _kek_cache
 
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     s = get_settings()
 
     key = _decode_key_material(s.kek) if s.kek else None

@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionIntelligenceModel,
     CaseSessionModel,
     TenantModel,
@@ -96,7 +96,7 @@ def _transcribe(mp4_bytes: bytes, model_size: str) -> tuple[str, str | None, int
 
 async def _summarize(transcript: str) -> tuple[str | None, list, str | None]:
     """Local LLM summary — skipped honestly when AI is unavailable."""
-    from case_service.hxnexus.factory import check_ai_available, get_llm_backend
+    from velaris_shared.llm.factory import check_ai_available, get_llm_backend
 
     if not await check_ai_available():
         return None, [], None
@@ -128,7 +128,7 @@ async def _summarize(transcript: str) -> tuple[str | None, list, str | None]:
 
 async def run_intelligence_job(session_id: uuid.UUID) -> None:
     """Background job — owns its own DB session (the request one is gone)."""
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
     from case_service.documents.service import DocumentService
     from case_service.api.routers.cases import _audit
 

@@ -4,8 +4,9 @@
 services:
   velaris-case-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Repo root: the image needs services/_shared (velaris-shared) too.
+      context: ../..
+      dockerfile: services/case-service/Dockerfile
     ports:
       - "8200:8200"
     environment:

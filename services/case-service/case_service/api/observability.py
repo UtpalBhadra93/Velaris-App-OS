@@ -5,19 +5,19 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.observability import render_metrics, recent_spans, get_logger
+from velaris_shared.observability import render_metrics, recent_spans, get_logger
 
 log = get_logger("helix.observability.api")
 router = APIRouter(tags=["observability"])
 
 
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 
 @router.get("/metrics", include_in_schema=False)
@@ -66,7 +66,7 @@ async def health_deep(session: AsyncSession = Depends(get_session)) -> dict[str,
     })
 
     try:
-        from case_service.db.models import HealthCheckResultModel
+        from velaris_shared.db.models import HealthCheckResultModel
         if session is not None:
             for c in components:
                 session.add(HealthCheckResultModel(
@@ -92,7 +92,7 @@ async def health_deep(session: AsyncSession = Depends(get_session)) -> dict[str,
 async def metrics_summary(
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ) -> dict[str, Any]:
-    from case_service.observability.metrics import (
+    from velaris_shared.observability.metrics import (
         http_requests_total, http_request_duration_seconds,
     )
 
@@ -191,7 +191,7 @@ async def list_events(
     event_type: str | None = None,
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ) -> dict[str, Any]:
-    from case_service.db.models import TelemetryEventModel
+    from velaris_shared.db.models import TelemetryEventModel
     q = select(TelemetryEventModel).order_by(TelemetryEventModel.created_at.desc()).limit(limit)
     if severity:
         q = q.where(TelemetryEventModel.severity == severity)
@@ -225,7 +225,7 @@ async def health_history(
     component: str | None = None,
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
 ) -> dict[str, Any]:
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     q = (
         select(HealthCheckResultModel)

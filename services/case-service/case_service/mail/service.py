@@ -83,6 +83,7 @@ class EmailService:
         dry_run: bool = False,
         purpose: str | None = None,
         tenant_id: str | None = None,
+        calendar_ics: str | None = None,
     ):
         """Send an email, enforcing purpose limitation for gated purposes.
 
@@ -98,7 +99,7 @@ class EmailService:
         of who was actually written to.
         """
         from case_service.compliance import consent as consent_svc
-        from case_service.db.models import EmailMessageModel, EmailTemplateModel
+        from velaris_shared.db.models import EmailMessageModel, EmailTemplateModel
 
         purpose = purpose or consent_svc.CASE_PROCESSING
         cc_addresses = cc_addresses or []
@@ -114,7 +115,7 @@ class EmailService:
             if dropped:
                 # The provable part. Without this, "we stopped marketing to
                 # them" is an assertion; with it, it is a record.
-                from case_service.enterprise.security_events import log_security_event
+                from velaris_shared.db.security_events import log_security_event
 
                 await log_security_event(
                     session,
@@ -169,6 +170,7 @@ class EmailService:
             to_addresses=to_addresses, cc_addresses=cc_addresses or [],
             subject=rendered_subject, body_text=rendered_text, body_html=rendered_html,
             message_id=msg_id, in_reply_to=in_reply_to, references=refs,
+            calendar_ics=calendar_ics,
         )
 
         row = EmailMessageModel(
@@ -209,7 +211,7 @@ class EmailService:
         account_address: Optional[str] = None,
         tenant_id: Optional[str] = None,
     ):
-        from case_service.db.models import EmailMessageModel
+        from velaris_shared.db.models import EmailMessageModel
 
         parsed = parse_rfc822(raw)
 

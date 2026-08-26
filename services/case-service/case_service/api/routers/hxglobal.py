@@ -10,16 +10,16 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     RegionModel,
     SovereigntyRuleModel,
     TenantRegionAssignmentModel,
     RegionHealthLogModel,
     RegionAccessLogModel,
 )
-from case_service.db.session import get_session
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.hxglobal import regions as _reg  # noqa: F401
 from case_service.hxglobal.protocol import get_region_adapter
 from case_service.hxglobal.health import poll_region_health

@@ -29,12 +29,12 @@ from case_service.core.rules_evaluator import (
     evaluate_rules as eval_rules,
     validate_data as validate_data_fn,
 )
-from case_service.db import repository as repo
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
-from case_service.hxguard import service as hxguard
+from velaris_shared.db import repository as repo
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
+from velaris_shared.hxguard import service as hxguard
 
 router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(get_current_user)])
 
@@ -186,7 +186,7 @@ async def rule_migration_report(
     from case_service.core.safe_expression import (
         Classification, classify_expression,
     )
-    from case_service.db.models import CaseTypeModel, CaseTypeStageModel
+    from velaris_shared.db.models import CaseTypeModel, CaseTypeStageModel
 
     # Migrating rules is a designer/admin act; the report is the work list for
     # it, not general-audience information.

@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from case_service.core import event_store as es
-from case_service.db.models import CaseEventModel, CaseInstanceModel, CaseTypeModel
+from velaris_shared.db.models import CaseEventModel, CaseInstanceModel, CaseTypeModel
 
 pytestmark = pytest.mark.asyncio
 
@@ -79,7 +79,7 @@ class TestAppend:
 class TestCutover:
     async def test_record_is_a_no_op_when_disabled(self, session):
         """Off by default — the store must not start writing unasked."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         assert get_settings().event_sourcing_enabled is False
         c = await _case(session)
@@ -88,7 +88,7 @@ class TestCutover:
 
     async def test_record_skips_pre_cutover_cases(self, session, monkeypatch):
         """§7.5: a case that predates the store gets no stream, ever."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         s = get_settings()
         monkeypatch.setattr(s, "event_sourcing_enabled", True, raising=False)
@@ -99,7 +99,7 @@ class TestCutover:
         assert await es.stream(session, old.id) == []
 
     async def test_record_writes_for_post_cutover_cases(self, session, monkeypatch):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         monkeypatch.setattr(get_settings(), "event_sourcing_enabled", True, raising=False)
         c = await _case(session, event_sourced=True)

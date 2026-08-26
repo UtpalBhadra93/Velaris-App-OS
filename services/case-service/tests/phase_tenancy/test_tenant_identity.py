@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import TenantModel
+from velaris_shared.db.models import TenantModel
 from case_service.tenancy import identity
 from tests.conftest import TestSessionFactory
 
@@ -121,5 +121,5 @@ class TestEnforcementDefault:
     async def test_case_gates_enforce_unless_told_otherwise(self):
         """Silence must not mean 'open' — in shadow every case gate is
         advisory, including meet.recording.view."""
-        from case_service.config import Settings
+        from velaris_shared.config import Settings
         assert Settings.model_fields["hxguard_case_enforcement"].default == "enforce"

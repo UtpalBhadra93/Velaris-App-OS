@@ -161,7 +161,7 @@ async def test_provision_actually_creates_the_content(session):
     which would have passed even if apply_bundle imported nothing at all.
     """
     from sqlalchemy import select
-    from case_service.db.models import CaseTypeModel
+    from velaris_shared.db.models import CaseTypeModel
 
     result = await packs.provision(
         session, tenant_id="t1", package_id="acme/pack",
@@ -194,7 +194,7 @@ async def test_second_provision_is_refused(session):
 @pytest.mark.asyncio
 async def test_a_failed_provision_does_not_block_a_retry(session):
     """Only a SUCCESSFUL provision blocks — otherwise a failure is unrecoverable."""
-    from case_service.db.models import MarketplacePackInstallModel
+    from velaris_shared.db.models import MarketplacePackInstallModel
     session.add(MarketplacePackInstallModel(
         tenant_id="t2", package_id="acme/pack", pack_version="1.0.0",
         status="failed", provisioned_by="dev1"))

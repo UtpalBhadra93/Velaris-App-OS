@@ -186,9 +186,19 @@ services:
       - ${VELARIS_CASE_MEET_RECORDINGS_DIR:-/tmp/velaris-recordings}:/out
     restart: unless-stopped
 
+# The API services run on the HOST in this deployment (start-velaris.sh or the
+# systemd units), which is why these are commented out. Kept, and kept current,
+# so the container path stays a change of two lines rather than a rediscovery.
+#
+# Note the build context: since 13b every service depends on `velaris-shared`
+# (services/_shared), a path dependency that a context rooted at the service
+# directory cannot see. The context is the REPOSITORY ROOT for all four.
+#
 #  case-service:
-#    build: ../../services/case-service
-#    ports: ["8200:8200"]
+#    build:
+#      context: ../..
+#      dockerfile: services/case-service/Dockerfile
+#    ports: ["8201:8200"]
 #    depends_on:
 #      velaris-db: { condition: service_healthy }
 #      temporal: { condition: service_started }
@@ -196,6 +206,40 @@ services:
 #      VELARIS_CASE_DATABASE_URL: postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
 #      VELARIS_CASE_TEMPORAL_HOST: temporal:7233
 #      VELARIS_CASE_SERVICE_PORT: "8200"
+#      FORWARDED_ALLOW_IPS: "127.0.0.1"     # the gateway is host-networked
+#
+#  analytics-service:                        # roadmap 13c
+#    build:
+#      context: ../..
+#      dockerfile: services/analytics-service/Dockerfile
+#    ports: ["8202:8202"]
+#    depends_on:
+#      velaris-db: { condition: service_healthy }
+#    environment:
+#      VELARIS_CASE_DATABASE_URL: postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
+#      FORWARDED_ALLOW_IPS: "127.0.0.1"
+#
+#  hxgraph-service:                          # roadmap 13d
+#    build:
+#      context: ../..
+#      dockerfile: services/hxgraph-service/Dockerfile
+#    ports: ["8203:8203"]
+#    depends_on:
+#      velaris-db: { condition: service_healthy }
+#    environment:
+#      VELARIS_CASE_DATABASE_URL: postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
+#      FORWARDED_ALLOW_IPS: "127.0.0.1"
+#
+#  hxmigrate-service:                        # roadmap 13e
+#    build:
+#      context: ../..
+#      dockerfile: services/hxmigrate-service/Dockerfile
+#    ports: ["8204:8204"]
+#    depends_on:
+#      velaris-db: { condition: service_healthy }
+#    environment:
+#      VELARIS_CASE_DATABASE_URL: postgresql+asyncpg://velaris:velaris_dev_password@velaris-db:5432/velaris
+#      FORWARDED_ALLOW_IPS: "127.0.0.1"
 
   # ── API Gateway (roadmap #13a — stable /api/v1 prefix + discovery) ──
   # Single ingress; routes by sub-prefix to the owning service. All seams
@@ -210,7 +254,38 @@ services:
     # (see gateway/nginx.conf) — nothing is exposed on a public interface.
     network_mode: host
     volumes:
-      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      # A TEMPLATE, not the final config: the nginx image's entrypoint runs
+      # envsubst over everything in /etc/nginx/templates and writes the result
+      # to /etc/nginx/. That is how the workload-identity secret (#18) reaches
+      # the config without ever being committed to the repository.
+      - ./gateway/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
+      # Internal TLS (#18) is a MOUNT swap, not a config edit. ON since
+      # 2026-08-24: the mTLS include is mounted over proxy_ssl.conf and the
+      # certificate directory comes with it. This must agree with
+      # VELARIS_UPSTREAM_SCHEME below — nginx cannot branch on an environment
+      # variable, so the two are separate knobs and half a change gives an
+      # immediate 502 rather than a silent downgrade to plaintext.
+      # To turn it back off: restore the plain mount and set the scheme to http.
+      # - ./gateway/proxy_ssl.conf:/etc/nginx/proxy_ssl.conf:ro
+      - ./gateway/proxy_ssl.mtls.conf:/etc/nginx/proxy_ssl.conf:ro
+      - ../tls/certs:/etc/nginx/tls:ro
+    environment:
+      # Only this variable is substituted, so a `$host` or `$remote_addr` in the
+      # template survives untouched.
+      NGINX_ENVSUBST_TEMPLATE_SUFFIX: ".template"
+      NGINX_ENVSUBST_OUTPUT_DIR: "/etc/nginx"
+      NGINX_ENVSUBST_FILTER: "VELARIS_GATEWAY_IDENTITY_SECRET|VELARIS_UPSTREAM_SCHEME|VELARIS_CASE_SERVICE_PORT|VELARIS_CASE_PORT|VELARIS_ANALYTICS_PORT|VELARIS_HXGRAPH_PORT|VELARIS_HXMIGRATE_PORT"
+      VELARIS_GATEWAY_IDENTITY_SECRET: "${VELARIS_GATEWAY_IDENTITY_SECRET:-}"
+      # http unless internal TLS is on. Substituted into every proxy_pass, so
+      # the scheme and the proxy_ssl block can never disagree.
+      VELARIS_UPSTREAM_SCHEME: "${VELARIS_UPSTREAM_SCHEME:-http}"
+      # Ports, with the historical values as defaults so an install that sets
+      # none of them renders exactly the config it rendered before.
+      VELARIS_CASE_SERVICE_PORT: "${VELARIS_CASE_SERVICE_PORT:-8200}"
+      VELARIS_CASE_PORT: "${VELARIS_CASE_PORT:-8201}"
+      VELARIS_ANALYTICS_PORT: "${VELARIS_ANALYTICS_PORT:-8202}"
+      VELARIS_HXGRAPH_PORT: "${VELARIS_HXGRAPH_PORT:-8203}"
+      VELARIS_HXMIGRATE_PORT: "${VELARIS_HXMIGRATE_PORT:-8204}"
     restart: unless-stopped
 
   # >>> P23 observability services

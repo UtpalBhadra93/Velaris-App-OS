@@ -28,14 +28,15 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
     MarketplaceCapabilityGrantModel,
+    MarketplaceInstallModel,
     TenantModel,
 )
-from case_service.db.session import get_session
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.db.session import get_session
+from velaris_shared.llm.guard import _RateLimiter
 from case_service.marketplace import grants as mkt_grants
 
 router = APIRouter(prefix="/broker", tags=["broker"])
@@ -114,6 +115,32 @@ async def _log(grant, path: str, status: str) -> None:
         is_declared=(status == "allowed"))
 
 
+async def _manifest_allows_cases(session: AsyncSession, grant) -> bool:
+    """The package's OWN declaration, as a ceiling over the operator's grant.
+
+    Two independent questions, and until #29 was enforced only one was asked:
+
+      * the capability grant — what the operator agreed to expose,
+      * the manifest — what the package said it needed.
+
+    A call needs both. The grant can offer `cases.read` and this still refuses,
+    because a package that never declared `case` has no business reading one
+    however generous the grant is. It only narrows; it can never widen.
+
+    An install from before enforcement has no stored declaration, and NULL is
+    not "declared nothing" — it is "not recorded". Those keep working on the
+    grant alone rather than losing access to an upgrade nobody asked for.
+    """
+    from case_service.marketplace.manifest_version import declares_access
+
+    if grant.install_id is None:
+        return True
+    install = await session.get(MarketplaceInstallModel, grant.install_id)
+    if install is None:
+        return True
+    return declares_access(install.declared_permissions, "case")
+
+
 def _type_allowed(allowed: set[str] | None, ct: CaseTypeModel | None) -> bool:
     if allowed is None:
         return True
@@ -142,6 +169,10 @@ async def broker_list_cases(
     session: AsyncSession = Depends(get_session),
     grant: MarketplaceCapabilityGrantModel = Depends(get_broker_grant),
 ):
+    if not await _manifest_allows_cases(session, grant):
+        await _log(grant, "cases", "blocked")
+        raise HTTPException(403, "This package's manifest declares no access to cases")
+
     allowed = _scoped_case_types(grant)
     if allowed is not None and not allowed:
         await _log(grant, "cases", "blocked")
@@ -184,6 +215,11 @@ async def broker_get_case(
     session: AsyncSession = Depends(get_session),
     grant: MarketplaceCapabilityGrantModel = Depends(get_broker_grant),
 ):
+    # Checked before the id is even parsed: a package outside its declaration
+    # must not be able to tell a malformed id from a real one.
+    if not await _manifest_allows_cases(session, grant):
+        await _log(grant, f"cases/{case_id}", "blocked")
+        raise HTTPException(404, "Case not found")
     try:
         cid = uuid.UUID(case_id)
     except ValueError:

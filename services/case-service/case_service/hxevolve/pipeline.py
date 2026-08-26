@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     HxEvolveConfigModel,
     HxEvolveInsightModel,
     RuleDefinitionModel,
@@ -153,8 +153,8 @@ async def hxevolve_cron() -> None:
     ONLY for those rows, and the per-tenant cohort concurrency cap still holds
     (enforced in the prover, shared with the endpoint path)."""
     import asyncio
-    from case_service.db.session import get_session_factory
-    from case_service.db import repository as repo
+    from velaris_shared.db.session import get_session_factory
+    from velaris_shared.db import repository as repo
 
     await asyncio.sleep(20)     # let the DB come up
     while True:

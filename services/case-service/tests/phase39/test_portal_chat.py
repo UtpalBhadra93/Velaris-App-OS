@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseAuditLogModel,
     CaseInstanceModel,
     CaseTypeModel,

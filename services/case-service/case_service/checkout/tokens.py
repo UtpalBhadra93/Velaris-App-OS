@@ -25,10 +25,10 @@ from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service.db.models import CheckoutServiceTokenModel, _utcnow
-from case_service.db.session import get_session
-from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import CheckoutServiceTokenModel, _utcnow
+from velaris_shared.db.session import get_session
+from velaris_shared.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
 # Per-token order-creation limiter (mass-order-spam guard, key invariant / security
 # model). Per-process, in-memory — multi-worker multiplies the effective limit by

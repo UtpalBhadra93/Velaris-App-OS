@@ -23,8 +23,8 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.core import error_codes as ec
-from case_service.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
+from velaris_shared.core import error_codes as ec
+from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
 
 
 def _code(response) -> str | None:

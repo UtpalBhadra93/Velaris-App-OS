@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.core import safe_expression
 from case_service.hxbridge.security import validate_outbound_url
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseInstanceVariableModel,
     CaseOutcomeLabelModel,
@@ -201,7 +201,7 @@ async def uninstall_pack(session: AsyncSession, tenant: str, pack_id: str) -> bo
     # by startswith(). Any verify-gate hold one of them opened is released as
     # system-cleared: the gate's reason (the pack) no longer exists, and a human
     # should not have to clear a hold for a rule that's gone.
-    from case_service.db.models import CaseRiskFindingModel, CaseRiskHoldModel
+    from velaris_shared.db.models import CaseRiskFindingModel, CaseRiskHoldModel
     findings = (await session.execute(
         select(CaseRiskFindingModel).where(
             CaseRiskFindingModel.tenant_id == tenant,

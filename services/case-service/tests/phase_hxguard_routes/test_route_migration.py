@@ -17,8 +17,8 @@ from tests.conftest import deploy_case_type, create_case
 
 
 def _limited_headers(roles: list[str]) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
 
     s = get_settings()
     token = create_dev_token(
@@ -66,7 +66,7 @@ class TestRouteMigration:
             assert resp.status_code in (200, 201), f"{method} {path} -> {resp.status_code}"
 
     async def test_enforce_unrelated_user_404_anti_oracle(self, client):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         ct = await deploy_case_type(client, name="Routes Enforce CT")
         case = await create_case(client, ct["id"])       # admin-owned
         other = await create_case(client, ct["id"])
@@ -91,7 +91,7 @@ class TestRouteMigration:
         is read into Settings and would otherwise make this test fail on a
         configured box while passing on a bare one.
         """
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         ct = await deploy_case_type(client, name="Routes Shadow CT")
         case = await create_case(client, ct["id"])
         hdrs = _limited_headers(["user"])

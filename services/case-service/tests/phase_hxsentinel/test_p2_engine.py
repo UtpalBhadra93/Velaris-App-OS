@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceVariableModel,
     CaseRiskFindingModel,
     CaseRiskSignalModel,
@@ -215,7 +215,7 @@ class TestIdempotencyAndConfig:
         assert row.status == "stale"          # kept, so P2b scores never orphan
 
     async def test_disabled_rule_does_not_fire(self, session, client):
-        from case_service.db.models import CaseRiskRuleModel
+        from velaris_shared.db.models import CaseRiskRuleModel
         _ct, ca, cb = await _two_cases_sharing(session, client, "doc_hash", "sha-off")
         await _label(session, cb, "fraud")
         session.add(CaseRiskRuleModel(

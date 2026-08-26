@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from case_service.core import sla_prediction as sp
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseEventLogModel,
     CaseInstanceModel,
     CaseTypeModel,

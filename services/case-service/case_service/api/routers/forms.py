@@ -18,9 +18,9 @@ from case_service.api.schemas.forms import (
     FormResponse,
     FormUpdate,
 )
-from case_service.db import repository as repo
-from case_service.auth.dependencies import get_current_user
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/forms", tags=["forms"], dependencies=[Depends(get_current_user)])
 

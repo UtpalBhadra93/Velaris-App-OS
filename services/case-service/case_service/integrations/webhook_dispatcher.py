@@ -55,7 +55,7 @@ async def dispatch_event(
     HTTP delivery is handled asynchronously by OutboxRelay; callers do not
     wait for the remote endpoint.
     """
-    from case_service.db.models import OutboxEventModel
+    from velaris_shared.db.models import OutboxEventModel
 
     row = OutboxEventModel(
         event_type=event_type,
@@ -76,7 +76,7 @@ async def get_matching_subscriptions(
     case_type_id: uuid.UUID | None = None,
 ) -> list:
     """Return active webhook subscriptions that match this event."""
-    from case_service.db.models import WebhookSubscriptionModel
+    from velaris_shared.db.models import WebhookSubscriptionModel
 
     stmt = select(WebhookSubscriptionModel).where(
         WebhookSubscriptionModel.is_active == True,  # noqa: E712
@@ -109,8 +109,8 @@ async def build_case_event_payload(
     and persist in the outbox table. webhook_full_payloads=true restores the
     legacy embedded-variables shape for consumers that cannot call back.
     """
-    from case_service.config import get_settings
-    from case_service.db import repository as repo
+    from velaris_shared.config import get_settings
+    from velaris_shared.db import repository as repo
 
     case = await repo.get_case_instance(session, case_id)
     if case is None:

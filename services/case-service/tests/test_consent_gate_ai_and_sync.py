@@ -156,7 +156,7 @@ class TestGatedSet:
 
 
 async def _case(session, submitter: str | None):
-    from case_service.db.models import CaseInstanceModel, CaseTypeModel
+    from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
 
     ct = CaseTypeModel(name=f"AI {uuid.uuid4().hex[:6]}", version="1.0.0",
                        definition_json={"stages": []})
@@ -190,7 +190,7 @@ class TestAiActionGate:
             return {"value": "x"}
 
         monkeypatch.setattr(
-            "case_service.hxnexus.factory.generate_json", _never, raising=False)
+            "velaris_shared.llm.factory.generate_json", _never, raising=False)
 
         case = await _case(session, SUBJECT)          # present, unrecorded
         out = await ai_action.execute(session, case_id=case.id, step=_STEP)
@@ -206,7 +206,7 @@ class TestAiActionGate:
         from sqlalchemy import select
 
         from case_service.core import ai_action
-        from case_service.db.models import AIActionProposalModel
+        from velaris_shared.db.models import AIActionProposalModel
 
         case = await _case(session, SUBJECT)
         await ai_action.execute(session, case_id=case.id, step=_STEP)
@@ -226,7 +226,7 @@ class TestAiActionGate:
             return {"value": "high", "reasoning": "r"}
 
         monkeypatch.setattr(
-            "case_service.hxnexus.factory.generate_json", _answer, raising=False)
+            "velaris_shared.llm.factory.generate_json", _answer, raising=False)
 
         case = await _case(session, None)
         out = await ai_action.execute(session, case_id=case.id, step=_STEP)
@@ -240,7 +240,7 @@ class TestAiActionGate:
             return {"value": "high", "reasoning": "r"}
 
         monkeypatch.setattr(
-            "case_service.hxnexus.factory.generate_json", _answer, raising=False)
+            "velaris_shared.llm.factory.generate_json", _answer, raising=False)
 
         case = await _case(session, SUBJECT)
         await _grant(session)
@@ -340,7 +340,7 @@ class TestConsentDoesNotCrossTenants:
     """
 
     async def _tenant(self, session, slug):
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
         t = TenantModel(slug=slug, name=slug)
         session.add(t)
         await session.flush()
@@ -388,7 +388,7 @@ class TestRequireCasePurposeFindsATenantedGrant:
     """
 
     async def test_a_uuid_tenant_still_finds_its_grant(self, session):
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
 
         t = TenantModel(slug=f"t-{uuid.uuid4().hex[:6]}", name="T")
         session.add(t)
@@ -405,7 +405,7 @@ class TestRequireCasePurposeFindsATenantedGrant:
 
     async def test_a_withdrawal_in_the_same_tenant_still_refuses(self, session):
         """The coercion must not turn the gate into a rubber stamp."""
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
 
         t = TenantModel(slug=f"t-{uuid.uuid4().hex[:6]}", name="T")
         session.add(t)

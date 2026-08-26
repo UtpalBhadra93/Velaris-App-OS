@@ -9,13 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from case_service.auth.dependencies import require_role
-from case_service import hxguard
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared import hxguard
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.codegen.generator import AppConfig, generate_app, generate_zip
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/codegen", tags=["codegen"], dependencies=[Depends(hxguard.guard("design.codegen.access"))])
 
@@ -93,7 +93,7 @@ async def _check_audience_is_available(audience: str, session: AsyncSession) -> 
     if audience != "customer":
         return
 
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     enabled = (await session.execute(
         select(ScheduledReleaseModel.enabled)
         .where(ScheduledReleaseModel.feature_key == "customer_accounts")

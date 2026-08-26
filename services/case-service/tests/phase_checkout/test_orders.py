@@ -18,7 +18,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from case_service.checkout.tokens import generate_token
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel, CheckoutOrderItemModel, CheckoutOrderModel,
     MarketplaceInstallModel,
 )
@@ -163,7 +163,7 @@ async def test_idempotent_replay_returns_payment_url(session, client, checkout_i
     """A replay of a pending-payment order must still return a usable payment_url
     (the retry is exactly when the client needs it)."""
     from case_service.checkout import service as svc
-    from case_service.db.models import PaymentRequestModel
+    from velaris_shared.db.models import PaymentRequestModel
 
     async def _fake(session, *, case_id, step_id, amount_cents, currency, tenant_id, **kw):
         # Mirror the real create_payment_request: persist a PaymentRequestModel row

@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseRiskFeedbackModel,
     CaseRiskFindingModel,
     CaseRiskRuleModel,

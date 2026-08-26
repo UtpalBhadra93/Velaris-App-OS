@@ -9,13 +9,13 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from case_service.observability import (
+from velaris_shared.observability import (
     ObservabilityMiddleware, configure_logging, get_logger,
     recent_spans, clear_spans,
     request_id_var, tenant_id_var, get_context,
     render_metrics, cases_created_total, sla_breaches_total,
 )
-from case_service.observability.metrics import reset_registry
+from velaris_shared.observability.metrics import reset_registry
 from case_service.api.observability import router as observability_router
 
 
@@ -32,13 +32,13 @@ def app() -> FastAPI:
     # health history to anonymous callers). This fixture builds its own bare app,
     # so it overrides the identity itself rather than carrying a token; these
     # tests are about the payload, and the 401 is covered where auth is the subject.
-    from case_service.auth.dependencies import get_current_user
-    from case_service.auth.models import AuthenticatedUser
+    from velaris_shared.auth.dependencies import get_current_user
+    from velaris_shared.auth.models import AuthenticatedUser
     a.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
         user_id="obs-test", username="obs-test", roles=["admin"])
 
     # Override the real PostgreSQL session dep to avoid needing a live DB
-    from case_service.db.session import get_session as _real_get_session
+    from velaris_shared.db.session import get_session as _real_get_session
     async def _noop_session():
         yield None
     a.dependency_overrides[_real_get_session] = _noop_session
@@ -143,7 +143,7 @@ def test_08_custom_business_counters_work():
 
 def test_09_structlog_injects_context_vars():
     """The _inject_ctx processor must copy contextvars into each event dict."""
-    from case_service.observability.logging_config import _inject_ctx
+    from velaris_shared.observability.logging_config import _inject_ctx
     tok_rid = request_id_var.set("req-abc")
     tok_tid = tenant_id_var.set("acme")
     try:
@@ -239,7 +239,7 @@ async def test_16_metrics_summary_identifies_slow_paths(client):
 
 
 def test_17_span_buffer_is_ring_limited():
-    from case_service.observability.spans import record_span, recent_spans, clear_spans
+    from velaris_shared.observability.spans import record_span, recent_spans, clear_spans
     clear_spans()
     for i in range(250):
         record_span(method="GET", path=f"/x/{i}", status=200, duration_ms=1.0,
@@ -249,7 +249,7 @@ def test_17_span_buffer_is_ring_limited():
 
 
 def test_18_span_buffer_ordering_latest_first():
-    from case_service.observability.spans import record_span, recent_spans, clear_spans
+    from velaris_shared.observability.spans import record_span, recent_spans, clear_spans
     clear_spans()
     record_span(method="GET", path="/a", status=200, duration_ms=1.0, request_id="r1", tenant_id="t")
     record_span(method="GET", path="/b", status=200, duration_ms=2.0, request_id="r2", tenant_id="t")
@@ -259,13 +259,13 @@ def test_18_span_buffer_ordering_latest_first():
 
 
 def test_19_telemetry_configure_is_idempotent():
-    from case_service.observability.telemetry import configure_telemetry
+    from velaris_shared.observability.telemetry import configure_telemetry
     configure_telemetry("test-service")
     configure_telemetry("test-service")
 
 
 def test_20_observability_package_exports():
-    import case_service.observability as obs
+    import velaris_shared.observability as obs
     expected = {
         "ObservabilityMiddleware", "configure_logging", "get_logger",
         "render_metrics", "recent_spans", "clear_spans",

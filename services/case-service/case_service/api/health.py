@@ -9,7 +9,7 @@ import time
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ async def health(request: Request):
 
 
 @router.get("/ready", response_model=ReadyResponse)
-async def ready(request: Request):
+async def ready(request: Request, response: Response):
     """Deep readiness check — verifies database and Temporal connectivity."""
     checks = {}
     db_status = "unknown"
@@ -54,7 +54,7 @@ async def ready(request: Request):
 
     # Database check
     try:
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -81,6 +81,14 @@ async def ready(request: Request):
         temporal_status = "not_configured"
 
     overall = "ok" if db_status == "connected" else "degraded"
+
+    # A readiness probe is decided by the STATUS CODE, never by the body. This
+    # answered 200 while reporting "database": "disconnected", so a pod that
+    # could not reach its database stayed Ready and kept taking traffic — and a
+    # rolling update rolled forward over it. 503 is what "do not send me
+    # requests" looks like on the wire.
+    if db_status != "connected":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return ReadyResponse(
         status=overall,

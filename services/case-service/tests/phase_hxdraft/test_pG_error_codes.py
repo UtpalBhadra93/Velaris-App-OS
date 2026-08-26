@@ -16,8 +16,8 @@ import uuid
 
 import pytest
 
-from case_service.core import error_codes
-from case_service.db.models import CaseTypeModel, RuleDefinitionModel
+from velaris_shared.core import error_codes
+from velaris_shared.db.models import CaseTypeModel, RuleDefinitionModel
 
 
 def _code(resp) -> str | None:
@@ -26,8 +26,8 @@ def _code(resp) -> str | None:
 
 
 def _headers(*roles: str) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
     s = get_settings()
     token = create_dev_token(
         user_id=str(uuid.uuid4()), username="draft-tester", roles=list(roles),

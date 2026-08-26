@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from case_service.db.models import CaseSessionModel, TenantModel
+from velaris_shared.db.models import CaseSessionModel, TenantModel
 from case_service.hxnexus import case_qa
 from sqlalchemy import select
 from tests.conftest import create_case, deploy_case_type
@@ -65,7 +65,7 @@ async def _tenant_ai(session, cfg: dict):
 async def _case(session, client):
     ct = await deploy_case_type(client, name=f'QA CT {uuid.uuid4().hex[:6]}')
     case = await create_case(client, ct['id'])
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
     return await session.get(CaseInstanceModel, uuid.UUID(case['id']))
 
 
@@ -83,7 +83,7 @@ class TestGates:
         assert r.status_code == 401
 
     async def test_cases_ask_registered_in_hxguard(self):
-        from case_service.hxguard.service import CASE_ACTIONS
+        from velaris_shared.hxguard.service import CASE_ACTIONS
         assert CASE_ACTIONS["cases.ask"] == {"assignee", "editor", "viewer"}
 
     async def test_backend_unavailable_503(self, client, session):
@@ -132,7 +132,7 @@ class TestSovereignty:
         ext = FakeExternal()
         egress = AsyncMock()
         with patch.object(case_qa, "get_llm_backend", return_value=ext), \
-             patch("case_service.hxnexus.egress_audit.record_egress", egress):
+             patch("velaris_shared.llm.egress_audit.record_egress", egress):
             r = await client.post(f"{NEXUS}/cases/{row.id}/ask",
                                   json={"question": "Summarize the case"})
         assert r.status_code == 200
@@ -149,7 +149,7 @@ class TestSovereignty:
         row = await _case(session, client)
         ext = FakeExternal()
         with patch.object(case_qa, "get_llm_backend", return_value=ext), \
-             patch("case_service.hxnexus.egress_audit.record_egress", AsyncMock()):
+             patch("velaris_shared.llm.egress_audit.record_egress", AsyncMock()):
             r = await client.post(
                 f"{NEXUS}/cases/{row.id}/ask",
                 json={"question": "Email john.doe@example.com about the case"})
@@ -208,7 +208,7 @@ class TestAudit:
             r = await client.post(f"{NEXUS}/cases/{row.id}/ask",
                                   json={"question": "Anything open on this case?"})
         assert r.status_code == 200
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         session.expire_all()
         rows = (await session.execute(
             select(CaseAuditLogModel).where(CaseAuditLogModel.action == "case_qa_asked")

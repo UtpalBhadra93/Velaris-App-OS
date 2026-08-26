@@ -24,8 +24,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionCaptionSegmentModel,
     CaseSessionModel,
     CaseSessionParticipantModel,
@@ -76,15 +76,20 @@ def _utcnow() -> datetime:
 
 async def _emit(case_id: uuid.UUID, event_type: str, data: dict) -> None:
     try:
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.hxstream.emitter import emit_trace
         await emit_trace(event_type, data, case_id=case_id)
     except Exception as exc:
         logger.warning("HxStream emit failed (%s): %s", event_type, exc)
 
 
-async def _log_event(session: AsyncSession, case_id: uuid.UUID, case_type_id, activity: str, actor: str) -> None:
+async def _log_event(session: AsyncSession, case_id: uuid.UUID | None, case_type_id, activity: str, actor: str) -> None:
+    # A session anchored to a calendar event has no case, and the process-mining
+    # log is a *case* event log: writing a row with a NULL case would put a
+    # meeting into a process it does not belong to.
+    if case_id is None:
+        return
     try:
-        from case_service.process_mining.event_logger import log_event
+        from velaris_shared.process_mining.event_logger import log_event
         await log_event(session, case_id=case_id, case_type_id=case_type_id,
                         activity=activity, activity_type="session", actor_id=actor)
     except Exception as exc:
@@ -139,18 +144,35 @@ async def resolve_connector(
     return rows[0]
 
 
+def _assert_one_anchor(case_id, calendar_event_id) -> None:
+    """A session belongs to a case or to a calendar event — never both, never
+    neither. The database says the same thing (`case_sessions_anchor_ck`); this
+    says it earlier, with a sentence instead of a constraint name."""
+    if bool(case_id) == bool(calendar_event_id):
+        raise ValueError(
+            "A meeting session must be anchored to exactly one of a case or a "
+            "calendar event.")
+
+
 async def start_session(
     session: AsyncSession,
     *,
-    case_id: uuid.UUID,
-    case_type_id,
+    case_id: uuid.UUID | None = None,
+    case_type_id=None,
+    calendar_event_id: uuid.UUID | None = None,
     tenant_id: str,
     started_by: str,
     title: str | None = None,
     provider: str | None = None,
     connector_id: uuid.UUID | None = None,
 ) -> CaseSessionModel:
-    """Create a meeting on the provider and attach it to the case."""
+    """Create a meeting on the provider and attach it to its anchor.
+
+    Exactly one anchor: a **case**, or a **calendar event**. Before migration
+    172 a session could only hang off a case, which is why a team stand-up could
+    never carry a join link.
+    """
+    _assert_one_anchor(case_id, calendar_event_id)
     connector_row = await resolve_connector(session, tenant_id, provider, connector_id)
     impl = get_connector(
         connector_row.connector_type,
@@ -161,6 +183,7 @@ async def start_session(
 
     row = CaseSessionModel(
         case_id=case_id,
+        calendar_event_id=calendar_event_id,
         tenant_id=tenant_id,
         driver="off_platform",
         provider=_PROVIDER_BY_TYPE[connector_row.connector_type],
@@ -234,8 +257,9 @@ async def resolve_driver(session: AsyncSession, tenant_id: str) -> str:
 async def start_embedded_session(
     session: AsyncSession,
     *,
-    case_id: uuid.UUID,
-    case_type_id,
+    case_id: uuid.UUID | None = None,
+    case_type_id=None,
+    calendar_event_id: uuid.UUID | None = None,
     tenant_id: str,
     started_by: str,
     title: str | None = None,
@@ -244,9 +268,13 @@ async def start_embedded_session(
     """Create an embedded (LiveKit) session — no provider call, no join_url;
     Studio opens the in-tab room and every join mints its own token.
     record_intent (P3) is declared here and immutable for the session's life:
-    every subsequent join sees the recording notice and stamps consent."""
+    every subsequent join sees the recording notice and stamps consent.
+
+    Anchored to a case **or** a calendar event, exactly one."""
+    _assert_one_anchor(case_id, calendar_event_id)
     row = CaseSessionModel(
         case_id=case_id,
+        calendar_event_id=calendar_event_id,
         tenant_id=tenant_id,
         driver="embedded",
         provider="livekit",
@@ -440,12 +468,18 @@ async def create_guest_invite(
     customer_id: uuid.UUID | None = None,
     email: str | None = None,
     display_name: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> tuple[CaseSessionParticipantModel, str]:
     """Single-use, short-TTL invite pinned to a guest principal.
 
     The principal is a portal customer (preferred) or a bare email — either
     way a per-session identity the inviting worker is accountable for. Only
     the SHA-256 of the token is stored; the raw token is returned once.
+
+    `ttl_seconds` overrides the platform default (15 minutes), which suits a
+    link handed over during a call and is useless in a calendar invitation sent
+    days ahead: the guest would receive a token that expired before they read
+    the message. A caller that knows when the meeting is may say so.
     """
     if customer_id is not None:
         customer = (await session.execute(
@@ -473,7 +507,8 @@ async def create_guest_invite(
         role="guest",
         invited_by=invited_by,
         invite_token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
-        invite_expires_at=_utcnow() + timedelta(seconds=get_settings().meet_guest_invite_ttl_seconds),
+        invite_expires_at=_utcnow() + timedelta(
+            seconds=ttl_seconds or get_settings().meet_guest_invite_ttl_seconds),
     )
     session.add(participant)
     await session.commit()
@@ -705,7 +740,7 @@ async def _joined_without_consent(session: AsyncSession, session_id: uuid.UUID) 
 
 async def _audit(session: AsyncSession, case_id: uuid.UUID, action: str,
                  actor: str, details: dict) -> None:
-    from case_service.db import repository as repo
+    from velaris_shared.db import repository as repo
     await repo.append_audit_entry(session, data={
         "case_id": case_id, "action": action, "actor_id": actor,
         "actor_type": "system" if actor == "hxmeet" else "user",
@@ -870,8 +905,11 @@ async def handle_livekit_event(session: AsyncSession, event: dict) -> None:
             row.recording_status = "processing"
             session.add(row)
         if row.status == "active":
-            from case_service.db import repository as repo
-            case = await repo.get_case_instance(session, row.case_id)
+            from velaris_shared.db import repository as repo
+            # A session anchored to a calendar event has no case, so there is no
+            # case type to log against — `_log_event` already declines a NULL
+            # case, and `get_case_instance(None)` would raise before it got there.
+            case = await repo.get_case_instance(session, row.case_id) if row.case_id else None
             await end_session(session, row=row,
                               case_type_id=case.case_type_id if case else None,
                               actor="livekit")

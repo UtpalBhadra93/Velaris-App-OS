@@ -64,7 +64,7 @@ DEFAULT_TTL_SECONDS = 15 * 60
 
 
 def _key() -> bytes:
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     secret = (get_settings().auth_secret or "").encode()
     return hmac.new(secret, _PURPOSE, hashlib.sha256).digest()

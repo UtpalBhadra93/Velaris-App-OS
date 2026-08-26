@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select, func, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import TenantModel, TenantMembershipModel
+from velaris_shared.db.models import TenantModel, TenantMembershipModel
 
 
 async def create_tenant(

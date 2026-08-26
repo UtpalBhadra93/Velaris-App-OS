@@ -16,14 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from .chunker import chunk_text
-from .guard import (
+from velaris_shared.llm.guard import (
     GOVERNED_SYSTEM_PROMPT,
     scan_input, scrub_output,
     wrap_user_input, wrap_document,
     validate_message_length,
 )
 from .text_extractor import extract_text
-from .factory import get_llm_backend
+from velaris_shared.llm.factory import get_llm_backend
 from .vector_store import InMemoryVectorStore
 
 log = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ async def index_document(
     backend=None,
 ) -> int:
     """Extract text, chunk, embed, and store. Returns number of chunks indexed."""
-    from case_service.db.models import DocumentChunkModel
+    from velaris_shared.db.models import DocumentChunkModel
 
     llm = backend or get_llm_backend()
     vs = vector_store   # injected in tests; prod uses DbVectorStore
@@ -147,8 +147,8 @@ async def qa_over_documents(
     The minimized/pseudonymized prompt is used for BOTH ladder legs so data
     is never un-minimized even when the local leg unexpectedly fails.
     """
-    from case_service.config import get_settings
-    from case_service.db.models import DocumentChunkModel
+    from velaris_shared.config import get_settings
+    from velaris_shared.db.models import DocumentChunkModel
 
     llm = backend or get_llm_backend()
 
@@ -228,7 +228,7 @@ async def qa_over_documents(
     # Layer 7: audit + disclose actual egress
     went_external = external_capable and getattr(llm, "last_route", "external") == "external"
     if went_external:
-        from .egress_audit import chunk_hash, record_egress
+        from velaris_shared.llm.egress_audit import chunk_hash, record_egress
         await record_egress(
             session,
             user_id=user_id,
@@ -279,7 +279,7 @@ async def chat(
     (message + history) is pseudonymized, the ladder answers locally first
     (use_cloud opts into external), and actual egress is audited + disclosed.
     """
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CopilotConversationModel, CopilotMessageModel,
     )
 
@@ -357,7 +357,7 @@ async def chat(
             reply = pseudo.restore(reply)
         went_external = external_capable and getattr(llm, "last_route", "external") == "external"
         if went_external:
-            from .egress_audit import record_egress
+            from velaris_shared.llm.egress_audit import record_egress
             await record_egress(
                 session,
                 user_id=user_id,

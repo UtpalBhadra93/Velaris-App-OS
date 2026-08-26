@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     RegionModel,
     SovereigntyRuleModel,
     TenantRegionAssignmentModel,
@@ -72,7 +72,7 @@ async def log_access(
     resource: str | None = None,
     legal_basis: str | None = None,
 ) -> None:
-    from case_service.db.models import RegionAccessLogModel
+    from velaris_shared.db.models import RegionAccessLogModel
     session.add(RegionAccessLogModel(
         region_id=region_id,
         tenant_id=tenant_id,

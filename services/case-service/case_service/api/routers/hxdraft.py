@@ -27,9 +27,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.core.error_codes import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.core.error_codes import (
     DRAFT_AI_503,
     DRAFT_BADID_400,
     DRAFT_EXISTS_409,
@@ -42,11 +42,11 @@ from case_service.core.error_codes import (
     DRAFT_VALIDATION_400,
     coded,
 )
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.models import CopilotConversationModel, CopilotMessageModel
-from case_service.db.session import get_session
-from case_service.hxnexus.guard import scan_input, validate_message_length
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CopilotConversationModel, CopilotMessageModel
+from velaris_shared.db.session import get_session
+from velaris_shared.llm.guard import scan_input, validate_message_length
 from case_service.nlp import (case_type_builder, escalation_builder, form_builder,
                               modify_builder, routing_builder, rule_builder,
                               rule_lint, sla_builder, user_builder)
@@ -282,7 +282,7 @@ async def _apply_escalation(draft: dict, session: AsyncSession,
     if clean["scope"] == "case_type":
         ct_id = (await _get_case_type_or_404(session, clean["case_type_id"])).id
 
-    from case_service.db.models import EscalationTreeModel
+    from velaris_shared.db.models import EscalationTreeModel
     tree = EscalationTreeModel(
         name=clean["name"][:255], description=clean["description"],
         scope=clean["scope"], case_type_id=ct_id,
@@ -361,7 +361,7 @@ async def _apply_user(draft: dict, session: AsyncSession, user: AuthenticatedUse
         raise coded(400, DRAFT_VALIDATION_400,
                     "Draft failed validation: " + "; ".join(errors))
 
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     existing = (await session.execute(
         select(HelixUserModel).where(
             (HelixUserModel.username == clean["username"])
@@ -408,7 +408,7 @@ async def _attach_rule_lint(session: AsyncSession, result: dict,
 
 
 async def _get_tree_or_404(session: AsyncSession, tree_id: str | None):
-    from case_service.db.models import EscalationTreeModel
+    from velaris_shared.db.models import EscalationTreeModel
     try:
         tid = uuid.UUID(str(tree_id))
     except ValueError:
@@ -520,7 +520,7 @@ async def _get_rule_or_404(session: AsyncSession, rule_id: str | None):
 
 
 async def _get_form_or_404(session: AsyncSession, form_id: str | None):
-    from case_service.db.models import FormDefinitionModel
+    from velaris_shared.db.models import FormDefinitionModel
     try:
         fid = uuid.UUID(str(form_id))
     except ValueError:
@@ -532,7 +532,7 @@ async def _get_form_or_404(session: AsyncSession, form_id: str | None):
 
 
 async def _get_connector_or_404(session: AsyncSession, connector_id: str | None):
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.models import ConnectorRegistryModel
     try:
         cid = uuid.UUID(str(connector_id))
     except ValueError:
@@ -603,7 +603,7 @@ async def _apply_sla(draft: dict, background_tasks: BackgroundTasks,
 
 async def _assert_rule_name_free(session: AsyncSession, name: str, version: str) -> None:
     """Rules are unique on (name, version) — fail with a clean 409, not a DB 500."""
-    from case_service.db.models import RuleDefinitionModel
+    from velaris_shared.db.models import RuleDefinitionModel
     existing = (await session.execute(
         select(RuleDefinitionModel).where(RuleDefinitionModel.name == name,
                                           RuleDefinitionModel.version == version)
@@ -850,7 +850,7 @@ async def stage_draft(
                 "rule_type": rule.rule_type, "definition_json": rule.definition_json,
                 "enabled": False}
     from case_service.api.routers.branches import _log_event
-    from case_service.db.models import ArtifactBranchModel
+    from velaris_shared.db.models import ArtifactBranchModel
     ag = user.active_access_group
     branch = ArtifactBranchModel(
         name=f"hxdraft/{clean['name']}"[:200],
@@ -894,7 +894,7 @@ async def _stage_escalation(draft: dict, session: AsyncSession,
     if clean["scope"] == "case_type":
         ct_id = (await _get_case_type_or_404(session, clean["case_type_id"])).id
 
-    from case_service.db.models import ArtifactBranchModel, EscalationTreeModel
+    from velaris_shared.db.models import ArtifactBranchModel, EscalationTreeModel
     tree = EscalationTreeModel(
         name=clean["name"][:255], description=clean["description"],
         scope=clean["scope"], case_type_id=ct_id,

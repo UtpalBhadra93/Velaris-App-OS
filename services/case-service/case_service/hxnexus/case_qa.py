@@ -37,7 +37,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseEventLogModel,
     CaseMessageModel,
     CaseSessionModel,
@@ -45,8 +45,8 @@ from case_service.db.models import (
     DocumentVerificationModel,
     TenantModel,
 )
-from .factory import get_llm_backend, _local_backend
-from .guard import GOVERNED_SYSTEM_PROMPT, scrub_output, wrap_document, wrap_user_input
+from velaris_shared.llm.factory import get_llm_backend, _local_backend
+from velaris_shared.llm.guard import GOVERNED_SYSTEM_PROMPT, scrub_output, wrap_document, wrap_user_input
 
 log = logging.getLogger(__name__)
 
@@ -231,8 +231,8 @@ async def resolve_backend(
         else:
             # Sovereignty default: force local inference, whatever the
             # platform-level provider config says. No silent cloud fallback.
-            from case_service.config import get_settings
-            from .factory import GuardedBackend
+            from velaris_shared.config import get_settings
+            from velaris_shared.llm.factory import GuardedBackend
             backend = GuardedBackend(_local_backend(get_settings()))
     if ai_cfg.get("model") and not getattr(backend, "is_external", False):
         backend._model = ai_cfg["model"]  # tenant's preferred local Ollama model
@@ -303,7 +303,7 @@ async def ask_case(
 
     went_external = external_capable and getattr(backend, "last_route", "external") == "external"
     if went_external:
-        from .egress_audit import record_egress
+        from velaris_shared.llm.egress_audit import record_egress
         await record_egress(
             session, user_id=str(user.user_id), purpose="case_qa",
             provider=getattr(backend, "backend_name", "external"),

@@ -65,10 +65,10 @@ from sqlalchemy import select, desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     CaseAuditLogModel,
     CaseInstanceModel,
     CaseSLAInstanceModel,
@@ -77,7 +77,7 @@ from case_service.db.models import (
     PaymentDisbursementModel,
     TenantModel,
 )
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     PORTAL_ACCESS_404,
     PORTAL_ACTION_409,
     PORTAL_CASETYPE_400,
@@ -90,12 +90,14 @@ from case_service.core.error_codes import (
     PORTAL_UPLOAD_400,
     coded,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.documents import access_tokens
 from case_service.storage import get_storage_backend
-from case_service.hxnexus.factory import get_llm_backend, check_ai_available
+from velaris_shared.llm.factory import get_llm_backend, check_ai_available
 from case_service.api.routers.payments import _encrypt_bank_ref
 from case_service.case_vars import service as case_vars
+
+logger = logging.getLogger(__name__)
 
 
 async def _case_vars_for(
@@ -307,6 +309,53 @@ async def get_portal_config(
     return _get_portal_config(tenant, ct_list)
 
 
+# ─── Public: when we are closed ──────────────────────────────────
+
+@public_router.get("/{slug}/closures")
+async def get_portal_closures(
+    slug: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """The organisation's working hours and holiday dates, for this portal.
+
+    Deliberately the **only** thing Calendar publishes to a customer. A portal
+    may say "we are closed 25–26 December" or "we reply within office hours"; it
+    may never learn that a particular person is off, which is why nothing here
+    reads `user_absences`.
+
+    The calendar is chosen by the portal's `business_calendar` setting, falling
+    back to one named `default`. With neither, the portal simply publishes no
+    closures rather than inventing office hours.
+    """
+    from velaris_shared.db.models import BusinessCalendarModel
+
+    tenant = (await session.execute(
+        select(TenantModel).where(TenantModel.slug == slug)
+    )).scalar_one_or_none()
+    if not tenant:
+        raise coded(404, PORTAL_NOTFOUND_404, f"Portal '{slug}' not found")
+
+    ps = _portal_settings(tenant)
+    if not ps.get("enabled", False):
+        raise coded(403, PORTAL_INACTIVE_403, "This portal is not currently active")
+
+    name = ps.get("business_calendar") or "default"
+    cal = (await session.execute(
+        select(BusinessCalendarModel).where(BusinessCalendarModel.name == name)
+    )).scalar_one_or_none()
+    if cal is None:
+        return {"timezone": None, "work_days": [], "work_start_hour": None,
+                "work_end_hour": None, "holidays": []}
+
+    return {
+        "timezone": cal.timezone,
+        "work_days": cal.work_days or [],
+        "work_start_hour": cal.work_start_hour,
+        "work_end_hour": cal.work_end_hour,
+        "holidays": cal.holidays or [],
+    }
+
+
 # ─── Public: Submit a case ───────────────────────────────────────
 
 @public_router.post("/{slug}/submit", response_model=PortalSubmitResponse)
@@ -328,7 +377,7 @@ async def submit_case(
     ct = await _portal_case_type_or_refuse(session, tenant, body.case_type_id)
 
     # Portal v2 P2 — idempotent replay: same client_ref ⇒ same case.
-    from case_service.db.models import PortalSubmissionRefModel as _Ref
+    from velaris_shared.db.models import PortalSubmissionRefModel as _Ref
     if body.client_ref is not None:
         seen = (await session.execute(
             select(_Ref).where(_Ref.client_ref == body.client_ref)
@@ -393,8 +442,8 @@ async def submit_case(
     # Portal v2 (P1): link the case to an existing customer account at submit
     # time — registration only back-links historical cases, so without this a
     # logged-in customer's NEW submissions never appear under My Cases.
-    from case_service.db.models import PortalCustomerCaseLinkModel as _Link
-    from case_service.db.models import PortalCustomerModel as _Cust
+    from velaris_shared.db.models import PortalCustomerCaseLinkModel as _Link
+    from velaris_shared.db.models import PortalCustomerModel as _Cust
     account = (await session.execute(
         select(_Cust).where(
             _Cust.tenant_id == tenant.id,
@@ -406,6 +455,25 @@ async def submit_case(
 
     if body.client_ref is not None:
         session.add(_Ref(client_ref=body.client_ref, tenant_slug=slug, case_id=case.id))
+
+    # HxShield producer (roadmap #25). duplicate_case_flood, dos_submission and
+    # replay_attack all match on `portal_submit`, and nothing had ever written
+    # it — so the platform's most-attacked surface was the one HxShield could
+    # say least about. Recorded BEFORE the commit so it shares the submission's
+    # transaction: a submission that rolls back did not happen, and must not
+    # leave a detection event claiming it did.
+    try:
+        from velaris_shared.db.security_events import log_security_event
+        await log_security_event(
+            session, event_type="portal_submit", severity="info",
+            user_id=f"portal:{(body.submitter_email or 'anonymous')}",
+            resource_type="case", resource_id=str(case.id),
+            action="submit", outcome="success",
+            details={"tenant_id": slug, "case_type_id": str(case.case_type_id),
+                     "client_ref": body.client_ref},
+        )
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("portal_submit security event not recorded: %s", _e)
 
     try:
         await session.commit()
@@ -480,7 +548,7 @@ async def portal_upload_document(
     if case.status in ("resolved", "closed", "cancelled"):
         raise coded(400, PORTAL_CLOSED_400, "Cannot upload to a closed case")
 
-    from case_service.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
+    from velaris_shared.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
     filename = file.filename or "upload"
     ok, reason = validate_upload_filename(filename, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
     if not ok:
@@ -1007,7 +1075,7 @@ async def portal_request_bank_otp(
         otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
         _store_portal_otp(str(case_id), otp)
 
-        from case_service.db.models import EmailAccountModel
+        from velaris_shared.db.models import EmailAccountModel
         from case_service.mail import EmailService
 
         try:
@@ -1109,9 +1177,14 @@ async def portal_submit_bank_details(
     if not disbursement:
         raise coded(404, PORTAL_NOTFOUND_404, "No pending payment disbursement found for this case.")
 
-    # SD-1: encrypt using the existing hxv1: envelope scheme — one source of truth
-    disbursement.bank_reference = _encrypt_bank_ref(
-        f"{account_name}|{account_number}|{sort_code}"
+    # SD-1: one source of truth for the envelope, and the tenant comes from the
+    # DISBURSEMENT row rather than the portal session — this is an anonymous
+    # customer submitting their own bank details, so the row is the authority on
+    # whose data it is, and it decides which key can later destroy it.
+    disbursement.bank_reference = await _encrypt_bank_ref(
+        session,
+        f"{account_name}|{account_number}|{sort_code}",
+        getattr(disbursement, "tenant_id", None),
     )
     disbursement.updated_at = datetime.now(timezone.utc)
 
@@ -1263,7 +1336,7 @@ async def toggle_case_type_portal(
 # passes, and the two paths can never drift apart.
 
 from case_service.api.routers.portal_customers import _require_customer  # noqa: E402
-from case_service.db.models import (  # noqa: E402
+from velaris_shared.db.models import (  # noqa: E402
     CaseSessionModel,
     PortalCustomerCaseLinkModel,
     PortalCustomerModel,
@@ -1430,7 +1503,7 @@ async def account_case_sessions(
     customer: PortalCustomerModel = Depends(_require_customer),
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import CaseSessionParticipantModel
+    from velaris_shared.db.models import CaseSessionParticipantModel
     case = await _linked_case(slug, case_id, customer, session)
     identity = f"customer:{customer.id}"
     rows = (await session.execute(
@@ -1539,7 +1612,7 @@ async def update_case_type_portal_display(
         if body.form_id == "":
             display.pop("form_id", None)
         else:
-            from case_service.db.models import FormDefinitionModel
+            from velaris_shared.db.models import FormDefinitionModel
             try:
                 form = await session.get(FormDefinitionModel, uuid.UUID(body.form_id))
             except ValueError:
@@ -1583,7 +1656,7 @@ async def account_case_actions(
     session: AsyncSession = Depends(get_session),
 ):
     """Pending customer actions on the case's CURRENT stage."""
-    from case_service.db.models import CaseStepCompletionModel
+    from velaris_shared.db.models import CaseStepCompletionModel
     case = await _linked_case(slug, case_id, customer, session)
     ct = await session.get(CaseTypeModel, case.case_type_id)
     steps = _customer_steps(ct, case.current_stage_id)
@@ -1629,7 +1702,7 @@ async def account_complete_action(
     customer: PortalCustomerModel = Depends(_require_customer),
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import CaseStepCompletionModel
+    from velaris_shared.db.models import CaseStepCompletionModel
     from case_service.api.routers.cases import _audit, _auto_advance_if_complete
 
     case = await _linked_case(slug, case_id, customer, session)
@@ -1724,7 +1797,7 @@ async def account_case_messages(
     customer: PortalCustomerModel = Depends(_require_customer),
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import CaseMessageModel
+    from velaris_shared.db.models import CaseMessageModel
     case = await _linked_case(slug, case_id, customer, session)
     rows = (await session.execute(
         select(CaseMessageModel).where(
@@ -1758,7 +1831,7 @@ async def account_post_message(
     customer: PortalCustomerModel = Depends(_require_customer),
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import CaseMessageModel
+    from velaris_shared.db.models import CaseMessageModel
     text = (body.body or "").strip()
     if not text or len(text) > 10_000:
         raise HTTPException(400, "Message must be 1–10000 characters")
@@ -1797,7 +1870,7 @@ async def account_case_csat(
     session: AsyncSession = Depends(get_session),
 ):
     """One rating per case, only after resolution."""
-    from case_service.db.models import PortalCsatModel
+    from velaris_shared.db.models import PortalCsatModel
     if not 1 <= body.rating <= 5:
         raise HTTPException(400, "rating must be 1–5")
     case = await _linked_case(slug, case_id, customer, session)
@@ -1820,7 +1893,7 @@ async def account_case_csat_status(
     customer: PortalCustomerModel = Depends(_require_customer),
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import PortalCsatModel
+    from velaris_shared.db.models import PortalCsatModel
     case = await _linked_case(slug, case_id, customer, session)
     row = await session.get(PortalCsatModel, case.id)
     return {"rated": row is not None, "rating": row.rating if row else None,
@@ -1841,7 +1914,7 @@ async def portal_ask_feedback(
 ):
     """Deflection tracking: did the pre-submit AI answer make the ticket
     unnecessary? Anonymous by design — rate-limited per IP."""
-    from case_service.db.models import PortalAskFeedbackModel
+    from velaris_shared.db.models import PortalAskFeedbackModel
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()
@@ -1935,7 +2008,7 @@ async def portal_case_type_form(
     """Flattened Form Builder fields for a portal-enabled case type, when the
     admin has attached one via portal-display (form_id). Only field metadata
     is served — never internal form config."""
-    from case_service.db.models import FormDefinitionModel
+    from velaris_shared.db.models import FormDefinitionModel
     tenant = (await session.execute(
         select(TenantModel).where(TenantModel.slug == slug)
     )).scalar_one_or_none()

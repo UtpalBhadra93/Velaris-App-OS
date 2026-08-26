@@ -102,6 +102,9 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/hxmigrate":      withSparkleBox(BpmImporterIcon),
   "/hxdbmigrate":    withSparkleBox(HxDBManagerIcon),
   "/hxreplay":       withSparkleBox(ProcessMiningIcon),
+  "/bots":           BotIcon,
+  "/scheduler":      SchedulerIcon,
+  "/calendar":       CalendarPeopleIcon,
   "/risk-review":    RiskGaugeIcon,
   "/scout":          ScoutIcon,
   "/scout-ai":       withSparkleBox(ScoutAIIcon),
@@ -314,6 +317,67 @@ function DocumentsIcon({ active, size = 16 }: NavIconProps) {
       <path d="M11.5 5.5V9H15" stroke={c} strokeWidth="1.3" strokeLinejoin="round" />
       {/* Document lines */}
       <path d="M9 11h4M9 12.5h2.5" stroke={c} strokeWidth="0.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function BotIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Two antennae rising from the head's shoulders */}
+      <path d="M4.3 4.2V1.4M11.7 4.2V1.4" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+      {/* Rounded robot head */}
+      <rect x="2.3" y="3.9" width="11.4" height="10" rx="3.6" stroke={c} strokeWidth="1.3" />
+      {/* Visor with two eyes */}
+      <rect x="4.5" y="7" width="7" height="4.2" rx="2.1" stroke={c} strokeWidth="1.2" />
+      <circle cx="6.6" cy="9.1" r="0.85" fill={c} />
+      <circle cx="9.4" cy="9.1" r="0.85" fill={c} />
+    </svg>
+  );
+}
+
+/** Calendar — a month grid with somebody's day marked out.
+ *
+ *  Deliberately not the Scheduler's clipboard-and-ticks calendar: one says
+ *  "things happen on a timetable", this one says "a person is not here". Two
+ *  entries in the same sidebar need to be told apart at 16px. */
+function CalendarPeopleIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Month body + header rule */}
+      <rect x="1.5" y="3" width="13" height="11.2" rx="1.8" stroke={c} strokeWidth="1.3" />
+      <path d="M1.5 6.2h13" stroke={c} strokeWidth="1.2" />
+      {/* Hangers */}
+      <path d="M5 3.6V1.5M11 3.6V1.5" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+      {/* Two ordinary days… */}
+      <rect x="3.6" y="8" width="1.9" height="1.7" rx="0.5" fill={c} opacity="0.55" />
+      <rect x="6.9" y="8" width="1.9" height="1.7" rx="0.5" fill={c} opacity="0.55" />
+      {/* …and one struck through: the day somebody is away */}
+      <rect x="10.2" y="8" width="1.9" height="1.7" rx="0.5" fill={c} />
+      <path d="M9.7 11.9l2.9-2.9" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+
+function SchedulerIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Calendar body with its header rule */}
+      <rect x="1.4" y="3" width="11" height="10.6" rx="1.7" stroke={c} strokeWidth="1.3" />
+      <path d="M1.4 5.9h11" stroke={c} strokeWidth="1.2" />
+      {/* Binder rings */}
+      <path d="M4.4 3.6V1.4M9.4 3.6V1.4" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+      {/* Day marks — a tick and two blocks */}
+      <path d="M3.4 8.3l.9.9 1.5-1.6" stroke={c} strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="7.5" y="7.5" width="2" height="2" rx="0.5" fill={c} />
+      <rect x="3.2" y="10.6" width="2" height="2" rx="0.5" fill={c} />
+      {/* Clock overlapping the lower-right corner */}
+      <circle cx="11.6" cy="11.4" r="3.5" fill="var(--bg-panel)" stroke={c} strokeWidth="1.3" />
+      <path d="M11.6 9.4v2h1.6" stroke={c} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

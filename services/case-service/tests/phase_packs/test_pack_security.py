@@ -77,7 +77,7 @@ def test_router_uses_the_sanitiser_not_raw_input():
 
 def test_unique_constraint_exists_on_the_model():
     """Without it, check-then-insert races and two concurrent calls both provision."""
-    from case_service.db.models import MarketplacePackInstallModel as M
+    from velaris_shared.db.models import MarketplacePackInstallModel as M
     names = {getattr(a, "name", None) for a in M.__table_args__}
     assert "ux_pack_installs_tenant_pkg" in names
 
@@ -86,7 +86,7 @@ def test_unique_constraint_exists_on_the_model():
 async def test_retry_after_failure_reuses_the_row(session):
     """The unique constraint must not make a failed provision unrecoverable."""
     from sqlalchemy import select
-    from case_service.db.models import MarketplacePackInstallModel as M
+    from velaris_shared.db.models import MarketplacePackInstallModel as M
 
     session.add(M(tenant_id="tS", package_id="a/p", pack_version="1.0.0",
                   status="failed", provisioned_by="dev"))

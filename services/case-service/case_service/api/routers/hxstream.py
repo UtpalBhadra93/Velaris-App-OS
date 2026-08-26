@@ -22,12 +22,12 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
-from case_service.db.models import TraceEventModel
-from case_service.hxstream.emitter import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
+from velaris_shared.db.models import TraceEventModel
+from velaris_shared.hxstream.emitter import (
     emit_trace,
     _register_subscriber,
     _unregister_subscriber,
@@ -129,7 +129,7 @@ async def event_bus_backlog(
     Reports whether the bus is switched on at all, so "zero backlog" is never
     mistaken for "working" when it is simply off.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     from case_service.integrations import event_bus
 
     _require_hxstream_access(user)
@@ -226,7 +226,7 @@ async def list_actors(
 
     # Admin: distinct actors from trace_events, enriched with user directory
     from sqlalchemy import func, distinct
-    from case_service.db.models import UserDirectoryModel
+    from velaris_shared.db.models import UserDirectoryModel
 
     # Distinct actor IDs from trace_events (last 30 days for performance)
     from datetime import timedelta
@@ -299,8 +299,8 @@ async def hxstream_ws(
 
     if token:
         try:
-            from case_service.auth.jwt_handler import decode_jwt_token
-            from case_service.config import get_settings
+            from velaris_shared.auth.jwt_handler import decode_jwt_token
+            from velaris_shared.config import get_settings
             # `public_key` must be passed or `decode_jwt_token` verifies HS256
             # only (the algorithm is chosen internally from this argument, which
             # is what stops algorithm-confusion attacks). Every other entry point

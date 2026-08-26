@@ -22,12 +22,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.models import HxEvolveInsightModel, RuleDefinitionModel
-from case_service.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import HxEvolveInsightModel, RuleDefinitionModel
+from velaris_shared.db.session import get_session
 from case_service.hxevolve import pipeline, proposer
 
 log = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ async def scan_case_type(
     # a scan can run an HxReplay cohort (bulk read of many real cases) — require
     # the SAME HxGuard capability the manual cohort endpoint requires; the
     # concurrency cap is enforced in the prover (shared with the cron path)
-    from case_service.hxguard import service as hxguard
+    from velaris_shared.hxguard import service as hxguard
     await hxguard.require(session, hxguard.subject_from_user(user), "replay.cohorts.run",
                           resource={"cohort": {"case_type_id": str(ct_id),
                                                "via": "hxevolve"}})
@@ -159,7 +159,7 @@ async def put_evolve_config(
     if ct is None or (ct.tenant_id is not None and ct.tenant_id != _tenant(user)):
         raise HTTPException(404, "Case type not found")
 
-    from case_service.db.models import HxEvolveConfigModel
+    from velaris_shared.db.models import HxEvolveConfigModel
     cfg = await session.get(HxEvolveConfigModel, ct_id)
     if cfg is None:
         cfg = HxEvolveConfigModel(case_type_id=ct_id, tenant_id=_tenant(user))
@@ -182,7 +182,7 @@ async def get_baseline(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     await _require_admin(session, user)
-    from case_service.db.models import HxEvolveBaselineModel
+    from velaris_shared.db.models import HxEvolveBaselineModel
     from case_service.hxevolve import drift
     try:
         ct_id = uuid.UUID(case_type_id)
@@ -331,7 +331,7 @@ async def stage_insight(
                                  "insight")
 
     from case_service.api.routers.branches import _log_event
-    from case_service.db.models import ArtifactBranchModel
+    from velaris_shared.db.models import ArtifactBranchModel
     from case_service.nlp import routing_builder, rule_builder, sla_builder
     from case_service.hxevolve import gates
 

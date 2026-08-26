@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from case_service.db.models import OutboxEventModel
+from velaris_shared.db.models import OutboxEventModel
 from case_service.integrations import event_bus
 
 pytestmark = pytest.mark.asyncio
@@ -256,7 +256,7 @@ class TestBacklog:
 class TestDisabledPosture:
     async def test_off_by_default(self):
         """The bus adds distribution, not durability — it should be opt-in."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         assert get_settings().event_bus_enabled is False
 

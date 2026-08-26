@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from case_service.devconn import service
-from case_service.db.models import WebhookReceiverRuleModel, OutboundConnectorRuleModel
+from velaris_shared.db.models import WebhookReceiverRuleModel, OutboundConnectorRuleModel
 
 router = APIRouter(prefix="/devconn", tags=["devconn"])
 
@@ -45,7 +45,7 @@ async def receive_webhook(
     raw_body = await request.body()
 
     from sqlalchemy import select
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.models import ConnectorRegistryModel
     conn = (await session.execute(
         select(ConnectorRegistryModel).where(ConnectorRegistryModel.id == connector_id)
     )).scalar_one_or_none()
@@ -223,7 +223,7 @@ async def build_connector(
         # Same admin-grade gate as POST /variables/namespaces — connector
         # CRUD must not be a namespace-squatting path. Decided by HxGuard
         # (action: devconn.namespace.register, fail-closed).
-        from case_service import hxguard
+        from velaris_shared import hxguard
         await hxguard.require(
             session, hxguard.subject_from_user(user), "devconn.namespace.register",
         )
@@ -247,7 +247,7 @@ async def list_custom_connectors(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.models import ConnectorRegistryModel
     rows = (await session.execute(
         select(ConnectorRegistryModel).where(
             ConnectorRegistryModel.connector_type == "http_custom",

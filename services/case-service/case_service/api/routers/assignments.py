@@ -20,9 +20,9 @@ from case_service.api.schemas.cases import (
     AssignmentReassign,
     AssignmentResponse,
 )
-from case_service.db import repository as repo
-from case_service.auth.dependencies import get_current_user
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db.session import get_session
 
 
 async def _sync_assignee_tuple(
@@ -37,7 +37,7 @@ async def _sync_assignee_tuple(
     still-active one."""
     if not user_id:
         return
-    from case_service.hxguard import tuples as hxg_tuples
+    from velaris_shared.hxguard import tuples as hxg_tuples
     if add:
         await hxg_tuples.write_tuple(
             session, object_type="case", object_id=case_id,
@@ -46,7 +46,7 @@ async def _sync_assignee_tuple(
         )
         return
     from sqlalchemy import select
-    from case_service.db.models import CaseAssignmentModel
+    from velaris_shared.db.models import CaseAssignmentModel
     remaining = (await session.execute(
         select(CaseAssignmentModel.id)
         .where(CaseAssignmentModel.case_id == case_id)

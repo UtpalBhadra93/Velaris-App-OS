@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseStepCompletionModel,
     ConnectorRegistryModel,
@@ -26,7 +26,7 @@ def _utcnow() -> datetime:
 
 async def _emit(case_id: uuid.UUID, event_type: str, data: dict) -> None:
     try:
-        from case_service.hxstream.emitter import emit_event
+        from velaris_shared.hxstream.emitter import emit_event
         await emit_event(str(case_id), event_type, data)
     except Exception as exc:
         logger.warning("HxStream emit failed (%s): %s", event_type, exc)
@@ -74,7 +74,7 @@ async def _complete_step(session: AsyncSession, case_id: uuid.UUID, step_id: str
 async def _auto_advance(session: AsyncSession, case_id: uuid.UUID) -> None:
     try:
         async with session.begin_nested():
-            from case_service.db.models import CaseTypeModel
+            from velaris_shared.db.models import CaseTypeModel
             case = (await session.execute(select(CaseInstanceModel).where(CaseInstanceModel.id == case_id))).scalar_one_or_none()
             if case and case.case_type_id:
                 ct = (await session.execute(select(CaseTypeModel).where(CaseTypeModel.id == case.case_type_id))).scalar_one_or_none()

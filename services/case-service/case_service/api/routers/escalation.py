@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from case_service import hxguard
+from velaris_shared import hxguard
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,15 +13,15 @@ from case_service.api.schemas.escalation import (
     EscalationTreeCreate, EscalationTreeUpdate, EscalationTreeResponse,
     EscalationPreviewRequest, SLAPauseRequest, SLAResumeRequest,
 )
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.core.sla_escalation import (
     precompute_level_schedule, record_pause_with_reason, record_resume,
     apply_level, resolve_escalation_tree, snapshot_tree,
 )
 from case_service.core.sla_tracker import parse_iso8601_duration
-from case_service.db.models import CaseSLAInstanceModel, EscalationTreeModel
-from case_service.db.session import get_session
+from velaris_shared.db.models import CaseSLAInstanceModel, EscalationTreeModel
+from velaris_shared.db.session import get_session
 
 router = APIRouter(tags=["escalation"])
 

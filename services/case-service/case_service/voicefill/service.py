@@ -34,14 +34,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseSessionModel,
     CaseTypeVariableModel,
     FormDefinitionModel,
     VariableNamespaceModel,
 )
 from case_service.hxnexus.case_qa import resolve_backend
-from case_service.hxnexus.guard import (
+from velaris_shared.llm.guard import (
     GOVERNED_SYSTEM_PROMPT,
     wrap_document,
 )
@@ -483,7 +483,7 @@ async def extract(
 
     went_external = external_capable and getattr(backend, "last_route", "external") == "external"
     if went_external:
-        from case_service.hxnexus.egress_audit import record_egress
+        from velaris_shared.llm.egress_audit import record_egress
         await record_egress(
             session, user_id=str(user.user_id), purpose="voice_fill",
             provider=getattr(backend, "backend_name", "external"),

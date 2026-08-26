@@ -18,9 +18,9 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
+from velaris_shared.db import repository as repo
 from case_service.core.business_calendar import BusinessCalendar
-from case_service.db.models import CaseSLAInstanceModel
+from velaris_shared.db.models import CaseSLAInstanceModel
 
 logger = logging.getLogger(__name__)
 

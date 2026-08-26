@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from case_service.db.backends import (
+from velaris_shared.db.backends import (
     ALLOWED_BACKENDS,
     MariadbBackend,
     MysqlBackend,

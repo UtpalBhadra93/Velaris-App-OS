@@ -15,7 +15,7 @@ from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import TestRunModel, TestResultModel
+from velaris_shared.db.models import TestRunModel, TestResultModel
 from case_service.testsuite import dsl, executor
 
 logger = logging.getLogger(__name__)

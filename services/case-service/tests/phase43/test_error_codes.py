@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from case_service.core import error_codes as ec
+from velaris_shared.core import error_codes as ec
 
 _ROUTER = (Path(__file__).resolve().parents[2]
            / "case_service" / "api" / "routers" / "marketplace.py")

@@ -23,8 +23,8 @@ import jwt
 import pytest
 import pytest_asyncio
 
-from case_service.config import get_settings
-from case_service.db.models import CaseSessionParticipantModel
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import CaseSessionParticipantModel
 from sqlalchemy import select
 from tests.conftest import create_case, deploy_case_type
 
@@ -294,7 +294,7 @@ class TestSeal:
         final = await _full_recording(client, recording_cfg)
         from case_service.compliance.audit_chain import verify_chain
         assert (await verify_chain(session))["verified"] is True
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         row = (await session.execute(
             select(CaseAuditLogModel)
             .where(CaseAuditLogModel.action == "meet.recording.sealed")
@@ -307,7 +307,7 @@ class TestRecordingAccess:
     async def test_recording_view_registered_with_hxguard(self, client, recording_cfg):
         """Enforce mode: meet.recording.view must be registered; an unrelated
         user gets the 404 anti-oracle."""
-        from case_service.auth.jwt_handler import create_dev_token
+        from velaris_shared.auth.jwt_handler import create_dev_token
         final = await _full_recording(client, recording_cfg)
         s = get_settings()
         s.hxguard_case_enforcement = "enforce"

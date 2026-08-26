@@ -14,7 +14,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AccessGroupModel,
     HelixUserModel,
     IdentityGroupMappingModel,
@@ -137,7 +137,7 @@ class TestGroupMappings:
         """Removing a mapping says "stop granting this", not "revoke what was
         granted" — and the group stops being governed, so no later sync strips
         it either."""
-        from case_service.db.models import OperatorAccessGroupModel
+        from velaris_shared.db.models import OperatorAccessGroupModel
 
         tenant, group = await _tenant_and_group(session)
         created = (await client.post(f"{BASE}/group-mappings", json={

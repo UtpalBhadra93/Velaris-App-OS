@@ -42,7 +42,7 @@ from typing import Any, Iterable
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AuthDeviceModel,
     HelixUserModel,
     IdentityGroupMappingModel,

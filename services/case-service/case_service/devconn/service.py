@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     ConnectorRegistryModel,
     WebhookReceiverEventModel,
@@ -111,7 +111,7 @@ async def receive_webhook(
         if matched_rule.advance_stage:
             try:
                 async with session.begin_nested():
-                    from case_service.db.models import CaseTypeModel
+                    from velaris_shared.db.models import CaseTypeModel
                     ct = (await session.execute(
                         select(CaseTypeModel).where(CaseTypeModel.id == matched_case.case_type_id)
                     )).scalar_one_or_none()
@@ -272,7 +272,7 @@ Return a JSON object with these exact keys:
 }}"""
 
     try:
-        from case_service.hxnexus.factory import generate_json
+        from velaris_shared.llm.factory import generate_json
         result = await generate_json(prompt, system="You are a Velaris BPM connector configuration generator.")
         if result:
             return result

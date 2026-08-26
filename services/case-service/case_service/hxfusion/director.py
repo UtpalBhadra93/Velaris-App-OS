@@ -39,7 +39,7 @@ async def advise(
     Returns a dict with keys: can_automate, confidence, suggestion,
     recommended_definition_id, reasoning.
     """
-    from case_service.hxnexus.factory import get_llm_backend
+    from velaris_shared.llm.factory import get_llm_backend
 
     llm = get_llm_backend()
 

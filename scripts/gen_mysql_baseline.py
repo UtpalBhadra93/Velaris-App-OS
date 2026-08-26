@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "services" / "case-service"))
 from sqlalchemy.dialects import mysql  # noqa: E402
 from sqlalchemy.schema import CreateIndex, CreateTable  # noqa: E402
 
-from case_service.db.models import Base  # noqa: E402
+from velaris_shared.db.models import Base  # noqa: E402
 
 #: The frozen baseline. Re-cutting this is a deliberate release-engineering act,
 #: NOT the response to a model change — see the module docstring.
@@ -56,7 +56,7 @@ HEADER = """\
 -- ============================================================================
 -- Velaris — MySQL 8 / MariaDB 10.6+ FROZEN baseline: PostgreSQL 001–154.
 --
--- Generated from the SQLAlchemy ORM metadata (case_service.db.models) compiled
+-- Generated from the SQLAlchemy ORM metadata (velaris_shared.db.models) compiled
 -- to the MySQL dialect — the same DDL `Base.metadata.create_all` emits.
 --
 -- ── This file is FROZEN as of 2026-08-06. Do not regenerate it. ─────────────

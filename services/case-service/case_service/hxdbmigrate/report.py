@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.introspection import get_introspector
+from velaris_shared.db.introspection import get_introspector
 
 
 def _jsonable(obj: Any) -> Any:

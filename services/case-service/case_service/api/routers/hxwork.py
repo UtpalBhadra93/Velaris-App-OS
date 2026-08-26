@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
+from velaris_shared.db.models import (
     HxWorkBoardModel, HxWorkSprintModel, HxWorkStoryModel,
     HxWorkStoryRelationModel, CaseTypeModel, ArtifactBranchModel,
 )
@@ -478,26 +478,26 @@ async def create_story(
                     base_snapshot = {"id": str(ct.id), "name": ct.name,
                                      "version": ct.version, "definition_json": ct.definition_json}
             elif effective_artifact_type == "form":
-                from case_service.db.models import FormDefinitionModel
+                from velaris_shared.db.models import FormDefinitionModel
                 f = await session.get(FormDefinitionModel, uuid.UUID(effective_artifact_id))
                 if f:
                     base_snapshot = {"id": str(f.id), "name": f.name,
                                      "version": f.version, "definition_json": f.definition_json}
             elif effective_artifact_type == "rule":
-                from case_service.db.models import RuleDefinitionModel
+                from velaris_shared.db.models import RuleDefinitionModel
                 r = await session.get(RuleDefinitionModel, uuid.UUID(effective_artifact_id))
                 if r:
                     base_snapshot = {"id": str(r.id), "name": r.name,
                                      "rule_type": r.rule_type, "definition_json": r.definition_json, "enabled": r.enabled}
             elif effective_artifact_type in ("integration", "connector"):
-                from case_service.db.models import ConnectorRegistryModel
+                from velaris_shared.db.models import ConnectorRegistryModel
                 c = await session.get(ConnectorRegistryModel, uuid.UUID(effective_artifact_id))
                 if c:
                     # Never snapshot credentials
                     base_snapshot = {"id": str(c.id), "name": c.name,
                                      "connector_type": c.connector_type, "config": c.config, "enabled": c.enabled}
             elif effective_artifact_type == "escalation":
-                from case_service.db.models import EscalationTreeModel
+                from velaris_shared.db.models import EscalationTreeModel
                 e = await session.get(EscalationTreeModel, uuid.UUID(effective_artifact_id))
                 if e:
                     base_snapshot = {"id": str(e.id), "name": e.name,
@@ -620,7 +620,7 @@ async def generate_stories(
         except Exception:
             pass
 
-    from case_service.hxnexus.factory import generate_json
+    from velaris_shared.llm.factory import generate_json
     prompt = (
         f"Generate user stories for this Velaris artifact:\n{artifact_context}\n\n"
         "Create 5-8 user stories covering: happy path, edge cases, error handling, SLA compliance, and admin use cases.\n"

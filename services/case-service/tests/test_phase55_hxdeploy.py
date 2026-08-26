@@ -6,13 +6,29 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import EnvironmentRegistryModel, DeploymentRunModel
+from velaris_shared.db.models import EnvironmentRegistryModel, DeploymentRunModel
 
 from tests.conftest import client, session  # type: ignore[attr-defined]
 
 MANIFEST_SMALL = {"case_types": [], "forms": [], "version": "1.0.0", "notes": "Minor label fix"}
 MANIFEST_MED   = {"case_types": [{"name": "LoanApp"}], "forms": [{"name": "LoanForm"}], "version": "2.0.0"}
 MANIFEST_LARGE = {"case_types": [{"name": f"CT{i}"} for i in range(10)], "forms": [], "version": "3.0.0", "sla_sql": "ALTER TABLE..."}
+
+
+def _second_admin() -> dict:
+    """A different admin. A deployment may not be approved by whoever started
+    it, so every approve test needs two identities — the same rule bots and
+    schedules carry."""
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
+
+    s = get_settings()
+    token = create_dev_token(
+        user_id=str(uuid.uuid4()), username="test-approver",
+        roles=["admin", "superadmin"], secret=s.auth_secret,
+        private_key=s.auth_rsa_private_key or "",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def _env(client: AsyncClient, name: str = "staging", order: int = 1) -> dict:
@@ -185,7 +201,8 @@ async def test_approve_awaiting_run(client: AsyncClient, session: AsyncSession):
     })
     run = p.json()
     if run["status"] == "awaiting_approval":
-        r = await client.post(f"/api/v1/deploy/runs/{run['id']}/approve", json={})
+        r = await client.post(f"/api/v1/deploy/runs/{run['id']}/approve", json={},
+                              headers=_second_admin())
         assert r.status_code == 200
         assert r.json()["status"] == "deployed"
         assert r.json()["approved_by"] is not None
@@ -205,6 +222,27 @@ async def test_reject_awaiting_run(client: AsyncClient):
         data = r.json()
         assert data["status"] == "rejected"
         assert data["rejection_reason"] == "Not ready for prod"
+
+
+@pytest.mark.asyncio
+async def test_initiator_cannot_approve_their_own_run(client: AsyncClient):
+    """The two-person rule. An approval the initiator can grant themselves is a
+    form, not a gate — and this run writes design-time artifacts into another
+    environment."""
+    env = await _env(client, "prod", 3)
+    p = await client.post("/api/v1/deploy/promote", json={
+        "to_env_id": env["id"], "package_manifest": MANIFEST_LARGE,
+    })
+    run = p.json()
+    assert run["status"] == "awaiting_approval"
+
+    mine = await client.post(f"/api/v1/deploy/runs/{run['id']}/approve", json={})
+    assert mine.status_code == 403
+    assert "other than the person who started it" in mine.json()["detail"]
+
+    theirs = await client.post(f"/api/v1/deploy/runs/{run['id']}/approve", json={},
+                               headers=_second_admin())
+    assert theirs.status_code == 200
 
 
 @pytest.mark.asyncio

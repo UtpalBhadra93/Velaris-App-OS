@@ -68,8 +68,8 @@ class EmailPollLoop:
 
     async def _loop(self) -> None:
         from sqlalchemy import select
-        from case_service.db.models import EmailAccountModel
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.models import EmailAccountModel
+        from velaris_shared.db.session import get_session_factory
         from case_service.mail.service import EmailService
 
         service = EmailService()

@@ -20,16 +20,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import (
     CaseMessageModel,
     PortalCustomerCaseLinkModel,
     PortalCustomerModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
 
 log = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ async def notify_customer_of_message(session: AsyncSession, case_id: uuid.UUID, 
         to = customer.alt_email if (customer.preferred_email == "alt" and customer.alt_email) \
             else customer.primary_email
 
-        from case_service.db.models import EmailAccountModel
+        from velaris_shared.db.models import EmailAccountModel
         from case_service.mail import EmailService
         account = (await session.execute(
             select(EmailAccountModel).where(

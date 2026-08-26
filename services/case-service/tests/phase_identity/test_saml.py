@@ -19,7 +19,7 @@ import pytest
 from lxml import etree
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AuthOtpModel,
     HelixUserModel,
     IdentityProvisionLogModel,

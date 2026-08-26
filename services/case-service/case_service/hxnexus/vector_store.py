@@ -68,7 +68,7 @@ class DbVectorStore:
         self._session_factory = session_factory
 
     async def upsert(self, chunk_id: str, text: str, embedding: list[float], metadata: dict) -> None:
-        from case_service.db.models import DocumentChunkModel
+        from velaris_shared.db.models import DocumentChunkModel
         from sqlalchemy import select
 
         async with self._session_factory() as session:
@@ -95,7 +95,7 @@ class DbVectorStore:
         top_k: int = 5,
         filter_metadata: dict | None = None,
     ) -> list[dict]:
-        from case_service.db.models import DocumentChunkModel
+        from velaris_shared.db.models import DocumentChunkModel
         from sqlalchemy import select
 
         async with self._session_factory() as session:
@@ -128,7 +128,7 @@ class DbVectorStore:
         return results[:top_k]
 
     async def delete(self, chunk_id: str) -> None:
-        from case_service.db.models import DocumentChunkModel
+        from velaris_shared.db.models import DocumentChunkModel
 
         async with self._session_factory() as session:
             chunk = await session.get(DocumentChunkModel, uuid.UUID(chunk_id))

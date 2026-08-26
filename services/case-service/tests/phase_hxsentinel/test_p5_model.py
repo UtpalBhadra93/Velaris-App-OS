@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseInstanceModel, CaseInstanceVariableModel
+from velaris_shared.db.models import CaseInstanceModel, CaseInstanceVariableModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import model as risk_model
 from case_service.sentinel import service as sentinel

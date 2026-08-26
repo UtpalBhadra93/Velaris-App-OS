@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseEventLogModel
+from velaris_shared.db.models import CaseEventLogModel
 
 # actor_type values counted as automated work (vs human) for the auto/manual ratio
 _AUTO_ACTOR_TYPES = ("system", "rule", "ai", "service")

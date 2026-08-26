@@ -34,7 +34,7 @@ async def test_permissions_get_default_then_upsert(client):
 # ── hxguard/tuples.py: portable on-conflict-do-nothing upsert ──────────────────
 @pytest.mark.asyncio
 async def test_write_tuple_is_idempotent(session):
-    from case_service.hxguard.tuples import write_tuple, list_tuples
+    from velaris_shared.hxguard.tuples import write_tuple, list_tuples
 
     obj_id = uuid.uuid4()
     kw = dict(object_type="case", object_id=obj_id, relation="viewer",
@@ -55,7 +55,7 @@ async def test_write_tuple_is_idempotent(session):
 # ── user_directory.py: access_group_id filter (was JSONB @>, now Python filter) ──
 @pytest.mark.asyncio
 async def test_directory_access_group_filter(client, session):
-    from case_service.db.models import UserDirectoryModel
+    from velaris_shared.db.models import UserDirectoryModel
 
     gid = str(uuid.uuid4())
     other = str(uuid.uuid4())

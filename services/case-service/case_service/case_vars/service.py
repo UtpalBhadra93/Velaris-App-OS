@@ -33,7 +33,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseInstanceVariableModel,
     CaseTypeVariableModel,
@@ -272,7 +272,7 @@ async def set_granted(
 
     # Grant decision via HxGuard (first PDP consumer — same namespace_grants
     # semantics incl. the "*" wildcard, now cached + deny-audited centrally).
-    from case_service import hxguard
+    from velaris_shared import hxguard
     subject = hxguard.Subject(
         kind=ctx.kind, id=str(ctx.ref) if ctx.ref else ctx.actor_id,
     )
@@ -376,7 +376,7 @@ async def _create_undeclared(
     if undeclared >= MAX_UNDECLARED_PER_NS:
         # ONE aggregated alert at the cap, not one per rejected key
         try:
-            from case_service.enterprise.security_events import log_security_event
+            from velaris_shared.db.security_events import log_security_event
             await log_security_event(
                 session, event_type="case_vars.undeclared_cap", severity="warning",
                 user_id=ctx.actor_id, resource_type="namespace", resource_id=ns.name,
@@ -663,7 +663,7 @@ async def _blob_pii_hints(session: AsyncSession, case_type_id: uuid.UUID) -> set
     """Field names HxSync classifies as pii for this case type — the only
     real per-field redaction metadata in the platform (the cases-router
     blob redaction map is a stub). Carry-over source for promotion."""
-    from case_service.db.models import SyncFieldMappingModel, SyncRedactionRuleModel
+    from velaris_shared.db.models import SyncFieldMappingModel, SyncRedactionRuleModel
     hints: set[str] = set()
     ct = str(case_type_id)
     rows = (await session.execute(
@@ -842,7 +842,7 @@ async def promote_blob_key(
 
     # ONE audit event for the whole promotion — not one per row
     try:
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="variable_promotion",
             user_id=actor, action="promote",

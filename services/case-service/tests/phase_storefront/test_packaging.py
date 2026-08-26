@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 
 from case_service.marketplace import official_registry
 from case_service.marketplace.app_lifecycle import teardown_package_data
-from case_service.db.models import (
+from velaris_shared.db.models import (
     MarketplaceInstallModel, StorefrontProductModel, StorefrontStoreModel,
 )
 

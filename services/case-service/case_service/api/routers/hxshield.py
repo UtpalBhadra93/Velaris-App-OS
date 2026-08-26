@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import SecurityRuleModel, SecurityIncidentModel, ShieldEventModel
-from case_service import hxguard
-from case_service.auth.dependencies import require_role
-from case_service.db.session import get_session
+from velaris_shared.db.models import SecurityRuleModel, SecurityIncidentModel, ShieldEventModel
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared.db.session import get_session
 from case_service.api.schemas.hxshield import (
     SecurityRuleCreate, SecurityRuleUpdate, SecurityRuleOut,
     SecurityIncidentOut, IncidentResolve,

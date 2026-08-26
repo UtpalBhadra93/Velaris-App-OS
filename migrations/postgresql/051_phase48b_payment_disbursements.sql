@@ -18,6 +18,8 @@ CREATE TABLE payment_disbursements (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ix_pd_case    ON payment_disbursements(case_id);
-CREATE INDEX ix_pd_status  ON payment_disbursements(status);
-CREATE INDEX ix_pd_tenant  ON payment_disbursements(tenant_id);
+-- Index names are unique per schema, not per table: 049 already took
+-- ix_pd_status for process_definitions, so these carry a pdisb_ prefix.
+CREATE INDEX IF NOT EXISTS ix_pdisb_case   ON payment_disbursements(case_id);
+CREATE INDEX IF NOT EXISTS ix_pdisb_status ON payment_disbursements(status);
+CREATE INDEX IF NOT EXISTS ix_pdisb_tenant ON payment_disbursements(tenant_id);

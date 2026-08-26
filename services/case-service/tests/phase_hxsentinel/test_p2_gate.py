@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import CaseRiskConfigModel, CaseRiskHoldModel, CaseRiskSignalModel
+from velaris_shared.db.models import CaseRiskConfigModel, CaseRiskHoldModel, CaseRiskSignalModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import service as sentinel
 from tests.conftest import create_case, deploy_case_type
@@ -81,7 +81,7 @@ class TestGate:
 
     async def test_below_threshold_opens_no_hold(self, session, client):
         """A finding below the gate threshold must not open a hold."""
-        from case_service.db.models import CaseRiskRuleModel
+        from velaris_shared.db.models import CaseRiskRuleModel
         _ct, ca, _cb = await _high_finding_case(session, client)
         # Downgrade the rule so its finding fires at 'low', below the 'high' gate.
         session.add(CaseRiskRuleModel(tenant_id="default", rule_key="shared_doc_fraud",
@@ -163,7 +163,7 @@ class TestGate:
         """The primary flow: completing a stage's steps must NOT auto-advance a
         gated case, and (unlike the 409 manual path) the hold persists."""
         from case_service.api.routers.cases import _auto_advance_if_complete
-        from case_service.db.models import CaseInstanceModel, CaseStepCompletionModel
+        from velaris_shared.db.models import CaseInstanceModel, CaseStepCompletionModel
         ct, ca, _cb = await _high_finding_case(session, client)
         await _set_gate(session, "high")
         # Put the case in a stage whose single required step is already complete.

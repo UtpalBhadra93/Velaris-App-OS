@@ -276,7 +276,8 @@ function Box({ isDark, pref, setPref, children }: {
               fontWeight: 400, maxWidth: 360,
             }}>
               Enterprise case management and process automation — structured workflows, AI-assisted triage, and real-time tracking built for operations teams.
-              Full source control, zero SaaS lock-in.
+              {" "}
+              <strong style={{ fontWeight: 700 }}>Your infra. Your choice. Zero SaaS lock-in.</strong>
             </p>
           </div>
         </div>

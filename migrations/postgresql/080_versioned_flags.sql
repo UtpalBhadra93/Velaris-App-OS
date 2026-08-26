@@ -11,9 +11,13 @@
 -- version column if set, or "released" as a safe fallback).
 -- Existing rows that were enabled=FALSE become NULL.
 
+-- Drop the constraint and default FIRST: the USING clause below maps every
+-- enabled = FALSE row to NULL, which the still-present NOT NULL rejects. The
+-- seed rows from 076 are exactly that shape, so on a fresh install the type
+-- change failed and the column stayed boolean.
+ALTER TABLE scheduled_releases ALTER COLUMN enabled DROP DEFAULT;
+ALTER TABLE scheduled_releases ALTER COLUMN enabled DROP NOT NULL;
+
 ALTER TABLE scheduled_releases
   ALTER COLUMN enabled TYPE VARCHAR(20)
   USING (CASE WHEN enabled THEN COALESCE(version, 'released') ELSE NULL END);
-
-ALTER TABLE scheduled_releases ALTER COLUMN enabled DROP NOT NULL;
-ALTER TABLE scheduled_releases ALTER COLUMN enabled DROP DEFAULT;

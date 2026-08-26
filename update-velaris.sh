@@ -81,6 +81,50 @@ SERVICE_PORT="${SERVICE_PORT:-8200}"
 green()  { echo -e "\033[0;32m$*\033[0m"; }
 yellow() { echo -e "\033[0;33m$*\033[0m"; }
 red()    { echo -e "\033[0;31m$*\033[0m"; }
+
+# ── System binaries, checked BEFORE anything is touched ──────────
+#
+# The update syncs Python and Node dependencies and pulls container images. It
+# cannot install an apt package, so a release that starts using a new system
+# tool would install cleanly on a NEW machine and break on every existing one —
+# at runtime, in whichever component called it first.
+#
+# It halts rather than installing: apt needs root, this runs unattended on a
+# timer, and a package manager running unwatched on a client's server is not a
+# decision an update gets to make.
+if [ -f "$VELARIS_DIR/deploy/deps/velaris-deps.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$VELARIS_DIR/deploy/deps/velaris-deps.sh"
+  _MISSING_PKGS="$(_velaris_deps_missing)"
+  if [ -n "$_MISSING_PKGS" ]; then
+    red "✗ This release needs system packages that are not installed:"
+    _velaris_deps_report
+    red "  Nothing has been changed. Install them and re-run the update:"
+    red "    sudo apt-get update && sudo apt-get install -y $_MISSING_PKGS"
+    exit 1
+  fi
+fi
+
+# ── Ports, checked BEFORE anything is touched ────────────────────
+#
+# An update can add a component, and a component needs a port the client may
+# already be using. Finding that out after the pull, the migrations and the
+# restart means diagnosing a half-applied update; finding it out here costs
+# nothing. Ports held by Velaris itself are expected — the platform is running
+# while this runs — so only a port held by something ELSE stops us.
+#
+# This never prompts and never reassigns: the timer runs this unattended, and a
+# port chosen by a script at 3am is a port nobody knows about.
+if [ -f "$VELARIS_DIR/deploy/ports/velaris-ports.sh" ]; then
+  # shellcheck source=/dev/null
+  set -a; . "$VELARIS_DIR/.env" 2>/dev/null || true; set +a
+  . "$VELARIS_DIR/deploy/ports/velaris-ports.sh"
+  if ! _velaris_ports_preflight --quiet; then
+    red "✗ A port this release needs is held by something that is not Velaris (above)."
+    red "  Nothing has been changed. Set the port in .env and re-run the update."
+    exit 1
+  fi
+fi
 bold()   { echo -e "\033[1m$*\033[0m"; }
 step()   { echo ""; bold "▶ $*"; }
 
@@ -601,6 +645,16 @@ if [[ -f "$ENV_FILE" && -f "$EXAMPLE_FILE" ]]; then
   _gen_if_empty VELARIS_DB_PASSWORD           "$(openssl rand -hex 16)"
   _gen_if_empty VELARIS_ADMIN_PASSWORD        "$(openssl rand -hex 16)"
   _gen_if_empty VELARIS_SEARCH_PASSWORD       "$(openssl rand -hex 16)"
+  # VELARIS_GATEWAY_IDENTITY_SECRET is deliberately NOT generated here.
+  #
+  # Generating it would switch workload identity (#18) ON during an unattended
+  # update — the timer runs this on its own — and enforcement that arrives
+  # without anyone watching is enforcement nobody can diagnose at 3am. An
+  # existing install therefore keeps the check off until an operator turns it on
+  # deliberately (deploy/tls/README.md); `setup-velaris.sh` generates one for
+  # NEW installs, where there is nothing to lock out.
+  #
+  # This is a decision, not an oversight — do not "fix" it by adding a line here.
 
   if [[ "$ENV_ADDED" -gt 0 ]]; then
     green "  ✓ Added $ENV_ADDED new variable(s) to .env — review them after the update"
@@ -621,10 +675,32 @@ sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$LATEST_VERSION\"/" "$VELARIS
 bash "$VELARIS_DIR/start-velaris.sh"
 
 # ── Health gate: never report success on a broken env ─────────────
+# Every API service, not just the gateway. Since 13c-e the platform is four
+# processes: the gateway answers /health from case-service, so a dead
+# analytics-, hxgraph- or hxmigrate-service would have left this gate green
+# while a quarter of the API returned 502.
+# Probe the way the services actually came up. With internal TLS on they demand
+# the gateway's client certificate at the handshake, so a plain http probe would
+# fail against a perfectly healthy platform — and this gate is what decides
+# whether the update is considered successful.
+_velaris_probe() { curl -sf --max-time 3 "http://localhost:$1/health" >/dev/null 2>&1; }
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh" ] && . "$VELARIS_DIR/deploy/tls/uvicorn-tls-args.sh"
+
 step "Post-update health check..."
 HEALTH_OK=false
+HEALTH_FAILED=""
 for i in $(seq 1 30); do
-  if curl -sf --max-time 3 "http://localhost:${SERVICE_PORT}/health" > /dev/null 2>&1; then
+  HEALTH_FAILED=""
+  for _svc in "${SERVICE_PORT}:gateway" "${VELARIS_CASE_PORT:-8201}:case-service" \
+              "${VELARIS_ANALYTICS_PORT:-8202}:analytics-service" \
+              "${VELARIS_HXGRAPH_PORT:-8203}:hxgraph-service" \
+              "${VELARIS_HXMIGRATE_PORT:-8204}:hxmigrate-service"; do
+    _port="${_svc%%:*}"; _name="${_svc##*:}"
+    _velaris_probe "${_port}" \
+      || HEALTH_FAILED="${HEALTH_FAILED} ${_name}"
+  done
+  if [[ -z "$HEALTH_FAILED" ]]; then
     HEALTH_OK=true
     break
   fi
@@ -636,13 +712,13 @@ CURRENT_VERSION="$LATEST_VERSION"    # beacon reports the new version
 rm -f "$UPDATE_REQUEST_FILE"         # request consumed (success or halt — admin re-requests)
 
 if [[ "$HEALTH_OK" == false ]]; then
-  red "  ✗ case-service failed its health check after the update"
+  red "  ✗ health check failed after the update:${HEALTH_FAILED}"
   red "    This environment is HALTED for human attention — backup at: $BACKUP_FILE"
-  red "    Logs: tail -f /tmp/velaris-case-service.log"
+  red "    Logs: tail -f /tmp/velaris-<service>.log"
   _write_status "unhealthy" "updated to v$LATEST_VERSION but health check failed"
   exit 1
 fi
-green "  ✓ case-service healthy"
+green "  ✓ all services healthy"
 if [[ "$REQUEST_ACTION" == "rollback" ]]; then
   _write_status "rolled_back" "rolled back to v$LATEST_VERSION"
 else

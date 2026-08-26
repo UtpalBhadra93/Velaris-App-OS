@@ -57,7 +57,7 @@ async def sample_once(session) -> list[dict[str, Any]]:
     The `detail` field may carry a raw exception message — it is diagnostic and
     **must never be served publicly**; `status.py` strips it.
     """
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
 
     components: list[dict[str, Any]] = []
 
@@ -76,7 +76,7 @@ async def sample_once(session) -> list[dict[str, Any]]:
     })
 
     try:
-        from case_service.observability.spans import recent_spans
+        from velaris_shared.observability.spans import recent_spans
 
         components.append({
             "component": TELEMETRY, "status": STATUS_OK, "latency_ms": 0.0,
@@ -99,7 +99,7 @@ async def sample_once(session) -> list[dict[str, Any]]:
 
 async def prune(session, *, older_than_days: int) -> int:
     """Delete samples past the retention window. Returns rows removed."""
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
     result = await session.execute(

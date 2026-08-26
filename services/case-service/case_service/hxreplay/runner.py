@@ -16,8 +16,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.models import (
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import (
     ArtifactBranchModel,
     CaseInstanceModel,
     ReplayResultModel,
@@ -227,7 +227,7 @@ async def bg_run_cohort(run_id) -> None:
     request-scoped factories (a bg task on the shared test factory corrupts the
     host request; same lesson as testsuite/regen)."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
-    from case_service.db.session import get_engine, get_replica_engine
+    from velaris_shared.db.session import get_engine, get_replica_engine
 
     Write = async_sessionmaker(get_engine(), expire_on_commit=False)
     Read = async_sessionmaker(get_replica_engine(), expire_on_commit=False)

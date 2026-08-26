@@ -16,7 +16,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import CaseRiskFeedbackModel, CaseRiskSignalModel
+from velaris_shared.db.models import CaseRiskFeedbackModel, CaseRiskSignalModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import service as sentinel
 from tests.conftest import create_case, deploy_case_type

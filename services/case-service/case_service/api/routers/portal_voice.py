@@ -34,15 +34,15 @@ from case_service.api.routers.portal_customers import (
     _require_customer,
     _require_customer_accounts,
 )
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel,
     PortalCustomerModel,
     TenantModel,
 )
 from case_service.compliance.consent import ProcessingRefused
-from case_service.core.error_codes import CONSENT_REFUSED_403, coded
-from case_service.db.session import get_session
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.core.error_codes import CONSENT_REFUSED_403, coded
+from velaris_shared.db.session import get_session
+from velaris_shared.llm.guard import _RateLimiter
 from case_service.meet import asr as meet_asr
 from case_service.voicefill import service as voicefill
 

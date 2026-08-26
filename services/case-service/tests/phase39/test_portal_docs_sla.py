@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseSLAInstanceModel,
     CaseTypeModel,
@@ -23,8 +23,8 @@ from case_service.db.models import (
     DocumentVersionModel,
     TenantModel,
 )
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.main import app
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────

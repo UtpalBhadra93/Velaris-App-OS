@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import RegionModel, RegionHealthLogModel
+from velaris_shared.db.models import RegionModel, RegionHealthLogModel
 from case_service.hxglobal import regions as _  # noqa: F401
 from case_service.hxglobal.protocol import get_region_adapter
 
@@ -42,7 +42,7 @@ async def poll_region_health(region: RegionModel, session: AsyncSession) -> dict
     session.add(log)
 
     try:
-        from case_service.hxstream.emitter import emit_event
+        from velaris_shared.hxstream.emitter import emit_event
         if status in ("degraded", "unreachable"):
             await emit_event(session, "region_degraded", {
                 "region_id": str(region.id), "region_name": region.name,

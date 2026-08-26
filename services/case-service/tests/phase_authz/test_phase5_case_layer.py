@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from case_service.hxguard.service import (
+from velaris_shared.hxguard.service import (
     ACTION_ROLES, CASE_ACTIONS, PLATFORM_ACTIONS, Subject, check, subject_allows,
 )
 
@@ -142,7 +142,7 @@ class TestTheRebacBypassIsNowAPrivilege:
         could take it away: not a role edit, not an access group, not a
         privilege. Now it is an ordinary action, so an estate that does not want
         managers reading every case can stop seeding it."""
-        from case_service.hxguard.privileges import SEEDED_ROLE_PRIVILEGES, evaluate_privileges
+        from velaris_shared.hxguard.privileges import SEEDED_ROLE_PRIVILEGES, evaluate_privileges
 
         assert evaluate_privileges(SEEDED_ROLE_PRIVILEGES["manager"],
                                    "casework.records.any") is True
@@ -183,7 +183,7 @@ class TestIsAdminIsNoLongerADecisionInput:
         import inspect
         import textwrap
 
-        from case_service.hxguard import service
+        from velaris_shared.hxguard import service
 
         for cls in (service.RbacBackend, service.RebacBackend):
             tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
@@ -222,8 +222,8 @@ class TestActionsAreGrantableFromData:
     GRANDFATHERED: set[str] = set()
 
     def test_no_new_action_is_ungrantable(self):
-        from case_service.hxguard.actions import ACTIONS, resource_of, verb_of
-        from case_service.hxguard.privileges import _crosses_into_platform_namespace
+        from velaris_shared.hxguard.actions import ACTIONS, resource_of, verb_of
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
 
         ungrantable = {
             name for name in ACTIONS
@@ -245,8 +245,8 @@ class TestActionsAreGrantableFromData:
 
     def test_every_risk_action_is_grantable(self):
         """The four renamed 2026-08-15, plus the one that always was."""
-        from case_service.hxguard.actions import ACTIONS, resource_of, verb_of
-        from case_service.hxguard.privileges import _crosses_into_platform_namespace
+        from velaris_shared.hxguard.actions import ACTIONS, resource_of, verb_of
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
 
         risk = sorted(a for a in ACTIONS if a.startswith("risk."))
         assert risk == ["risk.assessment.read", "risk.outcomes.write",

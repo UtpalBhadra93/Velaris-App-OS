@@ -22,7 +22,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import HelixUserModel, ScimTokenModel
+from velaris_shared.db.models import HelixUserModel, ScimTokenModel
 from case_service.identity import scim
 
 SCIM = "/api/v1/scim/v2"

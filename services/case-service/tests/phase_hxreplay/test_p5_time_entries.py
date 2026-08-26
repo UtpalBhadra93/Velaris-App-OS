@@ -19,8 +19,8 @@ COSTING = "/api/v1/costing"
 
 
 def _limited_headers(roles: list[str]) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
 
     s = get_settings()
     token = create_dev_token(
@@ -87,7 +87,7 @@ class TestTimesheet:
     async def test_unpriced_role_is_labelled_not_guessed(self, client, session):
         # no rate card at all → cost must be null + fully_priced false (honesty)
         from sqlalchemy import delete
-        from case_service.db.models import RateCardModel
+        from velaris_shared.db.models import RateCardModel
         await session.execute(delete(RateCardModel))
         await session.commit()
         case = await _case(client)
@@ -130,7 +130,7 @@ class TestAuthz:
             assert resp.status_code == 401, f"{m} {p}"
 
     async def test_enforce_unrelated_user_404(self, client):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         case = await _case(client)                       # admin-owned
         hdrs = _limited_headers(["user"])
         get_settings().hxguard_case_enforcement = "enforce"

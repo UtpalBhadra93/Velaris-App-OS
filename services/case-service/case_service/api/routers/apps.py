@@ -21,10 +21,11 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import AppPackageModel, AppDeploymentModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import AppPackageModel, AppDeploymentModel
+from velaris_shared import hxguard
+from velaris_shared.db.session import get_session
 from case_service.apps.packager import create_package, build_zip
 from case_service.apps.differ import diff_bundles
 
@@ -56,7 +57,7 @@ class PromoteRequest(BaseModel):
 async def package_app(
     body: PackageRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.write")),
 ):
     """Snapshot the current platform state into a versioned package."""
     try:
@@ -80,7 +81,7 @@ async def package_app(
 async def list_packages(
     status: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     stmt = select(AppPackageModel).order_by(desc(AppPackageModel.created_at))
     if status:
@@ -93,7 +94,7 @@ async def list_packages(
 async def get_package(
     package_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     pkg = await _get_or_404(session, package_id)
     result = _pkg_summary(pkg)
@@ -107,7 +108,7 @@ async def update_status(
     package_id: uuid.UUID,
     body: StatusUpdate,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.write")),
 ):
     if body.status not in ("published", "deprecated", "draft"):
         raise HTTPException(400, "status must be draft | published | deprecated")
@@ -121,7 +122,7 @@ async def update_status(
 async def download_package(
     package_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     """Download the package as a ZIP file."""
     pkg = await _get_or_404(session, package_id)
@@ -139,7 +140,7 @@ async def diff_packages(
     package_id: uuid.UUID,
     other_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     """Diff two packages. package_id = older, other_id = newer."""
     pkg_a = await _get_or_404(session, package_id)
@@ -158,7 +159,7 @@ async def promote_package(
     environment: str = Path(...),
     body: PromoteRequest = PromoteRequest(),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.deployments.write")),
 ):
     """Record a deployment of a package to an environment."""
     if environment not in ENVIRONMENTS:
@@ -193,7 +194,7 @@ async def list_deployments(
     environment: Optional[str] = Query(None),
     package_id:  Optional[uuid.UUID] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     stmt = select(AppDeploymentModel).order_by(desc(AppDeploymentModel.deployed_at))
     if environment:
@@ -245,10 +246,10 @@ def _pkg_summary(pkg: AppPackageModel) -> dict:
 async def package_case_type(
     case_type_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.write")),
 ):
     """Bundle one case type + all linked forms into a portable package."""
-    from case_service.db.models import CaseTypeModel, FormDefinitionModel
+    from velaris_shared.db.models import CaseTypeModel, FormDefinitionModel
     ct = await session.get(CaseTypeModel, case_type_id)
     if not ct:
         raise HTTPException(404, "Case type not found")
@@ -313,14 +314,14 @@ class BundleImportRequest(BaseModel):
 async def import_bundle(
     body: BundleImportRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.import")),
 ):
     """Import a case-bundle into the current environment.
 
     Creates or updates the case type, forms and SLA policies in this environment.
     If the name+version already exists, bumps the version by appending -imported.
     """
-    from case_service.db.models import CaseTypeModel, FormDefinitionModel
+    from velaris_shared.db.models import CaseTypeModel, FormDefinitionModel
     bundle = body.bundle
     results: dict = {"case_type": None, "forms": [], "sla_policies": [], "warnings": []}
 
@@ -413,14 +414,14 @@ async def bump_case_type_version(
     case_type_id: uuid.UUID,
     body: VersionBumpRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.write")),
 ):
     """Create a new version of a case type (patch | minor | major bump).
 
     The original version is left intact. A new row is inserted with the bumped version.
     Returns the new case type's ID and version.
     """
-    from case_service.db.models import CaseTypeModel
+    from velaris_shared.db.models import CaseTypeModel
     original = await session.get(CaseTypeModel, case_type_id)
     if not original:
         raise HTTPException(404, "Case type not found")
@@ -470,10 +471,10 @@ async def bump_case_type_version(
 async def list_case_type_versions(
     case_type_name: str,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     """List all versions of a case type by name, newest first."""
-    from case_service.db.models import CaseTypeModel
+    from velaris_shared.db.models import CaseTypeModel
     from sqlalchemy import select as sa_select
     rows = (await session.execute(
         sa_select(CaseTypeModel).where(CaseTypeModel.name == case_type_name)

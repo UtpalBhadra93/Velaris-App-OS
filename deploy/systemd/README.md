@@ -6,6 +6,9 @@ Three units replacing the `nohup … &` launches in `start-velaris.sh`:
 |------|----------|---------|
 | `velaris-engine.service` | Step 6 | `0.0.0.0:8100` |
 | `velaris-case-service.service` | Step 7 | `127.0.0.1:8201` (nginx fronts it on 8200) |
+| `velaris-analytics-service.service` | Step 7b | `127.0.0.1:8202` (nginx fronts it on 8200) |
+| `velaris-hxgraph-service.service` | Step 7c | `127.0.0.1:8203` (nginx fronts it on 8200) |
+| `velaris-hxmigrate-service.service` | Step 7d | `127.0.0.1:8204` (nginx fronts it on 8200) |
 | `velaris-studio.service` | Step 8 | `0.0.0.0:5173` |
 
 ## Why
@@ -30,7 +33,7 @@ On the server, from the Velaris directory:
 ```bash
 sudo ./deploy/systemd/install.sh
 ./stop-velaris.sh          # clear the old nohup'd processes
-sudo systemctl start velaris-engine velaris-case-service velaris-studio
+sudo systemctl start velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio
 ```
 
 `install.sh` substitutes the invoking user, the checkout path, and the absolute
@@ -88,7 +91,7 @@ start anything; until you `start` or reboot, the system behaves exactly as now.
 To undo completely:
 
 ```bash
-sudo systemctl disable --now velaris-engine velaris-case-service velaris-studio
+sudo systemctl disable --now velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio
 sudo rm /etc/systemd/system/velaris-{engine,case-service,studio}.service
 sudo systemctl daemon-reload
 ```

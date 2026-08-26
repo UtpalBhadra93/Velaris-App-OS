@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseRiskFeedbackModel,
     CaseRiskFindingModel,
     CaseRiskRuleModel,
@@ -150,8 +150,8 @@ async def _local_llm_json(prompt: str, system: str) -> dict | None:
     (returns None) when the local model is unavailable."""
     import json as _json
     try:
-        from case_service.config import get_settings
-        from case_service.hxnexus.factory import _local_backend, _strip_fences
+        from velaris_shared.config import get_settings
+        from velaris_shared.llm.factory import _local_backend, _strip_fences
         backend = _local_backend(get_settings())
         available = await backend.check_available() if hasattr(backend, "check_available") else backend.available
         if not available:

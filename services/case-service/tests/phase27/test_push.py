@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel,
     DeviceTokenModel,
     NotificationPreferenceModel,
@@ -29,7 +29,7 @@ from case_service.push.service import resolve_channels, send_to_user
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _fake_user(user_id: str = "user-1", roles: list[str] | None = None):
-    from case_service.auth.models import AuthenticatedUser
+    from velaris_shared.auth.models import AuthenticatedUser
     return AuthenticatedUser(
         user_id=user_id,
         email=f"{user_id}@test.local",
@@ -168,7 +168,7 @@ async def ct(session):
 
 @pytest.mark.asyncio
 async def test_11_register_device(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user()
 
@@ -187,7 +187,7 @@ async def test_11_register_device(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_12_register_same_device_twice_is_idempotent(client: AsyncClient, session):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user("u2")
 
@@ -201,7 +201,7 @@ async def test_12_register_same_device_twice_is_idempotent(client: AsyncClient, 
 
 @pytest.mark.asyncio
 async def test_13_list_own_devices(client: AsyncClient, session):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     user = _fake_user("listuser")
     app.dependency_overrides[get_current_user] = lambda: user
@@ -216,7 +216,7 @@ async def test_13_list_own_devices(client: AsyncClient, session):
 
 @pytest.mark.asyncio
 async def test_14_deregister_device(client: AsyncClient, session):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     user = _fake_user("deluser")
     app.dependency_overrides[get_current_user] = lambda: user
@@ -233,7 +233,7 @@ async def test_14_deregister_device(client: AsyncClient, session):
 
 @pytest.mark.asyncio
 async def test_15_cannot_delete_other_users_device(client: AsyncClient, session):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
 
     app.dependency_overrides[get_current_user] = lambda: _fake_user("owner")
@@ -247,7 +247,7 @@ async def test_15_cannot_delete_other_users_device(client: AsyncClient, session)
 
 @pytest.mark.asyncio
 async def test_16_upsert_preference(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user("pref-user")
 
@@ -263,7 +263,7 @@ async def test_16_upsert_preference(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_17_preference_disabled_blocks_all_channels(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user("pref-user2")
 
@@ -279,7 +279,7 @@ async def test_17_preference_disabled_blocks_all_channels(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_18_invalid_channel_rejected(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user()
 
@@ -292,7 +292,7 @@ async def test_18_invalid_channel_rejected(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_19_admin_can_list_all_devices(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     admin = _fake_user("admin-user", roles=["admin"])
     app.dependency_overrides[get_current_user] = lambda: admin
@@ -304,7 +304,7 @@ async def test_19_admin_can_list_all_devices(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_20_vapid_public_key_returned(client: AsyncClient):
-    from case_service.auth.dependencies import get_current_user
+    from velaris_shared.auth.dependencies import get_current_user
     from case_service.main import app
     app.dependency_overrides[get_current_user] = lambda: _fake_user()
 

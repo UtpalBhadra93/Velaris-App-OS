@@ -16,15 +16,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.compliance.consent import ProcessingRefused
-from case_service.core.error_codes import CONSENT_REFUSED_403, coded
-from case_service.db.models import CaseInstanceModel
-from case_service.db.session import get_session
+from velaris_shared.core.error_codes import CONSENT_REFUSED_403, coded
+from velaris_shared.db.models import CaseInstanceModel
+from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.llm.guard import _RateLimiter
 from case_service.voicefill import service as voicefill
 
 router = APIRouter(prefix="/voicefill", tags=["voicefill"])

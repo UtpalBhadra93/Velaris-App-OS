@@ -150,7 +150,7 @@ class PlatformUpdateWatcher:
 
         # Group H: flush queued generic AI-egress events into SecurityEvents
         try:
-            from case_service.hxnexus.egress_audit import flush_pending
+            from velaris_shared.llm.egress_audit import flush_pending
             async with self._factory() as session:
                 flushed = await flush_pending(session)
                 if flushed:
@@ -163,7 +163,7 @@ class PlatformUpdateWatcher:
         # block on purpose — a metrics failure must not stop the egress audit
         # from flushing, and vice versa.
         try:
-            from case_service.hxnexus.llmops import flush_pending as flush_llm
+            from velaris_shared.llm.llmops import flush_pending as flush_llm
             async with self._factory() as session:
                 flushed = await flush_llm(session)
                 if flushed:
@@ -182,7 +182,7 @@ class PlatformUpdateWatcher:
             return None
 
     async def _notify_admins(self, title: str, body: str, event_type: str) -> None:
-        from case_service.db.models import HelixUserModel
+        from velaris_shared.db.models import HelixUserModel
         from case_service.push.protocol import PushPayload
         from case_service.push.service import send_to_user
 

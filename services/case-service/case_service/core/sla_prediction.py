@@ -35,7 +35,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseEventLogModel, CaseInstanceModel
+from velaris_shared.db.models import CaseEventLogModel, CaseInstanceModel
 
 logger = logging.getLogger(__name__)
 

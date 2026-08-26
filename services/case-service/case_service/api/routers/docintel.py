@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from case_service.docintel import service
 
 router = APIRouter(prefix="/docintel", tags=["docintel"])
@@ -141,7 +141,7 @@ async def list_docintel_connectors(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.models import ConnectorRegistryModel
     rows = (await session.execute(
         select(ConnectorRegistryModel).where(
             ConnectorRegistryModel.connector_type.in_(["docling", "s3"]),
@@ -159,7 +159,7 @@ async def list_all_extractions(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import DocExtractionJobModel
+    from velaris_shared.db.models import DocExtractionJobModel
     q = select(DocExtractionJobModel).order_by(DocExtractionJobModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(DocExtractionJobModel.status == status)
@@ -175,7 +175,7 @@ async def list_all_storage_routes(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import DocStorageRouteModel
+    from velaris_shared.db.models import DocStorageRouteModel
     q = select(DocStorageRouteModel).order_by(DocStorageRouteModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(DocStorageRouteModel.status == status)

@@ -15,13 +15,30 @@ spec:
   template:
     metadata: { labels: { app: worker } }
     spec:
+      terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
       containers:
         - name: worker
           image: "{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}"
+          # The only deployment in this chart with no pull policy. Kubernetes
+          # defaults an unset policy on a `:latest` tag to Always, so on a cluster
+          # with preloaded images and no registry the worker — and only the
+          # worker — could never start. Its siblings all set IfNotPresent.
+          imagePullPolicy: {{ .Values.image.worker.pullPolicy | default "IfNotPresent" }}
+          # Stop accepting new work, then linger while the endpoint is
+          # withdrawn from every node's kube-proxy. Without this a deleted pod
+          # closes connections that are still in flight: measured at 29 of
+          # 26,561 requests (0.11%) on a three-node cluster, and invisible on
+          # one node because the replacement is local.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.terminationDrainSeconds | default 5 }}"]
           command: ["python", "-m", "case_service.temporal.worker"]
           env:
             - name: VELARIS_CASE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
+            - name: VELARIS_CASE_DATABASE_BACKEND
+              value: {{ include "helix.databaseBackend" . | quote }}
             - name: TEMPORAL_HOST
               value: {{ .Values.worker.temporalHost | quote }}
             - name: VELARIS_CASE_TASK_QUEUE

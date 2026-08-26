@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseInstanceModel, CaseTypeModel
+from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
 from case_service.temporal.activities import interpreter_activities as ia
 
 pytestmark = pytest.mark.asyncio
@@ -180,7 +180,7 @@ class TestRegistrationAndPosture:
         assert {"load_case_plan", "enter_stage", "try_advance", "case_status"} <= names
 
     async def test_disabled_by_default(self):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         assert get_settings().temporal_interpreter_enabled is False
 
@@ -234,7 +234,7 @@ class TestStarterWiring:
     async def test_interpreter_starts_when_flag_and_opt_in_are_both_on(
         self, client, session, monkeypatch,
     ):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         from case_service.main import app
         from tests.conftest import deploy_case_type
 
@@ -258,7 +258,7 @@ class TestStarterWiring:
         self, client, session, monkeypatch,
     ):
         """Flag on is not enough — the case type must ask for it."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         from case_service.main import app
         from tests.conftest import deploy_case_type
 

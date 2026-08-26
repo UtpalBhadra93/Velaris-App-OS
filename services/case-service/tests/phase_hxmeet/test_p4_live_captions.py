@@ -21,8 +21,8 @@ import jwt as pyjwt
 import numpy as np
 import pytest
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionCaptionSegmentModel,
     CaseSessionModel,
 )
@@ -149,7 +149,7 @@ class TestGatesAndDetection:
     async def test_live_captions_default_off_then_on(self, session):
         from sqlalchemy import select
         from case_service.api.routers.meet import tenant_live_captions_enabled
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
 
         assert await tenant_live_captions_enabled(session, "default") is False
         tenant = (await session.execute(
@@ -261,7 +261,7 @@ class TestLiveTranscriptSeal:
         assert b"live call" not in data.lower()
         assert name.endswith(".hxsealed")
 
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         audit = (await session.execute(
             select(CaseAuditLogModel)
             .where(CaseAuditLogModel.action == "meet.transcript.sealed"))).scalars().all()
@@ -282,7 +282,7 @@ class TestTranscriptEndpoints:
         assert r.status_code == 200
         assert "Hello, this is the live call." in r.text
         assert "I confirm my date of birth." in r.text
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         # The request commits its own transaction on its own connection, so the
         # audit row is simply there — no retry loop needed now that sessions are
         # not sharing one transaction.
@@ -326,7 +326,7 @@ class TestTranscriptEndpoints:
 
 class TestIntelligenceReuse:
     async def test_analysis_reuses_sealed_transcript_without_whisper(self, session, client, lk_cfg):
-        from case_service.db.models import CaseSessionIntelligenceModel, TenantModel
+        from velaris_shared.db.models import CaseSessionIntelligenceModel, TenantModel
         from case_service.meet import intelligence as _intel
 
         tenant = (await session.execute(

@@ -15,12 +15,12 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from case_service.hxmcp import server
 from case_service.hxmcp.tokens import JTI_ATTR, get_mcp_caller
-from case_service.hxnexus.guard import _RateLimiter
+from velaris_shared.llm.guard import _RateLimiter
 
 router = APIRouter(prefix="/mcp", tags=["hxmcp"])
 
@@ -35,7 +35,7 @@ def _check_rate(user: AuthenticatedUser) -> None:
     (P4) gets its own, stricter per-grant budget keyed by jti — one runaway
     agent throttles itself, not every session of the granting user."""
     global _rate_limiter, _ext_rate_limiter
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     jti = (user.attributes or {}).get(JTI_ATTR)
     if jti:
@@ -125,7 +125,7 @@ async def confirm_proposal(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import MCPActionProposalModel, _utcnow
+    from velaris_shared.db.models import MCPActionProposalModel, _utcnow
     from case_service.hxmcp.registry import TOOLS, ToolArgError
 
     # row lock so two confirmers can't both execute the same proposal
@@ -176,7 +176,7 @@ async def reject_proposal(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import MCPActionProposalModel, _utcnow
+    from velaris_shared.db.models import MCPActionProposalModel, _utcnow
 
     p = (await session.execute(
         select(MCPActionProposalModel)
@@ -223,8 +223,8 @@ async def mint_token(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.config import get_settings
-    from case_service.hxguard import service as hxguard
+    from velaris_shared.config import get_settings
+    from velaris_shared.hxguard import service as hxguard
     from case_service.hxmcp.registry import visible_tools
     from case_service.hxmcp.tokens import mint_scoped_token
 
@@ -263,7 +263,7 @@ async def list_tokens(
 ):
     """The caller's own grants (newest first)."""
     from sqlalchemy import select
-    from case_service.db.models import MCPTokenGrantModel
+    from velaris_shared.db.models import MCPTokenGrantModel
 
     rows = (await session.execute(
         select(MCPTokenGrantModel)
@@ -283,7 +283,7 @@ async def revoke_token(
     """Instant revocation — the transport checks the grant row on every call.
     Own grants only (admins included: minting others' tokens isn't a thing,
     so neither is revoking by proxy; the kill switch covers emergencies)."""
-    from case_service.db.models import MCPTokenGrantModel, _utcnow as now
+    from velaris_shared.db.models import MCPTokenGrantModel, _utcnow as now
 
     g = await session.get(MCPTokenGrantModel, grant_id)
     if g is None or g.user_id != str(user.user_id):

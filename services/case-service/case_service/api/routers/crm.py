@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import CrmSyncRecordModel, InvoiceRecordModel
-from case_service.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import CrmSyncRecordModel, InvoiceRecordModel
+from velaris_shared.db.session import get_session
 from case_service.crm import service as crm_svc
 
 crm_router     = APIRouter(prefix="/crm",      tags=["crm"])
@@ -228,7 +228,7 @@ async def list_all_crm_records(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import CrmSyncRecordModel
+    from velaris_shared.db.models import CrmSyncRecordModel
     q = select(CrmSyncRecordModel).order_by(CrmSyncRecordModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(CrmSyncRecordModel.status == status)
@@ -247,7 +247,7 @@ async def list_all_invoices(
     # serve as a bypass path around per-case access control.
     full_access = _has_sensitive_access(user)
     from sqlalchemy import select
-    from case_service.db.models import InvoiceRecordModel
+    from velaris_shared.db.models import InvoiceRecordModel
     q = select(InvoiceRecordModel).order_by(InvoiceRecordModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(InvoiceRecordModel.status == status)

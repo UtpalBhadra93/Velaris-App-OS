@@ -87,7 +87,7 @@ async def sweep(session: AsyncSession, *, lookback_hours: int = SWEEP_LOOKBACK_H
     for any future caller that is not the cron. The cron owns its session and
     commits there.
     """
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
     from case_service.sentinel import service as sentinel
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
@@ -114,7 +114,7 @@ async def sweep(session: AsyncSession, *, lookback_hours: int = SWEEP_LOOKBACK_H
 async def signal_extraction_cron() -> None:
     """Periodic sweep. Registered at startup alongside the other crons."""
     import asyncio
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     await asyncio.sleep(25)     # let the DB come up and the flag cache warm
     while True:

@@ -24,9 +24,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from case_service.config import get_settings
-from case_service.core import error_codes as ec
-from case_service.db.models import CaseSessionParticipantModel
+from velaris_shared.config import get_settings
+from velaris_shared.core import error_codes as ec
+from velaris_shared.db.models import CaseSessionParticipantModel
 from case_service.meet import service as meet_service
 from tests.conftest import create_case, deploy_case_type
 

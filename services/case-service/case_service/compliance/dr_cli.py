@@ -46,7 +46,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from case_service.compliance import dr
-from case_service.db.models import RegionModel
+from velaris_shared.db.models import RegionModel
 
 
 def _err(msg: str) -> None:
@@ -128,7 +128,7 @@ def _checksum(path: Path) -> str | None:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     path = Path(args.location)
     size = checksum = None

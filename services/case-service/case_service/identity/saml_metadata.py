@@ -325,7 +325,7 @@ async def refresh_all(session) -> int:
     from sqlalchemy import select
     from sqlalchemy.orm.attributes import flag_modified
 
-    from case_service.db.models import SsoProviderModel
+    from velaris_shared.db.models import SsoProviderModel
 
     rows = (await session.execute(
         select(SsoProviderModel).where(SsoProviderModel.provider == "saml")
@@ -368,7 +368,7 @@ async def saml_metadata_cron() -> None:
     """Periodic refresh. Survives a bad cycle, like the other schedulers."""
     import asyncio
 
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:

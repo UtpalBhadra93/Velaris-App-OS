@@ -209,7 +209,7 @@ class TestNoPersistence:
         """Unlike HxMeet (which seals on purpose), dictation stores nothing."""
         from sqlalchemy import func, select
 
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
 
         before = (await session.execute(select(func.count(DocumentModel.id)))).scalar()
         await client.post(f"{STT}/transcribe", content=_pcm(2.0))
@@ -226,7 +226,7 @@ class TestRateLimit:
     async def test_burst_is_throttled(self, client, asr_ready, monkeypatch):
         """Transcription is serialized GPU/CPU work — a hot loop must 429
         rather than starve HxMeet captions."""
-        from case_service.hxnexus.guard import _RateLimiter
+        from velaris_shared.llm.guard import _RateLimiter
 
         monkeypatch.setattr(stt, "_rate_limiter", _RateLimiter(max_calls=2, window_seconds=60))
         codes = [(await client.post(f"{STT}/transcribe", content=_pcm(1.0))).status_code
@@ -238,7 +238,7 @@ class TestTenantIsolation:
     async def test_other_tenants_case_is_404(self, client, asr_ready):
         """Fail closed, and say nothing: a case owned by another tenant is
         indistinguishable from one that does not exist."""
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
         from tests.conftest import TestSessionFactory
         import uuid as _uuid
 

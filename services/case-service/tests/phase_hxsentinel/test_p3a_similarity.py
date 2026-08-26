@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseRiskSignalModel
+from velaris_shared.db.models import CaseRiskSignalModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import service as sentinel
 from tests.conftest import create_case, deploy_case_type
@@ -107,7 +107,7 @@ class TestResembles:
         assert "resembles_confirmed_cases" not in {x.rule_key for x in active}
 
     async def test_configurable_min_shared(self, session, client):
-        from case_service.db.models import CaseRiskRuleModel
+        from velaris_shared.db.models import CaseRiskRuleModel
         ca, cb = await _pair_sharing(session, client,
                                      [("doc_hash", "d5"), ("identity_phone", "p5")])
         await sentinel.set_outcome(session, case_id=cb, tenant_id="default",

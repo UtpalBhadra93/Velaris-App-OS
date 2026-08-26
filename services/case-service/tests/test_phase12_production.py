@@ -36,7 +36,7 @@ class TestHealthEndpoints:
 
 class TestRateLimiting:
     def test_token_bucket_basic(self):
-        from case_service.middleware.rate_limit import TokenBucket
+        from velaris_shared.middleware.rate_limit import TokenBucket
         bucket = TokenBucket(capacity=5, refill_rate=1.0, tokens=5)
         # Consume 5 tokens
         for _ in range(5):
@@ -45,14 +45,14 @@ class TestRateLimiting:
         assert bucket.consume() is False
 
     def test_token_bucket_refill(self):
-        from case_service.middleware.rate_limit import TokenBucket
+        from velaris_shared.middleware.rate_limit import TokenBucket
         now = time.monotonic()
         bucket = TokenBucket(capacity=5, refill_rate=10.0, tokens=0, last_refill=now)
         # After 0.5s at 10/s refill, should have ~5 tokens
         assert bucket.consume(now + 0.5) is True
 
     def test_token_bucket_capacity_limit(self):
-        from case_service.middleware.rate_limit import TokenBucket
+        from velaris_shared.middleware.rate_limit import TokenBucket
         now = time.monotonic()
         bucket = TokenBucket(capacity=5, refill_rate=100.0, tokens=0, last_refill=now)
         # Even after long time, tokens capped at capacity
@@ -61,14 +61,14 @@ class TestRateLimiting:
         assert bucket.tokens <= 5
 
     def test_retry_after(self):
-        from case_service.middleware.rate_limit import TokenBucket
+        from velaris_shared.middleware.rate_limit import TokenBucket
         bucket = TokenBucket(capacity=5, refill_rate=1.0, tokens=0)
         assert bucket.retry_after > 0
 
 
 class TestRequestTracking:
     def test_middleware_init(self):
-        from case_service.middleware.request_tracking import RequestTrackingMiddleware
+        from velaris_shared.middleware.request_tracking import RequestTrackingMiddleware
 
         class FakeApp:
             pass

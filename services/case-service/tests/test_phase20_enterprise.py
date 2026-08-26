@@ -161,7 +161,7 @@ class TestSiteMap:
 
 class TestSecurityEventLogger:
     async def test_log_directly(self, session):
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session,
             event_type="test.direct",
@@ -171,7 +171,7 @@ class TestSecurityEventLogger:
         await session.commit()
 
     async def test_query_events(self, session):
-        from case_service.enterprise.security_events import (
+        from velaris_shared.db.security_events import (
             log_security_event, query_events,
         )
         await log_security_event(session, event_type="query.test", user_id="q_user")

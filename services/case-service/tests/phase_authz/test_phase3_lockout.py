@@ -20,14 +20,14 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AccessGroupModel,
     AccessRoleModel,
     HelixUserModel,
     OperatorAccessGroupModel,
     PortalModel,
 )
-from case_service.hxguard import lockout
+from velaris_shared.hxguard import lockout
 
 
 async def _admin_user(session, username: str, *, roles=("admin",), active=True) -> HelixUserModel:
@@ -311,7 +311,7 @@ class TestWiring:
 
     def test_access_groups_is_fully_migrated(self):
         from pathlib import Path
-        from case_service.hxguard.actions import MIGRATED_ROUTERS
+        from velaris_shared.hxguard.actions import MIGRATED_ROUTERS
         assert "access_groups.py" in MIGRATED_ROUTERS
         src = (Path(__file__).resolve().parents[2] / "case_service" / "api"
                / "routers" / "access_groups.py").read_text()

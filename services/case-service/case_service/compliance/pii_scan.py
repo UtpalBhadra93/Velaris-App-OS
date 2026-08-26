@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.compliance import pii_detect
-from case_service.db.models import (
+from velaris_shared.db.models import (
     DataModelModel,
     FormDefinitionModel,
     PIIFindingModel,
@@ -185,12 +185,12 @@ async def summary(session: AsyncSession) -> dict[str, Any]:
     }
 
 # ── Export redaction (§8.10) ──────────────────────────────────────
-# The helpers live in `core.pii_redaction` and are re-exported here so
+# The helpers live in `velaris_shared.db.pii_redaction` and are re-exported here so
 # compliance stays their documented home. They were moved out because
 # `analytics` and `costing` need them, and importing `compliance` from an
 # extraction target would mean dragging the whole compliance package —
 # audit chain, ledger, DR — along at service-split time. `core` is a leaf.
-from case_service.core.pii_redaction import (  # noqa: E402,F401
+from velaris_shared.db.pii_redaction import (  # noqa: E402,F401
     REDACTED,
     confirmed_field_paths,
     redact_rows,

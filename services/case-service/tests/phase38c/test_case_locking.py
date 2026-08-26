@@ -15,9 +15,9 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from case_service.main import app
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel, CaseAssignmentModel
 )
 
@@ -236,7 +236,7 @@ class TestCompleteStepWithLocking:
         """Expired lock → other operator can submit freely."""
         # Manually set an expired lock
         from sqlalchemy import select
-        from case_service.db.models import CaseAssignmentModel as AM
+        from velaris_shared.db.models import CaseAssignmentModel as AM
         a = (await session.execute(
             select(AM).where(AM.id == assignment.id)
         )).scalar_one()
@@ -269,7 +269,7 @@ class TestCompleteStepWithLocking:
             _clear()
 
         from sqlalchemy import select
-        from case_service.db.models import CaseAssignmentModel as AM
+        from velaris_shared.db.models import CaseAssignmentModel as AM
         session.expire_all()
         a = (await session.execute(select(AM).where(AM.id == aid))).scalar_one()
         assert a.status == "completed"
@@ -318,7 +318,7 @@ class TestUnlock:
             _clear()
 
         from sqlalchemy import select
-        from case_service.db.models import CaseAssignmentModel as AM
+        from velaris_shared.db.models import CaseAssignmentModel as AM
         session.expire_all()
         a = (await session.execute(select(AM).where(AM.id == aid))).scalar_one()
         assert a.locked_by is None
@@ -329,7 +329,7 @@ class TestUnlock:
         cid = case_inst.id
         # Set op-1 lock via the fixture session
         from sqlalchemy import select
-        from case_service.db.models import CaseAssignmentModel as AM
+        from velaris_shared.db.models import CaseAssignmentModel as AM
         a = (await session.execute(select(AM).where(AM.id == aid))).scalar_one()
         a.locked_by = "op-1"
         a.locked_at = datetime.now(timezone.utc)

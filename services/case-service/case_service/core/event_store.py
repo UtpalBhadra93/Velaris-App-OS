@@ -44,7 +44,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseEventModel, CaseInstanceModel
+from velaris_shared.db.models import CaseEventModel, CaseInstanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ async def record(
     still logged loudly, because a silently-skipped event is how a stream stops
     being trustworthy.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     if not get_settings().event_sourcing_enabled:
         return None

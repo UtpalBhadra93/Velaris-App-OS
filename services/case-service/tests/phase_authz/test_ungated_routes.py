@@ -35,6 +35,27 @@ from fastapi.routing import APIRoute
 
 from case_service.main import app
 
+
+def _platform_routes() -> list[APIRoute]:
+    """Every APIRoute the PLATFORM serves, not just this service's.
+
+    13c-e moved 80 routes into analytics-service, hxgraph-service and
+    hxmigrate-service. A sweep that kept reading `case_service.main` alone
+    would have gone on passing while the routes it was built to watch left its
+    field of view — the same shape as the documents hole this file exists for.
+    The gateway serves all four apps behind one prefix, so the sweep covers all
+    four. Importing them is deliberately not wrapped in a try: a service that
+    cannot be imported must break this test, not shrink it.
+    """
+    from analytics_service.main import app as analytics_app
+    from hxgraph_service.main import app as hxgraph_app
+    from hxmigrate_service.main import app as hxmigrate_app
+
+    routes: list[APIRoute] = []
+    for a in (app, analytics_app, hxgraph_app, hxmigrate_app):
+        routes.extend(r for r in a.routes if isinstance(r, APIRoute))
+    return routes
+
 #: Prefixes that serve anonymous callers by design.
 PUBLIC_BY_DESIGN = (
     "/api/v1/portal/",              # customer portal — its own session/token model
@@ -184,9 +205,7 @@ def _dependency_names(route: APIRoute) -> set[str]:
 
 def _ungated() -> set[str]:
     out: set[str] = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _platform_routes():
         if any(route.path.startswith(p) for p in PUBLIC_BY_DESIGN):
             continue
         if _dependency_names(route) & AUTH_DEPS:
@@ -206,14 +225,14 @@ def test_no_new_route_is_ungated():
 
 def test_the_scan_sees_the_route_table():
     """Non-vacuity: a scanner that found no routes would pass everything."""
-    total = sum(1 for r in app.routes if isinstance(r, APIRoute))
+    total = len(_platform_routes())
     assert total > 500, f"only {total} API routes seen — the scan is not working"
 
 
 def test_accepted_entries_still_exist():
     """An ACCEPTED path that no longer exists is stale permission — it should be
     deleted, so the list keeps meaning what it says."""
-    paths = {r.path for r in app.routes if isinstance(r, APIRoute)}
+    paths = {r.path for r in _platform_routes()}
     assert not (ACCEPTED - paths), f"stale ACCEPTED entries: {sorted(ACCEPTED - paths)}"
 
 

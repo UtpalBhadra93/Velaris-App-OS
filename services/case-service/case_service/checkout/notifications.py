@@ -16,7 +16,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CheckoutNotificationLogModel, CheckoutOrderModel
+from velaris_shared.db.models import CheckoutNotificationLogModel, CheckoutOrderModel
 
 logger = logging.getLogger(__name__)
 

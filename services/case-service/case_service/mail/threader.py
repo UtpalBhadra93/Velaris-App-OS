@@ -9,7 +9,7 @@ from sqlalchemy import select, cast, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
-    from case_service.db.models import CaseTypeModel, CaseInstanceModel as _CaseInstance
+    from velaris_shared.db.models import CaseTypeModel, CaseInstanceModel as _CaseInstance
 
 
 _SUBJECT_TAG_RE = re.compile(r"\[HELIX-([0-9a-fA-F]{8})\]", re.IGNORECASE)
@@ -52,7 +52,7 @@ async def resolve_case_id_from_message(
 
     Order: in_reply_to + references → subject tag.
     """
-    from case_service.db.models import EmailMessageModel, CaseInstanceModel
+    from velaris_shared.db.models import EmailMessageModel, CaseInstanceModel
 
     candidates: list[str] = []
     if in_reply_to:
@@ -130,7 +130,7 @@ async def detect_case_types_from_content(
 
     Returns list of (score, case_type) sorted by score DESC.
     """
-    from case_service.db.models import CaseTypeModel
+    from velaris_shared.db.models import CaseTypeModel
 
     text = f"{subject or ''} {body or ''}".lower()
     if not text.strip():
@@ -171,7 +171,7 @@ async def find_open_case_for_sender(
     case_type_id: uuid.UUID,
 ) -> Optional["_CaseInstance"]:
     """Find the most recent open case of a given type submitted by this sender."""
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
 
     q = (
         select(CaseInstanceModel)

@@ -21,8 +21,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionChallengeModel,
     CaseSessionKycSignalsModel,
     CaseSessionModel,
@@ -253,7 +253,7 @@ class TestKycJob:
         assert body["challenge_checks"][0]["score"] == 0.0
         assert "numpy" in body["model_versions"]
 
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         audit = (await session.execute(
             select(CaseAuditLogModel)
             .where(CaseAuditLogModel.action == "kyc_signals_analyzed")
@@ -296,7 +296,7 @@ class TestKycJob:
     async def test_read_gate_is_recording_view(self, client, session, kyc_cfg):
         """Enforce mode: reading the analysis derives from the recording —
         an unrelated user gets the 404 anti-oracle."""
-        from case_service.auth.jwt_handler import create_dev_token
+        from velaris_shared.auth.jwt_handler import create_dev_token
         await _enable_kyc(session)
         row = await _sealed_session(session, client)
         s = get_settings()

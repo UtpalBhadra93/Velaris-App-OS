@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.models import AuthenticatedUser
 
 MAX_LIMIT = 50            # hard cap on any list-shaped tool result
 MAX_QUESTION_CHARS = 2000  # input size cap for free-text tool arguments
@@ -98,7 +98,7 @@ async def _case_get(session: AsyncSession, user: AuthenticatedUser, args: dict) 
 
 
 async def _case_timeline(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service import hxguard
+    from velaris_shared import hxguard
     from case_service.api.routers.cases import get_case_history
     from case_service.api.schemas.cases import AuditEntryResponse
 
@@ -138,7 +138,7 @@ async def _case_type_get(session: AsyncSession, user: AuthenticatedUser, args: d
 
 
 async def _graph_query(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service.hxgraph.query import query_graph
+    from velaris_shared.hxgraph.query import query_graph
 
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
@@ -208,7 +208,7 @@ async def _case_link(session: AsyncSession, user: AuthenticatedUser, args: dict)
     case.read on the target (else linking becomes an existence oracle). The
     REST endpoint now enforces the same checks itself (route-migration
     2026-07-09); the tool keeps its own — defence in depth."""
-    from case_service import hxguard
+    from velaris_shared import hxguard
     from case_service.api.routers.cases import add_relationship
     from case_service.api.schemas.cases import RelationshipCreate
 
@@ -234,7 +234,7 @@ async def _case_link(session: AsyncSession, user: AuthenticatedUser, args: dict)
 
 
 async def _case_advance_stage(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service import hxguard
+    from velaris_shared import hxguard
     from case_service.api.routers.cases import transition_stage
     from case_service.api.schemas.cases import CaseResponse, CaseStageTransition
 
@@ -521,7 +521,7 @@ def visible_tools(scope: set[str] | None = None) -> list[Tool]:
       - P3 stateful actions hidden when stateful is off,
       - a scoped token (P4 external agent) sees only its granted intersection
         of the above — a grant can never resurface a globally disabled tool."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     settings = get_settings()
     tools = list(TOOLS.values())
     if not settings.mcp_ai_tools:

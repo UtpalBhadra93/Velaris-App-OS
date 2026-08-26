@@ -21,8 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.models import CaseTypeModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseTypeModel
 
 ORDER_TYPE_NAME = "Order"
 ORDER_TYPE_VERSION = "1.0.0"

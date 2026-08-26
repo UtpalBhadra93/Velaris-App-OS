@@ -207,6 +207,23 @@ ON DUPLICATE KEY UPDATE
 -- correctly and cannot see why it does nothing.
 -- ══════════════════════════════════════════════════════════════════════════════
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- The scheduler, 2026-08-20 — NO ENTRY, and the reasoning differs from the
+-- others above.
+--
+-- `VELARIS_CASE_SCHEDULER_ENABLED` is an ENV switch, and env switches do not
+-- appear in this file. It is **on by default**, unlike the bot runner, because
+-- the loop writes rows and sends mail rather than starting containers on the
+-- host — and because it is already gated by something stronger than a flag: a
+-- schedule does not fire until somebody who is not its author approves it. On a
+-- deployment where nobody has approved anything, an enabled loop does nothing at
+-- all, so "on by default" costs a query every twenty seconds and no behaviour.
+--
+-- A feature row here would be a second switch that can disagree with the
+-- approval gate, and the failure mode is the one this file keeps warning about:
+-- an operator who has approved a schedule and cannot see why it never runs.
+-- ══════════════════════════════════════════════════════════════════════════════
+
 -- HxSentinel — v1.9.0 → v1.10.0.
 -- Not a new capability: the gate shipped in v2.2.0 was near-inert. Four of its
 -- five rules read the SUBJECT case's own signals, which an open case never had,
@@ -227,3 +244,33 @@ ON DUPLICATE KEY UPDATE
   -- an operator turned off; status/released_at keep the original release moment.
   enabled     = IF(enabled IS NOT NULL, VALUES(version), enabled),
   updated_at  = NOW();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- v2.5.0, 2026-08-24 — the service split, proven boundaries, and enforcement
+-- of things that were already described.
+--
+-- ONE version bump, and NO new feature keys. Again, and for the same reason:
+-- every capability in this release is switched on by its own configuration, and
+-- this file's rule is one switch per capability.
+--
+--   * **service extraction / gateway routing** — architecture, not a feature.
+--     Nothing to enable; the prefixes clients call did not move.
+--   * **workload identity** — on when VELARIS_GATEWAY_IDENTITY_SECRET is set.
+--     Inert when it is not, which is what lets an upgrade stay silent.
+--   * **internal mTLS** — a mount swap plus VELARIS_UPSTREAM_SCHEME. Off by
+--     default because on a single host there is no wire to listen on.
+--   * **HxShield detection** — the ENV switch
+--     VELARIS_CASE_HXSHIELD_DETECT_ENABLED, default off. Env switches do not
+--     appear in this file.
+--   * **People Calendar** and **HxDeploy promotion** are core module surfaces
+--     reached through their own routes and gated by hxguard actions, not by a
+--     release row.
+--   * **manifest permission enforcement** — a property of every install from
+--     migration 174 onward, not something an operator turns on. A row would
+--     imply it can be turned off, and it cannot.
+--
+-- A row on top of any of those would be a second switch that can disagree with
+-- the first, and the failure mode is the one this file keeps warning about: an
+-- operator who has configured the feature correctly and cannot see why it does
+-- nothing.
+-- ══════════════════════════════════════════════════════════════════════════════

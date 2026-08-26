@@ -26,16 +26,16 @@ import uuid
 
 import pytest
 
-from case_service.auth import dependencies as deps
-from case_service.auth.models import ActiveAccessGroup, AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth import dependencies as deps
+from velaris_shared.auth.models import ActiveAccessGroup, AuthenticatedUser
+from velaris_shared.db.models import (
     AccessGroupModel,
     AccessRoleModel,
     OperatorAccessGroupModel,
     PortalModel,
     UserDirectoryModel,
 )
-from case_service.hxguard import role_names, service as hxguard_service
+from velaris_shared.hxguard import role_names, service as hxguard_service
 
 
 ADMIN_ONLY_ACTION = "identity.users.write"
@@ -201,6 +201,6 @@ class TestCollisionReport:
         assert await role_names.warn_on_collisions(session) is not None
 
     def test_every_platform_role_is_reserved(self):
-        from case_service.hxguard.privileges import KNOWN_ROLES
+        from velaris_shared.hxguard.privileges import KNOWN_ROLES
 
         assert {r.lower() for r in KNOWN_ROLES} == set(role_names.RESERVED_PLATFORM_ROLES)

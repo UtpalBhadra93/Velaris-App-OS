@@ -20,7 +20,7 @@ import uuid
 
 import jwt
 
-from case_service.config import get_settings
+from velaris_shared.config import get_settings
 
 
 def configured() -> bool:

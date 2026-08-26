@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
     HxDBMigrateAnalysisModel,
@@ -211,7 +211,7 @@ async def test_certificate_signed_and_faithful(client, session):
 
     # signature verifies and matches the recomputed canonical digest
     import jwt as _jwt
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     settings = get_settings()
     key = settings.auth_rsa_private_key or settings.auth_secret
     algs = ["RS256"] if settings.auth_rsa_private_key else ["HS256"]

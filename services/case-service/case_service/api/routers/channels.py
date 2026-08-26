@@ -31,23 +31,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.channels import optout, service, signatures
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     CHANNEL_NOTFOUND_404,
     CHANNEL_OPTED_OUT_403,
     CHANNEL_WINDOW_409,
     coded,
 )
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ChannelConversationModel,
     ChannelEndpointModel,
     ChannelMessageModel,
     WhatsAppTemplateModel,
 )
-from case_service.db.session import get_session
-from case_service.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared.db.session import get_session
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
 
 log = logging.getLogger(__name__)
 
@@ -408,7 +408,7 @@ async def _dispatch(
         return None, "queued", "No connector configured on this endpoint."
 
     try:
-        from case_service.db.models import ConnectorRegistryModel
+        from velaris_shared.db.models import ConnectorRegistryModel
         from case_service.hxbridge.executor import execute_connector
 
         connector = await session.get(ConnectorRegistryModel, endpoint.connector_id)
@@ -455,7 +455,7 @@ async def update_conversation(
     conversation, _endpoint = await _load_conversation(session, conversation_id, user)
 
     if payload.case_id is not None:
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
         case = await session.get(CaseInstanceModel, payload.case_id)
         if case is None:
@@ -626,7 +626,7 @@ async def create_endpoint(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("channels.endpoints.write")),
 ):
-    from case_service.hxbridge.encryption import encrypt_credentials
+    from case_service.hxbridge.encryption import encrypt_credentials_vaulted
 
     if body.channel not in ("sms", "whatsapp", "voice"):
         raise HTTPException(400, "channel must be sms, whatsapp or voice")
@@ -645,7 +645,8 @@ async def create_endpoint(
     row = ChannelEndpointModel(
         tenant_id=body.tenant_id, channel=body.channel, provider=body.provider,
         address=body.address,
-        signing_secret_enc=encrypt_credentials({"secret": body.signing_secret}),
+        signing_secret_enc=await encrypt_credentials_vaulted(
+            session, {"secret": body.signing_secret}, tenant_id=body.tenant_id),
         connector_id=body.connector_id,
         default_case_type_id=body.default_case_type_id,
         auto_create_case=body.auto_create_case,
@@ -656,7 +657,7 @@ async def create_endpoint(
     await session.commit()
     await session.refresh(row)
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="channel_endpoint_created", severity="medium",
         user_id=user.user_id, resource_type="channel_endpoint", resource_id=str(row.id),

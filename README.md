@@ -72,7 +72,19 @@
 
 ---
 
-## What's new in 2.4.0
+## What's new in 2.5.0
+
+- **Four services behind one gateway** — analytics, HxGraph and the migration domain each run on their own; client-facing prefixes are unchanged. The gateway is now the only *caller* as well as the only route: a process opening a service port directly is refused.
+- **People Calendar** — absence, availability and team meetings inside HxWork. Leave is a fact and working hours are an assumption: leave decides who owns work, both together answer "when shall we meet". A colleague sees busy, never why.
+- **HxDeploy promotion packages** — frozen, sealed packages promoted between environments with selectable scope, covering bots and schedules, gated by a two-person rule.
+- **Bot scheduler and definition editor** — bots configured in Studio, with fan-out schedules and per-bot allow-listed egress. A schedule does not fire until somebody who is not its author approves it.
+- **Sign in with Google and GitHub** — two more providers on the login page, with monochrome marks that invert cleanly in dark mode.
+- **Enforcement that was described but not performed** — a package's declared permissions are now a ceiling the broker holds it to; HxShield's detector is wired to real traffic instead of an endpoint nobody called; the gateway rate-limits; and a privilege granted in data reaches every service in seconds.
+- **Encryption** — AES-256-GCM everywhere credentials are written, tenant-owned secrets under the tenant's own key so erasure makes them unreadable, and no configuration that stores plaintext.
+- **Kubernetes, on three databases** — Velaris installs on a cluster you already run, on **PostgreSQL, MySQL or MariaDB**, with one script directory per engine in `K8/`. Point it at a database you already have and the bundled one is not deployed. The standard `setup-velaris.sh` installation is untouched by any of it.
+- **Also** — ports are configuration rather than literals, with both the installer and the updater checking before anything binds; an opt-in firewall step that allows ssh first; and 13 named security fixes, each reachable in a running deployment.
+
+### 2.4.0
 
 - **SAML SSO + SCIM provisioning** — proven against live Okta and Entra tenants. Paste one metadata URL and the entity ID, sign-in URL and certificate are read for you; certificates are **add-only**, so a rollover is not an outage, while issuer drift is reported and never applied silently. Velaris can hold its own key pair for signed requests, encrypted assertions and single logout.
 - **Omnichannel inbound** — SMS, WhatsApp and CTI arrive as cases. Opt-out is honoured before the provider is called, and the WhatsApp 24-hour window is enforced here rather than at Meta, which accepts a late message and silently never delivers it.
@@ -274,6 +286,36 @@ that teaches people to ignore the screen. Exits non-zero only if the backup itse
 ```
 
 ---
+
+## Kubernetes (optional)
+
+The quick start above is the standard installation and is unaffected by this
+section. If you already run a cluster, Velaris installs on Kubernetes with the
+Helm chart in `deploy/helm/velaris` and the scripts in `K8/` — one directory per
+database engine:
+
+```bash
+./K8/Postgres/setup-velaris-k8s.sh --build   # or K8/MySQL, or K8/MariaDB
+./K8/Postgres/update-velaris-k8s.sh
+./K8/Postgres/stop-velaris-k8s.sh            # --start | --uninstall | --purge
+```
+
+Already running Velaris and moving into a cluster? Point the install at the
+database you have and the bundled one is not deployed:
+
+```bash
+VELARIS_K8S_EXTERNAL_URL="postgresql+asyncpg://user:pass@host:5432/velaris" \
+  ./K8/Postgres/setup-velaris-k8s.sh
+```
+
+The target is checked before anything is written: an empty database is
+accepted, an existing Velaris database is adopted and only missing migrations
+applied, and another application's database is refused.
+
+Each directory has a README covering requirements, resource sizing, the
+security posture, and measured load and failure behaviour. Read
+`K8/Postgres/README.md` before exposing an install — the chart ships with no
+ingress and no TLS by default, on purpose.
 
 ## Marketplace — build &amp; use apps
 

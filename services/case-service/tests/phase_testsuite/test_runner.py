@@ -10,7 +10,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import TestResultModel, TenantModel
+from velaris_shared.db.models import TestResultModel, TenantModel
 from case_service.testsuite import runner, isolation, builtin, dsl
 
 

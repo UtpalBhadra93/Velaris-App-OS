@@ -28,7 +28,7 @@ _SYSTEM = (
 
 async def semantic_narrative(report: dict[str, Any]) -> Optional[str]:
     try:
-        from case_service.hxnexus.factory import check_ai_available, get_llm_backend
+        from velaris_shared.llm.factory import check_ai_available, get_llm_backend
         if not await check_ai_available():
             return None
         # Send only derived, non-sensitive data — never raw values.

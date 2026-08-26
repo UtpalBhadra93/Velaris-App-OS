@@ -155,7 +155,7 @@ class TestDropsAreProvable:
         """Without the record, "we stopped marketing to them" is only an assertion."""
         from sqlalchemy import select
 
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
 
         ok = f"ok-{uuid.uuid4().hex[:6]}@x.com"
         no = f"no-{uuid.uuid4().hex[:6]}@x.com"

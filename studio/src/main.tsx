@@ -114,6 +114,8 @@ import HxReplay from "@modules/hxreplay/HxReplay";
 import RiskReview from "@modules/hxsentinel/RiskReview";
 import ChannelInbox from "@modules/channels/ChannelInbox";
 import BotConsole from "@modules/bots/BotConsole";
+import Calendar from "@modules/calendar/Calendar";
+import Scheduler from "@modules/scheduler/Scheduler";
 import HxDeploy from "@modules/hxdeploy/HxDeploy";
 import HxWork from "@modules/hxwork/HxWork";
 import HxCanvas from "@modules/hxcanvas/HxCanvas";
@@ -170,6 +172,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/risk-review"  element={<PermRoute path="/risk-review"  pageName="Risk Review"> <RiskReview />  </PermRoute>} />
           <Route path="/channels"     element={<PermRoute path="/channels"     pageName="Channel Inbox"><ChannelInbox /></PermRoute>} />
           <Route path="/bots"         element={<PermRoute path="/bots"         pageName="Bots">         <BotConsole />   </PermRoute>} />
+          <Route path="/calendar"     element={<PermRoute path="/calendar"     pageName="Calendar">   <Calendar />  </PermRoute>} />
+          <Route path="/scheduler"    element={<PermRoute path="/scheduler"    pageName="Scheduler">    <Scheduler />    </PermRoute>} />
           <Route path="/scout"        element={<PermRoute path="/scout"        pageName="Scout">        <Scout />        </PermRoute>} />
           <Route path="/scout-ai"     element={<PermRoute path="/scout-ai"     pageName="Scout AI">     <ScoutAI />      </PermRoute>} />
           <Route path="/orchestrator" element={<PermRoute path="/orchestrator" pageName="Orchestrator"> <Orchestrator /> </PermRoute>} />

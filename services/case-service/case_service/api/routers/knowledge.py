@@ -15,16 +15,16 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     AccessGroupModel,
     CaseInstanceModel,
     CaseTypeModel,
     FormDefinitionModel,
     PortalModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.api.routers.sitemap import MODULES, PHASES
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])

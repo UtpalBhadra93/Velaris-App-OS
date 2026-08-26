@@ -24,7 +24,7 @@ from case_service.core import (
     sla_tracker,
     urgency_calculator,
 )
-from case_service.db import repository as repo
+from velaris_shared.db import repository as repo
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ async def on_case_created(
     # Event sourcing cutover (#30a / §7.5): a case is marked event-sourced at
     # BIRTH or never. Flipping an existing case on later would leave a stream
     # that starts mid-history and looks complete — worse than no stream.
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     from case_service.core import event_store
 
     if get_settings().event_sourcing_enabled:
@@ -182,7 +182,7 @@ async def on_stage_entered(
     # but had no caller, so statistical SLA prediction had nothing to measure.
     case = await repo.get_case_instance(session, case_id)
     if case is not None:
-        from case_service.process_mining import event_logger
+        from velaris_shared.process_mining import event_logger
         try:
             if case.current_stage_id and case.current_stage_id != stage_id:
                 await event_logger.log_stage_transition(
@@ -263,7 +263,7 @@ async def on_step_completed(
     """
     # Find and complete the active assignment for this step
     from sqlalchemy import select
-    from case_service.db.models import CaseAssignmentModel
+    from velaris_shared.db.models import CaseAssignmentModel
 
     stmt = select(CaseAssignmentModel).where(
         CaseAssignmentModel.case_id == case_id,

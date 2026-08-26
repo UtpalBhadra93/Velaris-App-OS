@@ -16,7 +16,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _fresh_mcp_rate_limiter(monkeypatch):
     from case_service.api.routers import hxmcp as transport
-    from case_service.hxnexus.guard import _RateLimiter
+    from velaris_shared.llm.guard import _RateLimiter
     monkeypatch.setattr(transport, "_rate_limiter",
                         _RateLimiter(max_calls=10_000, window_seconds=60))
 
@@ -24,6 +24,6 @@ def _fresh_mcp_rate_limiter(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_mcp_ext_rate_limiter(monkeypatch):
     from case_service.api.routers import hxmcp as transport
-    from case_service.hxnexus.guard import _RateLimiter
+    from velaris_shared.llm.guard import _RateLimiter
     monkeypatch.setattr(transport, "_ext_rate_limiter",
                         _RateLimiter(max_calls=10_000, window_seconds=60))

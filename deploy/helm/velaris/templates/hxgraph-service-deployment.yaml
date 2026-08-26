@@ -1,0 +1,70 @@
+{{/*
+hxgraph-service — extracted from case-service at roadmap 13d (2026-08-23).
+
+The ingress routes /api/v1/graph here. Same image family, same database, its own
+pool and its own replica count: that separation is the point of the split.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "helix.hxgraphServiceName" . }}
+  labels: { app: hxgraph-service }
+spec:
+  replicas: {{ .Values.hxgraphService.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector: { matchLabels: { app: hxgraph-service } }
+  template:
+    metadata: { labels: { app: hxgraph-service } }
+    spec:
+      terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
+      containers:
+        - name: hxgraph-service
+          image: "{{ .Values.image.hxgraphService.repository }}:{{ .Values.image.hxgraphService.tag }}"
+          imagePullPolicy: {{ .Values.image.hxgraphService.pullPolicy }}
+          # Stop accepting new work, then linger while the endpoint is
+          # withdrawn from every node's kube-proxy. Without this a deleted pod
+          # closes connections that are still in flight: measured at 29 of
+          # 26,561 requests (0.11%) on a three-node cluster, and invisible on
+          # one node because the replacement is local.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.terminationDrainSeconds | default 5 }}"]
+          ports:
+            - containerPort: {{ .Values.hxgraphService.port }}
+          env:
+            - name: VELARIS_CASE_DATABASE_URL
+              value: {{ include "helix.databaseUrl" . | quote }}
+            - name: VELARIS_CASE_DATABASE_BACKEND
+              value: {{ include "helix.databaseBackend" . | quote }}
+            - name: VELARIS_CASE_REDIS_URL
+              value: {{ include "helix.redisUrl" . | quote }}
+            {{- range $k, $v := .Values.hxgraphService.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.hxgraphService.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: {{ .Values.hxgraphService.port }} }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: {{ .Values.hxgraphService.port }} }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "helix.hxgraphServiceName" . }}
+spec:
+  selector: { app: hxgraph-service }
+  ports:
+    - port: 8200
+      targetPort: {{ .Values.hxgraphService.port }}
+      name: http

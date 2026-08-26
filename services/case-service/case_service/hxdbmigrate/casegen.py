@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.introspection import get_introspector
+from velaris_shared.db.introspection import get_introspector
 from case_service.hxdbmigrate import compliance, semantic
 
 _STATUS_NAMES = ("status", "state", "stage", "phase", "lifecycle", "workflow_state")

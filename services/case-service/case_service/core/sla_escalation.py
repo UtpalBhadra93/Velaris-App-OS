@@ -36,8 +36,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.core.sla_tracker import parse_iso8601_duration
-from case_service.db import repository as repo
-from case_service.db.models import (
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import (
     CaseSLAInstanceModel, EscalationTreeModel,
     CaseAssignmentModel, CaseInstanceModel,
 )
@@ -161,6 +161,45 @@ def precompute_level_schedule(
 
 # ═══ Action executor ═══════════════════════════════════════════════════
 
+async def _cover_if_away(
+    session: AsyncSession,
+    case_id: uuid.UUID,
+    user_id: str,
+    tenant_id: Optional[str] = None,
+) -> str:
+    """`user_id`, or their nominated cover if they are on approved leave.
+
+    An escalation exists to make somebody act. Escalating onto the desk of a
+    person who is on holiday is the failure this closes — but only where they
+    named cover: with nobody nominated the escalation still reaches them, and
+    the next level of the tree is what handles silence. Substituting a whole
+    queue for a named person would lose the reason they were named.
+
+    Leave, not working hours: an escalation firing at 22:00 must still reach the
+    person whose case it is.
+    """
+    try:
+        from case_service.calendar import service as calendar
+
+        tenant = tenant_id
+        if not tenant:
+            case = await session.get(CaseInstanceModel, case_id)
+            tenant = str(getattr(case, "tenant_id", None) or "default")
+
+        if not await calendar.absent_at(session, user_id, tenant_id=tenant):
+            return user_id
+        cover = await calendar.delegate_for(session, user_id, tenant_id=tenant)
+        if cover:
+            log.info("escalation: %s is on leave, using cover %s", user_id, cover)
+            return cover
+        log.info("escalation: %s is on leave and named no cover", user_id)
+        return user_id
+    except Exception:                                    # pragma: no cover
+        log.warning("cover lookup failed for %s; escalating to them", user_id,
+                    exc_info=True)
+        return user_id
+
+
 async def resolve_dynamic_target(
     session: AsyncSession,
     case_id: uuid.UUID,
@@ -186,14 +225,21 @@ async def resolve_dynamic_target(
 
     if t == "current_assignee":
         user_id = await get_current_assignee_for_case(session, case_id)
-        return ("user", user_id) if user_id else ("", "")
+        if not user_id:
+            return ("", "")
+        return ("user", await _cover_if_away(session, case_id, user_id, tenant_id))
 
     if t == "manager_of_current_assignee":
         user_id = await get_current_assignee_for_case(session, case_id)
         if not user_id:
             return ("", "")
         mgr = await get_manager(session, user_id)
-        return ("user", mgr) if mgr else ("", "")
+        if not mgr:
+            return ("", "")
+        return ("user", await _cover_if_away(session, case_id, mgr, tenant_id))
+
+    if t == "user" and target_id:
+        return ("user", await _cover_if_away(session, case_id, str(target_id), tenant_id))
 
     if t == "access_group":
         return ("queue", f"access_group:{target_id}") if target_id else ("", "")

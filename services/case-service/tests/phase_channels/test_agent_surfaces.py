@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.channels import optout
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ChannelConversationModel,
     ChannelEndpointModel,
     ChannelMessageModel,
@@ -276,7 +276,7 @@ class TestTenancy:
         another tenant's case record."""
         from tests.phase_hxsentinel._seed import seed_case
 
-        from case_service.db.models import CaseInstanceModel, TenantModel
+        from velaris_shared.db.models import CaseInstanceModel, TenantModel
         from case_service.tenancy import identity as tenant_identity
 
         tenant_a = TenantModel(slug=_uniq("ta"), name="A")

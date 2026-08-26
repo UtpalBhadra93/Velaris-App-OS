@@ -21,8 +21,8 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-import case_service.db.session as db_session
-from case_service.db.models import CaseAuditLogModel, CaseSLAInstanceModel
+import velaris_shared.db.session as db_session
+from velaris_shared.db.models import CaseAuditLogModel, CaseSLAInstanceModel
 from case_service.temporal.activities import sla_timer_activities as acts
 
 

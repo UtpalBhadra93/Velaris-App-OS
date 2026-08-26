@@ -32,3 +32,10 @@ class NotificationBackend(Protocol):
     async def shutdown(self) -> None:
         """Gracefully shut down the backend."""
         ...
+
+# The name `velaris_sdk.protocols` imports. This module defines it as
+# `NotificationBackend`, so `from velaris_sdk.protocols import ...` raised ImportError
+# on the FIRST mismatch and took every later protocol with it — which is
+# how the engine came to run with Temporal permanently "unavailable".
+# Both names are kept: nothing that imports `NotificationBackend` today changes.
+NotificationChannel = NotificationBackend

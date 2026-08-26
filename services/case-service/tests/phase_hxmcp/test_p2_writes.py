@@ -37,7 +37,7 @@ REQUIRES_CONCURRENT_WRITERS = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _enable_writes(monkeypatch):
     """P2 writes are opt-in; turn them on for this module."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     monkeypatch.setattr(get_settings(), "mcp_writes_enabled", True)
 
 
@@ -52,7 +52,7 @@ def wcall(name: str, args: dict, key: str | None = None) -> dict:
 
 class TestWriteProfile:
     async def test_writes_hidden_and_blocked_when_disabled(self, client, monkeypatch):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_writes_enabled", False)
         listed = {t["name"] for t in
                   (await client.post(MCP, json=rpc("tools/list"))).json()["result"]["tools"]}
@@ -181,7 +181,7 @@ class TestIdempotency:
         also releases its key — the handler rolled back, nothing applied. A
         same-user same-key retry re-runs (still denied) rather than replaying
         a stored success or hitting an in-flight conflict."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         get_settings().hxguard_case_enforcement = "enforce"
         try:
             ct = await deploy_case_type(client, name="MCP Idem Denied CT")
@@ -206,7 +206,7 @@ class TestIdempotency:
 
 class TestWriteAuthz:
     async def test_unrelated_user_cannot_write(self, client):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         get_settings().hxguard_case_enforcement = "enforce"
         try:
             ct = await deploy_case_type(client, name="MCP W Authz CT")

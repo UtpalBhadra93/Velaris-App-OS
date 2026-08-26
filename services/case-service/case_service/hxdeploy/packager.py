@@ -32,11 +32,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
+    GUID,
     AccessGroupModel,
+    BotDefinitionModel,
     AccessRoleModel,
     BusinessCalendarModel,
     CaseTypeModel,
@@ -52,14 +54,28 @@ from case_service.db.models import (
     PortalModel,
     ProcessDefinitionModel,
     RuleDefinitionModel,
+    ScheduleModel,
     WebhookReceiverRuleModel,
     WebhookSubscriptionModel,
 )
 
 logger = logging.getLogger(__name__)
 
-BUNDLE_SCHEMA_VERSION = "2"   # bumped from v1 to reflect full scope
-SUPPORTED_BUNDLE_SCHEMA_VERSIONS = {"1", "2"}   # what apply_bundle can interpret (#14)
+BUNDLE_SCHEMA_VERSION = "3"   # v3 adds bot definitions and schedules
+SUPPORTED_BUNDLE_SCHEMA_VERSIONS = {"1", "2", "3"}   # what apply_bundle can interpret (#14)
+
+#: The fields that make a bot what it is — identical to the editor's
+#: `EDITABLE_FIELDS`, deliberately: an import that changes any of them is an
+#: edit, and an edit returns a bot to draft.
+BOT_FIELDS = (
+    "name", "description", "image", "digest", "declared_command", "declared_env",
+    "credential_refs", "input_schema", "output_schema", "granted_domains",
+    "timeout_seconds", "max_concurrency", "resource_profile",
+    "fanout_input_key", "fanout_max",
+)
+
+#: What a schedule is, minus everything that describes a *run*.
+SCHEDULE_FIELDS = ("name", "description", "cron", "timezone", "action_kind", "action_config")
 
 _NEEDS_CREDS = "__NEEDS_CONFIGURATION__"
 
@@ -72,6 +88,73 @@ def _s(v: Any) -> str | None:
     return str(v) if v is not None else None
 
 
+# ── Selection ─────────────────────────────────────────────────────────────────
+
+#: Every section a selection may name. A key outside this set is a typo, and a
+#: typo that silently selected nothing would be indistinguishable from an empty
+#: environment — so it is refused.
+SELECTABLE_SECTIONS = (
+    "data_models", "business_calendars", "access_roles", "portals",
+    "email_templates", "email_accounts", "connectors", "process_definitions",
+    "form_definitions", "rule_definitions", "case_types", "escalation_trees",
+    "webhook_subscriptions", "outbound_connector_rules", "webhook_receiver_rules",
+    "access_groups", "bot_definitions", "schedules",
+)
+
+
+def normalise_selection(selection: dict | None) -> dict:
+    """Validate and canonicalise a selection.
+
+    Shape: ``{"sections": {"case_types": ["<id>", ...] | None, ...}}``
+
+    Per section: **absent or null = everything**, a list = exactly those ids, and
+    ``[]`` = none of them. "Absent means everything" is deliberate — it is what
+    the Promote screen has always promised ("leave blank to include everything"),
+    and it keeps a package built before a new section existed meaning the same
+    thing after it does.
+    """
+    selection = dict(selection or {})
+    sections = selection.get("sections") or {}
+    if not isinstance(sections, dict):
+        raise ValueError("selection.sections must be an object")
+
+    unknown = sorted(set(sections) - set(SELECTABLE_SECTIONS))
+    if unknown:
+        raise ValueError(
+            f"Unknown selection section(s): {', '.join(unknown)}. "
+            f"Valid sections: {', '.join(SELECTABLE_SECTIONS)}"
+        )
+
+    clean: dict[str, list[str] | None] = {}
+    for name, ids in sections.items():
+        if ids is None:
+            clean[name] = None
+            continue
+        if not isinstance(ids, (list, tuple)):
+            raise ValueError(f"selection.sections.{name} must be a list of ids or null")
+        clean[name] = [str(i) for i in ids]
+
+    out = {"sections": clean}
+    if selection.get("delta_since"):
+        out["delta_since"] = selection["delta_since"]
+    # Recorded for provenance only: SLA policies live inside a case type's
+    # `definition_json.sla_policies`, so they travel with the case type and there
+    # is no section to include or exclude.
+    for passthrough in ("include_sla", "notes", "source_manifest"):
+        if passthrough in selection:
+            out[passthrough] = selection[passthrough]
+    return out
+
+
+def _as_id(value: str) -> Any:
+    """Ids arrive as strings; the columns are GUIDs. Anything unparseable is
+    passed through so the IN clause simply matches nothing rather than raising."""
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return value
+
+
 # ── Bundle builder ────────────────────────────────────────────────────────────
 
 async def build_bundle(
@@ -79,20 +162,53 @@ async def build_bundle(
     tenant_id: str,
     case_type_ids: list[uuid.UUID] | None = None,
     since: datetime | None = None,
+    selection: dict | None = None,
 ) -> dict:
     """Serialise the design-time environment for tenant_id.
 
     Args:
-        case_type_ids: restrict to specific case types (+ their dependents).
-                       None = all case types.
-        since: if set, only include artifacts updated/created at or after this
-               datetime (delta mode). FK-root objects are always included so
-               that apply_bundle() can build its ID maps correctly.
+        case_type_ids: legacy shorthand for
+                       ``selection["sections"]["case_types"]``. Ignored when the
+                       selection already names that section.
+        since: delta mode — only artifacts updated at or after this datetime.
+        selection: see `normalise_selection`. None = the whole environment.
+
+    Two properties this function must keep:
+
+    * **It is tenant-scoped.** It used to take `tenant_id` and use it for the log
+      line only — every one of the sixteen selects ran unfiltered, so a bundle
+      built for one tenant carried another tenant's connectors, portals and case
+      types, and `apply_bundle` then wrote them into the target tenant. Eleven of
+      these models carry `tenant_id` and all eleven are now filtered. The rest
+      have no tenant column at all (data models, forms, rules, calendars,
+      webhook subscriptions, stages, steps) — those are platform-wide by schema,
+      and stages/steps are reached only through tenant-filtered case types.
+    * **The selection is honoured.** It used to be advisory at best: only
+      `case_type_ids` was ever read, and the promotion path did not pass even
+      that.
+
     Returns:
         bundle dict — ready to POST to /api/v1/deploy/import
     """
+    sel = normalise_selection(selection)
+    sections = dict(sel["sections"])
+    if case_type_ids and "case_types" not in sections:
+        sections["case_types"] = [str(c) for c in case_type_ids]
+
     is_delta = since is not None
     needs_configuration: list[dict] = []
+    auto_included: dict[str, int] = {}
+
+    # Tenant columns are not one shape: `case_types.tenant_id` is a GUID while
+    # every other tenant-scoped model here stores a String, and a caller arrives
+    # holding a slug. Resolving once gives both forms; comparing the raw token
+    # would either match nothing or raise on read.
+    from case_service.tenancy.identity import resolve_tenant
+    resolved = await resolve_tenant(session, tenant_id)
+    tenant_uuid = resolved[0] if resolved else None
+    tenant_names = {str(tenant_id)}
+    if resolved:
+        tenant_names |= {resolved[1], str(resolved[0])}
 
     def _delta(q, model):
         """Apply updated_at filter when in delta mode and model has that column."""
@@ -100,27 +216,123 @@ async def build_bundle(
             q = q.where(model.updated_at >= since)
         return q
 
-    # ── 1. Data models (always included — FK root for FormDefinitions) ────
-    data_models = list((await session.execute(select(DataModelModel))).scalars().all())
+    def _scope(q, model):
+        """Tenant filter, for the models that have one.
 
-    # ── 2. Business calendars (always included — referenced by SLA policies)
-    calendars = list((await session.execute(select(BusinessCalendarModel))).scalars().all())
+        A NULL tenant column stays visible, exactly as `tenancy.same_tenant`
+        treats it: these rows predate multi-tenancy and most of a real
+        deployment's design-time artifacts still carry NULL. Excluding them here
+        would empty every bundle, which is a worse regression than the leak this
+        filter closes.
+        """
+        col = getattr(model, "tenant_id", None)
+        if col is None:
+            return q
+        column_type = model.__table__.c.tenant_id.type
+        if isinstance(column_type, GUID):
+            candidates = [tenant_uuid] if tenant_uuid is not None else []
+        else:
+            candidates = sorted(tenant_names)
+        if not candidates:
+            return q.where(col.is_(None))
+        return q.where(or_(col.is_(None), col.in_(candidates)))
 
-    # ── 3. Access roles (always included — FK root for AccessGroups) ──────
-    roles = list((await session.execute(select(AccessRoleModel))).scalars().all())
+    async def _collect(section: str, model, q=None, delta: bool = True) -> list:
+        """One section, tenant-scoped, selection-honouring."""
+        ids = sections.get(section, None)
+        if ids is not None and not ids:
+            return []                      # explicitly none
+        q = select(model) if q is None else q
+        q = _scope(q, model)
+        if ids:
+            q = q.where(model.id.in_([_as_id(i) for i in ids]))
+        if delta:
+            q = _delta(q, model)
+        return list((await session.execute(q)).scalars().all())
 
-    # ── 4. Portals (always included — FK root for AccessGroups) ──────────
-    portals = list((await session.execute(select(PortalModel))).scalars().all())
+    async def _pull_parents(section: str, model, wanted: set, have: list) -> list:
+        """Add parents a selected child needs but the selection left out.
 
-    # ── 5. Email templates ────────────────────────────────────────────────
-    email_templates = list((await session.execute(
-        _delta(select(EmailTemplateModel), EmailTemplateModel)
-    )).scalars().all())
+        A dependency of something you chose is part of what you chose. The
+        alternative — dropping the child — turns a partial selection into an
+        import that half-applies, and `apply_bundle` builds its FK maps from
+        exactly these rows.
+        """
+        missing = {str(w) for w in wanted if w} - {str(h.id) for h in have}
+        if not missing:
+            return have
+        q = _scope(select(model).where(model.id.in_([_as_id(m) for m in missing])), model)
+        extra = list((await session.execute(q)).scalars().all())
+        if extra:
+            auto_included[section] = auto_included.get(section, 0) + len(extra)
+        return have + extra
 
-    # ── 6. Email accounts (strip passwords) ───────────────────────────────
-    email_accounts_raw = list((await session.execute(
-        _delta(select(EmailAccountModel), EmailAccountModel)
-    )).scalars().all())
+    # ── 1-16. Collect ─────────────────────────────────────────────────────
+    data_models   = await _collect("data_models", DataModelModel, delta=False)
+    calendars     = await _collect("business_calendars", BusinessCalendarModel, delta=False)
+    roles         = await _collect("access_roles", AccessRoleModel, delta=False)
+    portals       = await _collect("portals", PortalModel, delta=False)
+    email_templates = await _collect("email_templates", EmailTemplateModel)
+    email_accounts_raw = await _collect("email_accounts", EmailAccountModel)
+    connectors_raw  = await _collect("connectors", ConnectorRegistryModel, delta=False)
+    process_defs  = await _collect("process_definitions", ProcessDefinitionModel)
+    forms         = await _collect("form_definitions", FormDefinitionModel)
+    rules         = await _collect("rule_definitions", RuleDefinitionModel)
+
+    case_types = await _collect(
+        "case_types", CaseTypeModel,
+        q=select(CaseTypeModel).where(CaseTypeModel.is_deleted.is_(False)).order_by(CaseTypeModel.name),
+    )
+    ct_ids = [ct.id for ct in case_types]
+
+    # Stages and steps are not selectable: they belong to their case type and
+    # travel with it. They carry no tenant column and are reached only through
+    # the tenant-filtered case types above.
+    stages: list[CaseTypeStageModel] = []
+    steps: list[CaseTypeStepModel] = []
+    if ct_ids:
+        stages = list((await session.execute(
+            select(CaseTypeStageModel)
+            .where(CaseTypeStageModel.case_type_id.in_(ct_ids))
+            .order_by(CaseTypeStageModel.case_type_id, CaseTypeStageModel.order)
+        )).scalars().all())
+        steps = list((await session.execute(
+            select(CaseTypeStepModel).where(CaseTypeStepModel.case_type_id.in_(ct_ids))
+        )).scalars().all())
+
+    escalations   = await _collect("escalation_trees", EscalationTreeModel)
+    webhooks_raw  = await _collect("webhook_subscriptions", WebhookSubscriptionModel)
+    ocr           = await _collect("outbound_connector_rules", OutboundConnectorRuleModel)
+    receiver_rules = await _collect("webhook_receiver_rules", WebhookReceiverRuleModel, delta=False)
+    access_groups = await _collect("access_groups", AccessGroupModel)
+
+    # Automation. Both travel as *design*: what the bot is and when the schedule
+    # fires — never the approval that made either runnable, and never a
+    # credential value.
+    bots      = await _collect("bot_definitions", BotDefinitionModel)
+    schedules = await _collect("schedules", ScheduleModel)
+
+    # ── Dependency closure ────────────────────────────────────────────────
+    # FK parents only, and only the ones `apply_bundle` maps: a child whose
+    # parent is missing imports with a dangling reference.
+    data_models = await _pull_parents(
+        "data_models", DataModelModel, {f.data_model_id for f in forms}, data_models)
+    portals = await _pull_parents(
+        "portals", PortalModel, {g.portal_id for g in access_groups}, portals)
+    roles = await _pull_parents(
+        "access_roles", AccessRoleModel,
+        {r for g in access_groups for r in (g.role_ids or [])}, roles)
+    connectors_raw = await _pull_parents(
+        "connectors", ConnectorRegistryModel,
+        {r.connector_id for r in ocr} | {r.connector_id for r in receiver_rules},
+        connectors_raw)
+    bots = await _pull_parents(
+        "bot_definitions", BotDefinitionModel,
+        {(sc.action_config or {}).get("bot_id") for sc in schedules
+         if sc.action_kind == "bot"},
+        bots)
+
+    # ── Serialise the sections that strip secrets ─────────────────────────
     email_accounts = []
     for ea in email_accounts_raw:
         entry = {
@@ -147,8 +359,6 @@ async def build_bundle(
                 "name": ea.name, "missing": missing,
             })
 
-    # ── 7. Connectors (always included — FK root for outbound/receiver rules)
-    connectors_raw = list((await session.execute(select(ConnectorRegistryModel))).scalars().all())
     connectors = []
     for c in connectors_raw:
         entry = {
@@ -164,51 +374,6 @@ async def build_bundle(
                 "name": c.name, "missing": list(c.credentials.keys()),
             })
 
-    # ── 8. Process definitions (BPMN) ─────────────────────────────────────
-    process_defs = list((await session.execute(
-        _delta(select(ProcessDefinitionModel), ProcessDefinitionModel)
-    )).scalars().all())
-
-    # ── 9. Form definitions ───────────────────────────────────────────────
-    forms = list((await session.execute(
-        _delta(select(FormDefinitionModel), FormDefinitionModel)
-    )).scalars().all())
-
-    # ── 10. Rule definitions ──────────────────────────────────────────────
-    rules = list((await session.execute(
-        _delta(select(RuleDefinitionModel), RuleDefinitionModel)
-    )).scalars().all())
-
-    # ── 11. Case types ────────────────────────────────────────────────────
-    ct_q = select(CaseTypeModel).where(CaseTypeModel.is_deleted.is_(False)).order_by(CaseTypeModel.name)
-    if case_type_ids:
-        ct_q = ct_q.where(CaseTypeModel.id.in_(case_type_ids))
-    ct_q = _delta(ct_q, CaseTypeModel)
-    case_types = list((await session.execute(ct_q)).scalars().all())
-    ct_ids = [ct.id for ct in case_types]
-
-    # ── 12. Stages + steps ────────────────────────────────────────────────
-    stages: list[CaseTypeStageModel] = []
-    steps: list[CaseTypeStepModel] = []
-    if ct_ids:
-        stages = list((await session.execute(
-            select(CaseTypeStageModel)
-            .where(CaseTypeStageModel.case_type_id.in_(ct_ids))
-            .order_by(CaseTypeStageModel.case_type_id, CaseTypeStageModel.order)
-        )).scalars().all())
-        steps = list((await session.execute(
-            select(CaseTypeStepModel).where(CaseTypeStepModel.case_type_id.in_(ct_ids))
-        )).scalars().all())
-
-    # ── 13. Escalation trees ──────────────────────────────────────────────
-    escalations = list((await session.execute(
-        _delta(select(EscalationTreeModel), EscalationTreeModel)
-    )).scalars().all())
-
-    # ── 14. Webhook subscriptions (strip secret) ──────────────────────────
-    webhooks_raw = list((await session.execute(
-        _delta(select(WebhookSubscriptionModel), WebhookSubscriptionModel)
-    )).scalars().all())
     webhooks = []
     for w in webhooks_raw:
         entry = {
@@ -224,19 +389,27 @@ async def build_bundle(
                 "name": w.name, "missing": ["secret"],
             })
 
-    # ── 15. Outbound connector rules ──────────────────────────────────────
-    ocr = list((await session.execute(
-        _delta(select(OutboundConnectorRuleModel), OutboundConnectorRuleModel)
-    )).scalars().all())
+    bot_entries = []
+    for b in bots:
+        entry = {f: getattr(b, f) for f in BOT_FIELDS}
+        entry["id"] = _s(b.id)
+        bot_entries.append(entry)
+        if b.credential_refs:
+            # The names travel so the target admin knows what to create; the
+            # values never do. They live in `bot_credentials`, encrypted under
+            # the source tenant's DEK, and are meaningless anywhere else.
+            needs_configuration.append({
+                "type": "bot_credential", "id": _s(b.id), "name": b.name,
+                "missing": [str(r) for r in b.credential_refs],
+            })
 
-    # ── 16. Webhook receiver rules (no updated_at — always included) ──────
-    receiver_rules = list((await session.execute(select(WebhookReceiverRuleModel))).scalars().all())
+    schedule_entries = []
+    for sc in schedules:
+        entry = {f: getattr(sc, f) for f in SCHEDULE_FIELDS}
+        entry["id"] = _s(sc.id)
+        schedule_entries.append(entry)
 
-    # ── 17. Access groups ─────────────────────────────────────────────────
-    access_groups = list((await session.execute(
-        _delta(select(AccessGroupModel), AccessGroupModel)
-    )).scalars().all())
-
+    # ── Assemble ──────────────────────────────────────────────────────────
     # ── Assemble ──────────────────────────────────────────────────────────
     bundle: dict = {
         "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
@@ -244,6 +417,7 @@ async def build_bundle(
         "source_tenant_id": tenant_id,
         "is_delta": is_delta,
         "delta_since": since.isoformat() if since else None,
+        "selection": sel,
         "needs_configuration": needs_configuration,
         "summary": {
             "data_models":        len(data_models),
@@ -264,7 +438,10 @@ async def build_bundle(
             "outbound_connector_rules": len(ocr),
             "webhook_receiver_rules": len(receiver_rules),
             "access_groups":      len(access_groups),
+            "bot_definitions":    len(bot_entries),
+            "schedules":          len(schedule_entries),
             "needs_configuration": len(needs_configuration),
+            "auto_included":      auto_included,
         },
         "data_models": [
             {"id": _s(m.id), "name": m.name, "version": m.version, "definition_json": m.definition_json}
@@ -384,6 +561,8 @@ async def build_bundle(
             }
             for r in receiver_rules
         ],
+        "bot_definitions": bot_entries,
+        "schedules": schedule_entries,
         "access_groups": [
             {
                 "id": _s(g.id), "name": g.name, "description": g.description,
@@ -398,7 +577,7 @@ async def build_bundle(
 
     logger.info(
         "bundle v2 built%s: %d case types, %d connectors, %d email accounts, "
-        "%d templates, %d needs-configuration items (tenant %s)",
+        "%d templates, %d needs-configuration items (tenant %s, scoped)",
         f" [delta since {since.date()}]" if since else "",
         len(case_types), len(connectors), len(email_accounts),
         len(email_templates), len(needs_configuration), tenant_id,
@@ -413,15 +592,21 @@ async def build_delta_bundle(
     tenant_id: str,
     env_id: uuid.UUID,
     case_type_ids: list[uuid.UUID] | None = None,
+    selection: dict | None = None,
 ) -> dict:
     """Build a delta bundle containing only artifacts changed since env's last deploy.
 
     Falls back to a full bundle if the environment has never been deployed to.
+
+    Delta is a **build-time** choice, not a push-time one: a sealed package is
+    already fixed bytes, so the promotion path resolves the delta once, when the
+    package is built, and never recomputes it against the target afterwards.
     """
-    from case_service.db.models import EnvironmentRegistryModel
+    from velaris_shared.db.models import EnvironmentRegistryModel
     env = await session.get(EnvironmentRegistryModel, env_id)
     since: datetime | None = getattr(env, "last_deployed_at", None) if env else None
-    return await build_bundle(session, tenant_id, case_type_ids, since=since)
+    return await build_bundle(session, tenant_id, case_type_ids, since=since,
+                              selection=selection)
 
 
 # ── Bundle applier ────────────────────────────────────────────────────────────
@@ -430,6 +615,7 @@ async def apply_bundle(
     session: AsyncSession,
     bundle: dict,
     target_tenant_id: str,
+    imported_by: str = "hxdeploy-import",
 ) -> dict:
     """Apply a received bundle to this Velaris instance.
 
@@ -980,6 +1166,171 @@ async def apply_bundle(
         except Exception as exc:
             errors.append(f"access_group {g.get('name')}: {exc}")
 
+    # ── 19. Bot definitions ────────────────────────────────────────────────
+    #
+    # An imported bot is **never runnable**. It lands as `draft` with no
+    # approval, and somebody in THIS environment has to approve it — the import
+    # key is a machine credential, and a machine credential must not be able to
+    # start a container here just because a container was approved somewhere
+    # else. There is no override flag, because the override is the bypass.
+    bot_id_map: dict[str, uuid.UUID] = {}
+    for b in bundle.get("bot_definitions", []):
+        name = b.get("name")
+        try:
+            # The TARGET's policy, not the source's: dev may allow a registry
+            # production does not, and the refusal belongs at import rather than
+            # at the first run, when nobody is watching.
+            from case_service.marketplace import runtime as _mkt_runtime
+            try:
+                _mkt_runtime.check_registry_allowed(str(b.get("image") or ""))
+            except Exception as exc:
+                errors.append(f"bot {name}: {exc}")
+                continue
+
+            ex = (await session.execute(
+                select(BotDefinitionModel).where(
+                    BotDefinitionModel.name == name,
+                    BotDefinitionModel.tenant_id == target_tenant_id,
+                )
+            )).scalar_one_or_none()
+
+            # The definition's own rules, checked where the input arrives rather
+            # than only at approval: an unpinned digest, or the
+            # credentials-plus-wildcard-egress combination, must be refused by
+            # the environment receiving it, not discovered by whoever tries to
+            # approve it later.
+            from case_service.bots import service as _bot_service
+            probe = BotDefinitionModel(
+                tenant_id=target_tenant_id, created_by=imported_by, status="draft",
+                **{f: b[f] for f in BOT_FIELDS if f in b},
+            )
+            try:
+                _bot_service.validate_definition(probe)
+            except Exception as exc:
+                errors.append(f"bot {name}: {exc}")
+                continue
+
+            if ex:
+                changed = [f for f in BOT_FIELDS
+                           if f in b and getattr(ex, f) != b[f]]
+                if not changed:
+                    # A no-op import must not de-approve a live bot, exactly as a
+                    # no-op save does not. Re-promoting an unchanged package is
+                    # normal and must be harmless.
+                    bot_id_map[str(b.get("id"))] = ex.id
+                    skipped += 1
+                    continue
+                was_active = ex.status == "active"
+                for f in changed:
+                    setattr(ex, f, b[f])
+                # Same rule as `PUT /bots/{id}`: an edit is an edit. The image,
+                # the egress allowlist or the credential set may have moved, and
+                # that is precisely the review the approval gate exists to force.
+                ex.status = "draft"
+                ex.approved_by = None
+                ex.approved_at = None
+                ex.last_edited_by = imported_by
+                bot_id_map[str(b.get("id"))] = ex.id
+                imported += 1
+                if was_active:
+                    needs_configuration.append({
+                        "type": "bot_definition", "id": str(ex.id), "name": name,
+                        "missing": ["approval"],
+                        "detail": f"changed by import ({', '.join(changed)}) — returned to draft",
+                    })
+            else:
+                local_id = _map_or_new(b.get("id"))
+                row = BotDefinitionModel(
+                    id=local_id, tenant_id=target_tenant_id,
+                    created_by=imported_by, last_edited_by=imported_by,
+                    status="draft", approved_by=None, approved_at=None,
+                    **{f: b[f] for f in BOT_FIELDS if f in b},
+                )
+                session.add(row)
+                bot_id_map[str(b.get("id"))] = local_id
+                imported += 1
+                needs_configuration.append({
+                    "type": "bot_definition", "id": str(local_id), "name": name,
+                    "missing": ["approval"],
+                    "detail": "imported as draft — approve it here before it can run",
+                })
+        except Exception as exc:
+            errors.append(f"bot {name}: {exc}")
+
+    await session.flush()
+
+    # ── 20. Schedules ──────────────────────────────────────────────────────
+    #
+    # Draft, and with no `next_run_at`: nothing imported fires until this
+    # environment approves it. References inside `action_config` are remapped
+    # through the maps built above, and the whole action is then validated
+    # against THIS environment — a schedule that cannot work here is refused
+    # with a reason rather than stored to fail at 2am.
+    for sc in bundle.get("schedules", []):
+        name = sc.get("name")
+        try:
+            cfg = dict(sc.get("action_config") or {})
+            for key, id_map in (("bot_id", bot_id_map),
+                                ("connector_id", connector_id_map),
+                                ("case_type_id", ct_id_map)):
+                if cfg.get(key) and str(cfg[key]) in id_map:
+                    cfg[key] = str(id_map[str(cfg[key])])
+
+            incoming = {f: sc[f] for f in SCHEDULE_FIELDS if f in sc}
+            incoming["action_config"] = cfg
+
+            # Validated BEFORE anything is written, against THIS environment: a
+            # schedule whose bot, connector or case type does not exist here
+            # cannot work, and storing it would leave a row nobody can approve
+            # and nothing can run. The probe row is never added to the session.
+            from case_service.scheduler import service as _sched
+            probe = ScheduleModel(tenant_id=target_tenant_id, created_by=imported_by,
+                                  status="draft", **incoming)
+            try:
+                await _sched.validate_schedule(session, probe)
+            except Exception as exc:
+                errors.append(f"schedule {name}: {exc}")
+                continue
+
+            ex = (await session.execute(
+                select(ScheduleModel).where(
+                    ScheduleModel.name == name,
+                    ScheduleModel.tenant_id == target_tenant_id,
+                )
+            )).scalar_one_or_none()
+
+            if ex:
+                changed = [f for f, v in incoming.items() if getattr(ex, f) != v]
+                if not changed:
+                    skipped += 1
+                    continue
+                for f in changed:
+                    setattr(ex, f, incoming[f])
+                ex.status = "draft"
+                ex.approved_by = None
+                ex.approved_at = None
+                ex.last_edited_by = imported_by
+                ex.next_run_at = None
+                local_id = ex.id
+            else:
+                row = ScheduleModel(
+                    id=_map_or_new(sc.get("id")), tenant_id=target_tenant_id,
+                    created_by=imported_by, last_edited_by=imported_by,
+                    status="draft", approved_by=None, approved_at=None,
+                    next_run_at=None, **incoming,
+                )
+                session.add(row)
+                local_id = row.id
+            imported += 1
+
+            needs_configuration.append({
+                "type": "schedule", "id": str(local_id), "name": name,
+                "missing": ["approval"],
+                "detail": "imported as draft — it fires nothing until approved here",
+            })
+        except Exception as exc:
+            errors.append(f"schedule {name}: {exc}")
+
     await session.flush()
 
     result = {
@@ -988,5 +1339,5 @@ async def apply_bundle(
         "errors": errors[:20],
         "needs_configuration": needs_configuration,
     }
-    logger.info("bundle v2 applied: %s", {k: v for k, v in result.items() if k != "needs_configuration"})
+    logger.info("bundle applied: %s", {k: v for k, v in result.items() if k != "needs_configuration"})
     return result

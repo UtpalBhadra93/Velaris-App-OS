@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseAuditLogModel,
     CaseInstanceModel,
     WorkQueueModel,
@@ -26,10 +26,10 @@ from case_service.db.models import (
     WebhookDeliveryModel,
     BusinessCalendarModel,
 )
-from case_service.auth.dependencies import require_role
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared.db.session import get_session
 
-from case_service import hxguard
+from velaris_shared import hxguard
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(hxguard.guard("platform.admin.access"))])
 
@@ -53,6 +53,12 @@ class SystemInfo(BaseModel):
     webhooks: int
     calendars: int
     audit_entries: int
+    # Counts for the console's later tabs — Permissions, SSO, Identity and
+    # Marketplace Sources all had a tab and no line on the overview.
+    users: int = 0
+    sso_providers: int = 0
+    marketplace_sources: int = 0
+    configured_permissions: int = 0
 
 
 class QueueCreateUpdate(BaseModel):
@@ -73,15 +79,26 @@ async def get_system_info(
     session: AsyncSession = Depends(get_session),
 ):
     """System-wide entity counts."""
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseTypeModel, CaseAssignmentModel,
         FormDefinitionModel, DataModelModel,
+        HelixUserModel, SsoProviderModel, MarketplaceSourceModel,
+        HelixSettingModel,
     )
 
     async def _count(model):
         return (await session.execute(
             select(func.count()).select_from(model)
         )).scalar_one()
+
+    # The permission matrix is one settings row holding a path -> roles map,
+    # not a table, so "configured" means how many routes the admin has
+    # explicitly decided about. An absent row means none.
+    perms = (await session.execute(
+        select(HelixSettingModel.value).where(
+            HelixSettingModel.key == "route_permissions"
+        )
+    )).scalar_one_or_none()
 
     return SystemInfo(
         case_types=await _count(CaseTypeModel),
@@ -93,6 +110,10 @@ async def get_system_info(
         webhooks=await _count(WebhookSubscriptionModel),
         calendars=await _count(BusinessCalendarModel),
         audit_entries=await _count(CaseAuditLogModel),
+        users=await _count(HelixUserModel),
+        sso_providers=await _count(SsoProviderModel),
+        marketplace_sources=await _count(MarketplaceSourceModel),
+        configured_permissions=len(perms) if isinstance(perms, dict) else 0,
     )
 
 

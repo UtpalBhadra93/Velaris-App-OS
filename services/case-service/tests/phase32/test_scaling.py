@@ -166,7 +166,7 @@ async def test_06_redis_bridge_fans_out_remote_messages():
 
 @pytest.mark.asyncio
 async def test_07_redis_rate_limiter_fails_open_without_redis(monkeypatch):
-    from case_service.middleware.rate_limit_redis import RedisRateLimitMiddleware
+    from velaris_shared.middleware.rate_limit_redis import RedisRateLimitMiddleware
 
     async def _no_redis():
         return None
@@ -177,7 +177,7 @@ async def test_07_redis_rate_limiter_fails_open_without_redis(monkeypatch):
     async def x(): return {"ok": True}
 
     # Patch get_redis to return None
-    monkeypatch.setattr("case_service.redis_client.get_redis", _no_redis)
+    monkeypatch.setattr("velaris_shared.redis_client.get_redis", _no_redis)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         for _ in range(20):
@@ -188,7 +188,7 @@ async def test_07_redis_rate_limiter_fails_open_without_redis(monkeypatch):
 @pytest.mark.asyncio
 async def test_08_redis_rate_limiter_enforces_when_redis_available(monkeypatch):
     """Simulate Redis: allow first burst requests, then deny."""
-    from case_service.middleware import rate_limit_redis as rlr
+    from velaris_shared.middleware import rate_limit_redis as rlr
 
     class ScriptedRedis:
         def __init__(self):
@@ -206,7 +206,7 @@ async def test_08_redis_rate_limiter_enforces_when_redis_available(monkeypatch):
 
     async def _get_redis():
         return sr
-    monkeypatch.setattr("case_service.redis_client.get_redis", _get_redis)
+    monkeypatch.setattr("velaris_shared.redis_client.get_redis", _get_redis)
 
     app = FastAPI()
     app.add_middleware(rlr.RedisRateLimitMiddleware, requests_per_minute=60, burst=3)
@@ -270,13 +270,13 @@ def test_11_values_yaml_has_autoscaling_keys():
 @pytest.mark.asyncio
 async def test_12_redis_client_falls_back_gracefully(monkeypatch):
     """get_redis returns None if redis_enabled=False."""
-    from case_service import redis_client as rc
+    from velaris_shared import redis_client as rc
     rc.reset_redis_client()
 
     class FakeSettings:
         redis_enabled = False
         redis_url = ""
 
-    monkeypatch.setattr("case_service.config.get_settings", lambda: FakeSettings())
+    monkeypatch.setattr("velaris_shared.config.get_settings", lambda: FakeSettings())
     out = await rc.get_redis()
     assert out is None

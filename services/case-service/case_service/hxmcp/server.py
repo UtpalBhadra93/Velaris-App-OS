@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.hxmcp.registry import Tool, ToolArgError, visible_tools
 
 log = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ async def _call_stateful_tool(
     on (default), the call is recorded as a proposal and NOT executed — a human
     confirms it via the proposals API. When off, it executes immediately with
     the same idempotency protection as a P2 write."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     from case_service.hxmcp import proposals
 
     key = args.get("idempotency_key")

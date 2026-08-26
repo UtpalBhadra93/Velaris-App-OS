@@ -16,11 +16,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import require_role, get_current_user
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
-from case_service.enterprise import security_events, gdpr
+from velaris_shared.auth.dependencies import require_role, get_current_user
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
+from case_service.enterprise import gdpr
+from velaris_shared.db import security_events
 
 import logging
 
@@ -137,7 +138,7 @@ async def list_gdpr_requests(
     status: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import GDPRRequestModel
+    from velaris_shared.db.models import GDPRRequestModel
     stmt = select(GDPRRequestModel).order_by(GDPRRequestModel.created_at.desc()).limit(100)
     if subject_id:
         stmt = stmt.where(GDPRRequestModel.subject_id == subject_id)
@@ -172,7 +173,7 @@ async def update_gdpr_request(
     session: AsyncSession = Depends(get_session),
 ):
     """Manually update a GDPR request status (e.g. mark pending → completed)."""
-    from case_service.db.models import GDPRRequestModel
+    from velaris_shared.db.models import GDPRRequestModel
     from sqlalchemy import update as sa_update
     allowed = {"pending", "in_progress", "completed", "rejected"}
     if body.status not in allowed:
@@ -307,7 +308,7 @@ async def anonymize_user(
 
 async def _ensure_default_policies(session: AsyncSession):
     """Ensure default retention policies exist (idempotent)."""
-    from case_service.db.models import RetentionPolicyModel
+    from velaris_shared.db.models import RetentionPolicyModel
     defaults = [
         ("Resolved case retention", "resolved_cases", 2555, "archive"),
         ("Audit log retention", "audit_log", 2555, "archive"),
@@ -334,7 +335,7 @@ async def _ensure_default_policies(session: AsyncSession):
 async def list_retention_policies(
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import RetentionPolicyModel
+    from velaris_shared.db.models import RetentionPolicyModel
     await _ensure_default_policies(session)
     await session.commit()
     stmt = select(RetentionPolicyModel).order_by(RetentionPolicyModel.resource_type)
@@ -418,7 +419,7 @@ async def update_retention_policy(
     body: RetentionPolicyUpdate,
     session: AsyncSession = Depends(get_session),
 ):
-    from case_service.db.models import RetentionPolicyModel
+    from velaris_shared.db.models import RetentionPolicyModel
     from sqlalchemy import update
     values = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if values:
@@ -438,7 +439,7 @@ async def get_system_info(
     session: AsyncSession = Depends(get_session),
 ):
     """System status and enterprise compliance statistics."""
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseInstanceModel, CaseTypeModel, SecurityEventModel,
         RetentionPolicyModel, GDPRRequestModel, UserDirectoryModel,
     )
@@ -479,7 +480,7 @@ async def get_system_info(
     # Tenants count
     tenants_count = 0
     try:
-        from case_service.db.models import TenantModel
+        from velaris_shared.db.models import TenantModel
         tenants_count = await _count(TenantModel, TenantModel.status == "active")
     except Exception:
         pass
@@ -528,7 +529,7 @@ async def superadmin_audit(
 
     Only accessible to the superadmin. Not visible to regular admins.
     """
-    from case_service.db.models import SecurityEventModel, TraceEventModel
+    from velaris_shared.db.models import SecurityEventModel, TraceEventModel
     from sqlalchemy import desc
 
     # Security events attributed to __system__ (superadmin actions)

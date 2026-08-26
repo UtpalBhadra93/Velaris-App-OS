@@ -20,9 +20,9 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
-from case_service.db.models import AppPackageModel, AppDeploymentModel
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.db.models import AppPackageModel, AppDeploymentModel
 from case_service.apps.differ import diff_bundles, _diff_section
 from case_service.main import app
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 
-from case_service.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
+from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
 
 
 async def seed_case_type(session, case_type_id) -> None:

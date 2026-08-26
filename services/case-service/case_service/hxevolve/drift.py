@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ArtifactBranchModel,
     HxEvolveBaselineModel,
     HxEvolveInsightModel,
@@ -44,7 +44,7 @@ MIN_CASES_FOR_COMPARISON = 5     # fewer resolved cases than this = no evidence
 
 async def current_metrics(session: AsyncSession, case_type_id, days: int = 30) -> dict[str, Any]:
     """The case-type's live health from the event log — no replay involved."""
-    from case_service.process_mining.analyzer import case_duration_stats, check_conformance
+    from velaris_shared.process_mining.analyzer import case_duration_stats, check_conformance
 
     dur = await case_duration_stats(session, case_type_id=case_type_id, days=days)
     conf = await check_conformance(session, case_type_id, days=days)

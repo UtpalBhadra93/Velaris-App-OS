@@ -13,8 +13,8 @@ from case_service.compliance.audit_chain import (
 )
 from case_service.compliance.lineage import record_lineage_event, get_case_lineage
 from case_service.compliance.reports import generate_evidence_pack, FRAMEWORKS
-from case_service.db import repository as repo
-from case_service.db.models import (
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel, CaseAuditLogModel, AuditChainModel,
     DataLineageEventModel,
 )

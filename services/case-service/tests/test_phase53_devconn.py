@@ -7,7 +7,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import ConnectorRegistryModel, WebhookReceiverRuleModel, WebhookReceiverEventModel
+from velaris_shared.db.models import ConnectorRegistryModel, WebhookReceiverRuleModel, WebhookReceiverEventModel
 from case_service.hxbridge.encryption import encrypt_credentials
 
 from tests.conftest import client, session, deploy_case_type, create_case  # type: ignore[attr-defined]

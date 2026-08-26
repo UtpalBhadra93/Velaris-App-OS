@@ -40,12 +40,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.config import get_settings
-from case_service.db.session import get_replica_session
-from case_service.middleware.endpoint_rate_limit import SlidingWindowLimiter
+from velaris_shared.auth.dependencies import require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.config import get_settings
+from velaris_shared.db.session import get_replica_session
+from velaris_shared.middleware.endpoint_rate_limit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ async def _uptime_by_component(
     slowly is not up as far as a customer is concerned, and a status page that
     calls it green is worse than no page.
     """
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = (await session.execute(
@@ -110,7 +110,7 @@ async def _uptime_by_component(
 
 
 async def _build_public_payload(session: AsyncSession) -> dict[str, Any]:
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
     from case_service.integrations import health_sampler as hs
 
     windows = {
@@ -205,7 +205,7 @@ async def authz_parity(
     Counters are per process and reset on restart, so read them from a worker
     that has been serving for a while.
     """
-    from case_service.hxguard import shadow
+    from velaris_shared.hxguard import shadow
 
     snap = shadow.snapshot()
     mismatches = snap.get("mismatch_would_allow", 0) + snap.get("mismatch_would_deny", 0)
@@ -237,7 +237,7 @@ async def authz_role_collisions(
     role's platform intent as a dotted-namespace privilege entry — **never** to
     rename the role, which revokes case-level access for every member at once.
     """
-    from case_service.hxguard.role_names import colliding_access_roles
+    from velaris_shared.hxguard.role_names import colliding_access_roles
 
     found = await colliding_access_roles(session)
     return {
@@ -261,7 +261,7 @@ async def internal_status(
     the caller is authenticated and privileged. It is the reason the public
     route builds its payload from a whitelist instead of reusing this one.
     """
-    from case_service.db.models import HealthCheckResultModel
+    from velaris_shared.db.models import HealthCheckResultModel
 
     days = max(1, min(int(days), 30))
     since = datetime.now(timezone.utc) - timedelta(days=days)

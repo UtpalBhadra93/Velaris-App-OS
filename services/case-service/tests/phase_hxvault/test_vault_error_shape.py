@@ -31,7 +31,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     KNOWN_CODES,
     VAULT_DEK_503,
     VAULT_SHREDDED_410,

@@ -26,9 +26,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def is_feature_enabled(feature_key: str) -> bool:
 
 async def _refresh_version_cache(session: AsyncSession) -> None:
     """Reload _ENABLED_VERSIONS from DB. Called by the cron after each cycle."""
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     rows = (await session.execute(select(ScheduledReleaseModel))).scalars().all()
     _ENABLED_VERSIONS.clear()
     for r in rows:
@@ -108,7 +108,7 @@ def _require_superadmin(user: AuthenticatedUser):
 
 
 async def _get_or_404(session: AsyncSession, release_id: uuid.UUID):
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     r = await session.get(ScheduledReleaseModel, release_id)
     if not r:
         raise HTTPException(404, "Release not found")
@@ -138,7 +138,7 @@ def _serialize(r) -> dict:
 @router.get("/releases/flags")
 async def get_release_flags(session: AsyncSession = Depends(get_session)):
     """Return {feature_key: version_string} for all enabled features. Null = not enabled."""
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     rows = (await session.execute(select(ScheduledReleaseModel))).scalars().all()
     return {r.feature_key: r.enabled for r in rows}  # version string or null
 
@@ -151,7 +151,7 @@ async def list_releases(
     session: AsyncSession = Depends(get_session),
 ):
     _require_superadmin(current_user)
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     rows = (await session.execute(
         # NULLS LAST is Postgres-only ANSI syntax; MySQL/MariaDB reject it (1064). Emulate
         # portably: `release_date IS NULL` sorts False(0) before True(1), so dated rows come
@@ -170,7 +170,7 @@ async def create_release(
     session: AsyncSession = Depends(get_session),
 ):
     _require_superadmin(current_user)
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
     r = ScheduledReleaseModel(
         feature_key   = body.feature_key.strip().lower(),
         version       = body.version.strip() if body.version else None,
@@ -290,7 +290,7 @@ async def get_manifest(
 ):
     """Read releases.txt and cross-reference with DB. Returns each line with registered=True/False."""
     _require_superadmin(current_user)
-    from case_service.db.models import ScheduledReleaseModel
+    from velaris_shared.db.models import ScheduledReleaseModel
 
     # Load DB records keyed by feature_key
     db_rows = (await session.execute(select(ScheduledReleaseModel))).scalars().all()
@@ -327,7 +327,7 @@ async def get_manifest(
 async def release_cron():
     """Runs at startup and every hour. Enables any scheduled release whose date has arrived."""
     import asyncio
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     await asyncio.sleep(10)  # wait for DB to be ready on startup
 
@@ -343,7 +343,7 @@ async def release_cron():
 
     while True:
         try:
-            from case_service.db.models import ScheduledReleaseModel
+            from velaris_shared.db.models import ScheduledReleaseModel
             factory = get_session_factory()
             async with factory() as session:
                 today = datetime.now(timezone.utc).date()

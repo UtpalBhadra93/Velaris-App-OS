@@ -30,9 +30,10 @@ import secrets
 import uuid
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.config import get_settings
+from velaris_shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +107,22 @@ def _ensure_log_dir() -> None:
         logger.warning("egress log dir %s not writable for the gateway: %s", log_dir, exc)
 
 
-def upsert_app(user: str, *, token_hash: str, grant_id: str, package_id: str,
-               tenant_id: str, domains: list[str]) -> None:
+def upsert_app(user: str, *, token_hash: str, grant_id: str = "", package_id: str,
+               tenant_id: str, domains: list[str], job_id: str = "") -> None:
+    """Give one container an egress identity.
+
+    `grant_id` and `job_id` are the two things this identity can belong to — a
+    marketplace capability grant, or an RPA bot job — and they are separate
+    fields because they key separate tables. Passing a job id as `grant_id`
+    reads fine here and then fails at the far end of the pipe, in an ingest that
+    has already deleted its input.
+    """
     _ensure_log_dir()
     apps = _read_allowlist()
     apps[user] = {
         "token_hash": token_hash,
         "grant_id":   grant_id,
+        "job_id":     job_id,
         "package_id": package_id,
         "tenant_id":  tenant_id,
         "domains":    [str(d).lower() for d in domains],
@@ -160,12 +170,47 @@ def proxy_env(user: str, raw_token: str) -> dict[str, str]:
     }
 
 
+async def _surviving_anchors(session: AsyncSession, grant_ids: set, job_ids: set) -> tuple[set, set]:
+    """Which of these anchors still exist, so a row is never lost to a key.
+
+    Both columns are foreign keys, and an anchor can be absent for ordinary
+    reasons: a grant revoked and deleted while its container was still running,
+    a job purged by retention, or — the way this was found — an id written into
+    the wrong column entirely. A row whose anchor has gone is still evidence:
+    the host, the verdict and the byte counts are the point. Losing the WHOLE
+    ingest because one line names a vanished parent is not.
+    """
+    from velaris_shared.db.models import BotJobModel, MarketplaceCapabilityGrantModel
+
+    live_grants: set = set()
+    live_jobs: set = set()
+    if grant_ids:
+        live_grants = set((await session.execute(
+            select(MarketplaceCapabilityGrantModel.id)
+            .where(MarketplaceCapabilityGrantModel.id.in_(grant_ids))
+        )).scalars().all())
+    if job_ids:
+        live_jobs = set((await session.execute(
+            select(BotJobModel.id).where(BotJobModel.id.in_(job_ids))
+        )).scalars().all())
+    return live_grants, live_jobs
+
+
 async def ingest_access_log(session: AsyncSession) -> int:
     """Fold the proxy's JSONL access log into marketplace_network_log.
+
     Rotate-then-read: the proxy opens the file per line, so appends after
     the rename land in a fresh file and nothing is lost. Best-effort —
-    an ingest problem must never break the endpoint that triggered it."""
-    from case_service.db.models import MarketplaceNetworkLogModel
+    an ingest problem must never break the endpoint that triggered it.
+
+    **The rotated file is deleted only once its rows are safely in the
+    database.** It used to be deleted the moment it had been parsed, so a flush
+    that failed afterwards destroyed both the rows and the file they came from:
+    the gateway's record of which hosts a container reached simply ceased to
+    exist, and every reader was told "no requests". A failed flush now puts the
+    lines back where the next ingest will find them.
+    """
+    from velaris_shared.db.models import MarketplaceNetworkLogModel
 
     log = _log_path()
     if not log.exists():
@@ -176,14 +221,37 @@ async def ingest_access_log(session: AsyncSession) -> int:
         lines = rotated.read_text(encoding="utf-8").splitlines()
     except Exception:
         return 0
-    n = 0
+
+    def _uuid_or_none(value):
+        try:
+            return uuid.UUID(str(value)) if value else None
+        except Exception:
+            return None
+
+    events = []
     for line in lines:
         try:
-            ev = json.loads(line)
-            grant_id = ev.get("grant_id")
+            events.append(json.loads(line))
+        except Exception:
+            continue
+
+    grant_ids = {g for g in (_uuid_or_none(e.get("grant_id")) for e in events) if g}
+    job_ids = {j for j in (_uuid_or_none(e.get("job_id")) for e in events) if j}
+    try:
+        live_grants, live_jobs = await _surviving_anchors(session, grant_ids, job_ids)
+    except Exception:
+        logger.warning("egress ingest: could not check anchors", exc_info=True)
+        live_grants, live_jobs = set(), set()
+
+    n = 0
+    for ev in events:
+        try:
+            grant_id = _uuid_or_none(ev.get("grant_id"))
+            job_id = _uuid_or_none(ev.get("job_id"))
             session.add(MarketplaceNetworkLogModel(
                 workspace_id=None,
-                grant_id=uuid.UUID(grant_id) if grant_id else None,
+                grant_id=grant_id if grant_id in live_grants else None,
+                job_id=job_id if job_id in live_jobs else None,
                 package_id=str(ev.get("package_id") or ev.get("user") or "?")[:255],
                 destination_url=f"egress://{ev.get('target', '?')}"[:1024],
                 http_method="CONNECT",
@@ -195,6 +263,23 @@ async def ingest_access_log(session: AsyncSession) -> int:
             n += 1
         except Exception:
             continue
+
+    try:
+        await session.flush()
+    except Exception:
+        # Put the lines back rather than lose them: whatever went wrong, the
+        # audit trail is the one thing this function exists to preserve.
+        await session.rollback()
+        try:
+            if not log.exists():
+                os.replace(rotated, log)
+        except Exception:
+            logger.error("egress ingest: %d entries lost — could not restore %s",
+                         n, rotated, exc_info=True)
+        logger.warning("egress ingest: %d entries deferred, kept for retry", n,
+                       exc_info=True)
+        return 0
+
     try:
         rotated.unlink()
     except Exception:

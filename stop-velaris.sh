@@ -49,10 +49,21 @@ echo "▶ Stopping Velaris services..."
 
 pkill -f "uvicorn helix_engine"  2>/dev/null && green "  ✓ Engine stopped"       || echo "  Engine was not running"
 pkill -f "uvicorn case_service"  2>/dev/null && green "  ✓ Case Service stopped"  || echo "  Case Service was not running"
+pkill -f "uvicorn analytics_service" 2>/dev/null && green "  ✓ Analytics Service stopped" || echo "  Analytics Service was not running"
+pkill -f "uvicorn hxgraph_service"   2>/dev/null && green "  ✓ HxGraph Service stopped"   || echo "  HxGraph Service was not running"
+pkill -f "uvicorn hxmigrate_service" 2>/dev/null && green "  ✓ HxMigrate Service stopped" || echo "  HxMigrate Service was not running"
 pkill -f "vite"                  2>/dev/null && green "  ✓ Studio stopped"        || echo "  Studio was not running"
 
-# Belt-and-suspenders: free ports in case pkill missed anything
-for port_label in "8100:Engine" "8200:Case Service" "5173:Studio"; do
+# Belt-and-suspenders: free ports in case pkill missed anything.
+#
+# 8200 is deliberately NOT in this list. It is the nginx GATEWAY, which runs as
+# a container with `network_mode: host` — its listener is in the host namespace,
+# so `fuser -k 8200/tcp` reaches into a Docker-managed process and stops the
+# gateway without compose knowing. The gateway is stopped by `--all` below,
+# through compose, which is the only thing that can bring it back up cleanly.
+# (It was listed here as "Case Service", which is also the wrong name: case
+# service is 8201, and that was missing from the list entirely.)
+for port_label in "8100:Engine" "8201:Case Service" "8202:Analytics Service" "8203:HxGraph Service" "8204:HxMigrate Service" "5173:Studio"; do
   port="${port_label%%:*}"
   label="${port_label##*:}"
   if fuser "${port}/tcp" &>/dev/null 2>&1; then

@@ -137,11 +137,29 @@ async def test_connector_creds_vault_roundtrip(session):
 
 
 def test_legacy_hxv1_still_decrypts():
-    # Default (vault=False) path writes hxv1; must keep decrypting after #19.
+    """hxv1 is READ forever and written never (2026-08-24).
+
+    The default (vault=False) path now writes hxv3 — AES-256-GCM instead of the
+    hand-rolled SHA-256 keystream — so this can no longer produce an hxv1 value
+    by calling the encryptor. It builds one the way the old code did, which is
+    the only way to prove that secrets stored before the change still open.
+    """
+    import base64
+    import json
+    import os
+
+    from case_service.hxbridge import encryption as _enc
+
     creds = {"token": "legacy"}
-    stored = encrypt_credentials(creds)
-    assert stored["_enc"].startswith("hxv1:")
+    key = _enc._get_key()
+    nonce = os.urandom(16)
+    payload = nonce + _enc._xor_encrypt(
+        key, json.dumps(creds, sort_keys=True).encode(), nonce)
+    stored = {"_enc": "hxv1:" + base64.urlsafe_b64encode(payload).decode()}
     assert decrypt_credentials(stored) == creds
+
+    # And the write path has genuinely moved on.
+    assert encrypt_credentials(creds)["_enc"].startswith("hxv3:")
 
 
 def test_plain_dict_passthrough():

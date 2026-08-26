@@ -12,9 +12,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.jwt_handler import decode_jwt_token
-from case_service.config import get_settings
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.jwt_handler import decode_jwt_token
+from velaris_shared.config import get_settings
 from case_service.realtime.manager import get_manager
 
 logger = logging.getLogger(__name__)

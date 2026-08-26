@@ -18,7 +18,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import TenantDekModel
+from velaris_shared.db.models import TenantDekModel
 from case_service.hxvault import crypto
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,31 @@ async def ensure_dek(session: AsyncSession, tenant_id) -> bytes:
     return dek
 
 
+#: DEK row ids already reported as unreadable, so a permanent condition is
+#: stated once instead of every 30 seconds forever.
+#:
+#: A DEK that will not unwrap will not unwrap on the next tick either — the KEK
+#: and the row are both unchanged. Logging a fresh stack trace each cycle buries
+#: the events that ARE new, and says nothing about what to do. Report it once,
+#: name the tenant, and say what it means.
+_UNREADABLE: set[str] = set()
+
+
+def _report_unreadable(row, where: str) -> None:
+    key = str(row.id)
+    if key in _UNREADABLE:
+        return
+    _UNREADABLE.add(key)
+    logger.error(
+        "HxVault %s: DEK id=%s (tenant %s) cannot be unwrapped with the current "
+        "KEK. Anything encrypted under it is unreadable — check whether "
+        "VELARIS_CASE_KEK changed, or whether auth_secret changed while "
+        "VELARIS_CASE_KEK was unset (the KEK is derived from it). This is "
+        "reported once per process; the row is skipped, not retried.",
+        where, row.id, _ckey(row.tenant_id) or "<platform>",
+    )
+
+
 async def warm_cache(session: AsyncSession) -> int:
     """Load + unwrap all active DEKs into the cache (call at startup). Returns count.
 
@@ -131,7 +156,7 @@ async def warm_cache(session: AsyncSession) -> int:
             _DEK_CACHE[ck] = crypto.open_(kek, _b64d(row.wrapped_dek), _wrap_aad(row.tenant_id))
             n += 1
         except Exception:  # noqa: BLE001 — one bad row must not block startup
-            logger.exception("HxVault: failed to unwrap DEK id=%s", row.id)
+            _report_unreadable(row, "startup")
     logger.info(
         "HxVault: warmed %d DEK(s) into cache (%d shredded)", n, len(_SHREDDED),
     )
@@ -165,7 +190,7 @@ async def resync_cache(session: AsyncSession) -> dict:
                 _DEK_CACHE[ck] = crypto.open_(kek, _b64d(row.wrapped_dek), _wrap_aad(row.tenant_id))
                 added += 1
             except Exception:  # noqa: BLE001 — one bad row must not break the loop
-                logger.exception("HxVault resync: failed to unwrap DEK id=%s", row.id)
+                _report_unreadable(row, "resync")
     evicted = 0
     for ck in [k for k in _DEK_CACHE if k not in live]:
         _DEK_CACHE.pop(ck, None)

@@ -191,7 +191,7 @@ class TestTheSweep:
     """`refresh_all` against a real row — the part the pure planner cannot show."""
 
     async def _row(self, session, **cfg):
-        from case_service.db.models import SsoProviderModel
+        from velaris_shared.db.models import SsoProviderModel
 
         base = {"idp_entity_id": ENTITY, "idp_sso_url": SSO, "idp_x509_certs": ["OLD"],
                 "sp_entity_id": "velaris-studio",
@@ -275,7 +275,7 @@ class TestEndpoint:
     async def test_pasted_xml_is_parsed_and_nothing_is_saved(self, client, session):
         from sqlalchemy import select
 
-        from case_service.db.models import SsoProviderModel
+        from velaris_shared.db.models import SsoProviderModel
 
         r = await client.post("/api/v1/auth/saml/metadata/parse",
                               json={"xml": _doc().decode()})

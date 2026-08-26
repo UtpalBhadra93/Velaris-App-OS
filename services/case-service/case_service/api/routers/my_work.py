@@ -13,10 +13,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.api.schemas.cases import AssignmentResponse
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db import repository as repo
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db import repository as repo
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/my", tags=["my-work"])
 
@@ -53,7 +53,7 @@ async def self_assign(
     """Create a test assignment for the current user. Used for Work Center testing."""
     from datetime import datetime, timezone
     from sqlalchemy import select
-    from case_service.db.models import CaseAssignmentModel, CaseInstanceModel
+    from velaris_shared.db.models import CaseAssignmentModel, CaseInstanceModel
 
     # Resolve a real case to attach to (FK constraint — must exist)
     resolved_case_id: uuid.UUID | None = None

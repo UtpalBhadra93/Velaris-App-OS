@@ -10,17 +10,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.compliance import (
     chain_status, verify_chain, seal_new_entries,
     anchor_chain_tip, list_anchors,
     generate_evidence_pack, FRAMEWORKS,
     get_case_lineage,
 )
-from case_service.db.models import ComplianceReportModel
-from case_service.db.session import get_analytics_session as get_session
+from velaris_shared.db.models import ComplianceReportModel
+from velaris_shared.db.session import get_analytics_session as get_session
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
 
@@ -351,7 +351,7 @@ async def list_pii_findings(
     from sqlalchemy import select as _select
 
     from case_service.compliance import pii_scan
-    from case_service.db.models import PIIFindingModel
+    from velaris_shared.db.models import PIIFindingModel
 
     q = _select(PIIFindingModel).order_by(
         PIIFindingModel.special_category.desc(),
@@ -610,7 +610,7 @@ async def list_backups(
     """
     from sqlalchemy import select as _select
 
-    from case_service.db.models import BackupRecordModel
+    from velaris_shared.db.models import BackupRecordModel
 
     q = (
         _select(BackupRecordModel)

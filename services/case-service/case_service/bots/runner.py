@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from case_service.bots import credentials, service
-from case_service.db.models import BotDefinitionModel, BotJobModel
+from velaris_shared.db.models import BotDefinitionModel, BotJobModel
 
 log = logging.getLogger(__name__)
 
@@ -46,55 +46,89 @@ def _utcnow() -> datetime:
 
 
 class BotRunner:
-    """Leases and executes bot jobs until stopped."""
+    """Leases and executes bot jobs until stopped.
+
+    **A pool, not a loop.** One worker at a time meant a night's queue drained
+    serially — a thousand two-minute jobs is thirty-three hours that way, which
+    is not a resource problem but a throughput one, and nothing said so. Each
+    worker holds one container, so `bot_runner_workers` **is** this host's
+    concurrency ceiling; the per-bot and per-tenant limits sit underneath it.
+
+    Sizing is arithmetic: `concurrency = jobs x average runtime / window`, then
+    multiply by the resource profile's memory. A thousand two-minute jobs across
+    an eight-hour night needs about five workers; the same thousand at five
+    minutes each needs eleven.
+    """
 
     def __init__(self) -> None:
-        self._task: asyncio.Task | None = None
+        self._workers: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
+        #: Leasing is serialised across this process's workers. The claim itself
+        #: is already atomic, but the CAPACITY CHECK in front of it is not: two
+        #: workers can both read "one slot free" before either takes it, and a
+        #: `max_concurrency=1` bot would then be driving somebody's website
+        #: twice. The lock costs microseconds; the container it prevents does
+        #: not. Across processes, the row lock in `lease_next` does the same job.
+        self._lease_lock = asyncio.Lock()
 
     def start(self) -> None:
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
-        if not getattr(get_settings(), "bot_runner_enabled", False):
+        settings = get_settings()
+        if not getattr(settings, "bot_runner_enabled", False):
             log.info("bot runner disabled (VELARIS_CASE_BOT_RUNNER_ENABLED)")
             return
-        if self._task is not None:
+        if self._workers:
             return
-        self._task = asyncio.create_task(self._loop(), name="bot-runner")
-        log.info("bot runner started")
+        count = max(1, int(getattr(settings, "bot_runner_workers", 2)))
+        self._workers = [
+            asyncio.create_task(self._worker(i), name=f"bot-runner-{i}")
+            for i in range(count)
+        ]
+        log.info("bot runner started with %d worker(s)", count)
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._task is not None:
-            self._task.cancel()
+        workers, self._workers = self._workers, []
+        for task in workers:
+            task.cancel()
+        for task in workers:
             try:
-                await self._task
+                await task
             except (asyncio.CancelledError, Exception):
                 pass
-            self._task = None
 
-    async def _loop(self) -> None:
+    async def _worker(self, index: int) -> None:
         while not self._stopping.is_set():
             try:
                 ran = await self._cycle()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # One bad job must not stop the loop; the job itself is failed
-                # or requeued inside `_cycle`.
-                log.exception("bot runner cycle failed")
+                # One bad job must not stop this worker, let alone the others.
+                log.exception("bot runner worker %d cycle failed", index)
                 ran = False
             if not ran:
                 await asyncio.sleep(IDLE_SLEEP_SECONDS)
 
+    async def _loop(self) -> None:            # kept for callers that drive one pass
+        await self._worker(0)
+
     async def _cycle(self) -> bool:
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
 
         async with get_session_factory()() as session:
-            job = await service.lease_next(session)
-            if job is None:
+            # Serialised: see `_lease_lock`. Execution below is NOT — that is the
+            # whole point of the pool.
+            async with self._lease_lock:
+                job = await service.lease_next(session)
+                if job is None:
+                    await session.commit()
+                    return False
+                # Committed inside the lock so the next worker's capacity check
+                # sees this claim rather than racing it.
                 await session.commit()
-                return False
+                job_id = job.id
 
             bot = await session.get(BotDefinitionModel, job.bot_id)
             if bot is None or bot.status != "active":
@@ -104,24 +138,27 @@ class BotRunner:
                 await session.commit()
                 return True
 
-            if await service.at_concurrency_limit(session, bot):
-                # Put it back rather than running past the limit: the limit
-                # exists because a bot drives a third party's system.
-                job.status = "queued"
-                job.lease_expires_at = None
-                await session.commit()
-                return False
-
+            # No limit check here. It used to live at this point, *after* the
+            # lease, and counted the job it had just leased — so at the default
+            # `max_concurrency=1` every job was declared over the limit and put
+            # straight back, forever. The ceilings (per definition and per
+            # tenant) are now checked inside `lease_next`, before the claim, so a
+            # full bot costs a job neither a lease nor an attempt.
             await session.commit()
 
-        await self._execute(job.id)
+        await self._execute(job_id)
         return True
 
     async def _execute(self, job_id) -> None:
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
 
         container_id: str | None = None
         secrets_used: list[str] = []
+        #: The container's egress identity, if it was granted any domains. Held
+        #: here so that EVERY exit — success, failure, timeout, crash — can cut
+        #: it: an allowlist entry that outlives its container is a standing
+        #: permission to reach a supplier's site with nobody watching.
+        egress_user: str | None = None
 
         async with get_session_factory()() as session:
             job = await session.get(BotJobModel, job_id)
@@ -143,23 +180,39 @@ class BotRunner:
                 env["VELARIS_JOB_TOKEN"] = token
                 env["VELARIS_JOB_ID"] = str(job.id)
 
+                # Egress, per job. Without this the bot's `granted_domains` were
+                # passed to the runtime with no credential to enforce them, and
+                # `provision_app_container` refuses that combination — so **every
+                # bot that named a domain failed to start**, which is the whole
+                # point of an RPA bot. Fail-closed, but inert.
+                egress_env, egress_user = self._mint_egress(bot, job)
+                env.update(egress_env)
+
                 job.status = "running"
                 job.started_at = _utcnow()
                 await service.record_event(session, job.id, "started", {})
                 await session.commit()
 
                 container_id = await asyncio.to_thread(
-                    self._provision, bot, job, env,
+                    self._provision, bot, job, env, egress_env,
                 )
             except credentials.CredentialError as exc:
+                self._cut_egress(egress_user)
                 await service.fail(session, job, error=str(exc))
                 await session.commit()
                 return
             except Exception as exc:
-                log.exception("bot job %s could not start", job_id)
-                await service.requeue_or_fail(
-                    session, job,
-                    error=credentials.redact(str(exc), secrets_used))
+                self._cut_egress(egress_user)
+                message = credentials.redact(str(exc), secrets_used)
+                if type(exc).__name__ == "Layer2Error":
+                    # A refusal about the deployment — egress disabled, gateway
+                    # down, no docker. Retrying that three times over half an
+                    # hour changes nothing and buries the reason.
+                    log.error("bot job %s cannot start: %s", job_id, message)
+                    await service.fail(session, job, error=message)
+                else:
+                    log.exception("bot job %s could not start", job_id)
+                    await service.requeue_or_fail(session, job, error=message)
                 await credentials.revoke_leases(session, job_id=job.id)
                 await session.commit()
                 return
@@ -171,6 +224,10 @@ class BotRunner:
 
         if container_id:
             await asyncio.to_thread(self._teardown, container_id)
+        # After the container is gone, not before: cutting egress first would
+        # leave a live browser making requests that suddenly fail, and the bot
+        # would report a confusing error instead of its result.
+        self._cut_egress(egress_user)
 
         async with get_session_factory()() as session:
             job = await session.get(BotJobModel, job_id)
@@ -187,17 +244,62 @@ class BotRunner:
             await session.commit()
 
     def _job_url(self, job_id) -> str:
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         base = (getattr(get_settings(), "bot_result_base_url", "") or "").rstrip("/")
         return f"{base}/api/v1/bots/jobs/{job_id}/result"
 
-    def _provision(self, bot: BotDefinitionModel, job: BotJobModel, env: dict) -> str:
+    def _mint_egress(self, bot: BotDefinitionModel, job: BotJobModel) -> tuple[dict, str | None]:
+        """A per-job egress identity for the domains this bot was approved for.
+
+        Same posture as a Layer-2 grant's: an opaque credential, hash-only at
+        rest, injected once, and rotated every run — the identity is the job, so
+        the gateway's audit log names the run that made each request. No domains
+        means no credential and no route out, which is the substrate's default.
+        """
+        domains = [str(d) for d in (bot.granted_domains or []) if str(d).strip()]
+        if not domains:
+            return {}, None
+
+        from case_service.marketplace import egress
+
+        if not egress.egress_enabled():
+            # Let `provision_app_container` raise the explicit refusal rather
+            # than starting a container whose grant could not be enforced.
+            return {}, None
+
+        user = f"bot-{job.id}"
+        raw, token_hash = egress.mint_credentials()
+        # `job_id`, NOT `grant_id`: the latter keys the marketplace's capability
+        # grants, so a job id there made every one of this bot's egress lines
+        # unstorable — and the ingest that discovered that had already deleted
+        # the log it read them from.
+        egress.upsert_app(
+            user, token_hash=token_hash, job_id=str(job.id),
+            package_id=f"bot:{bot.name}", tenant_id=bot.tenant_id,
+            domains=domains)
+        return egress.proxy_env(user, raw), user
+
+    def _cut_egress(self, user: str | None) -> None:
+        """Remove the job's egress identity. Best-effort and idempotent — called
+        on every exit path, including the ones that already failed."""
+        if not user:
+            return
+        try:
+            from case_service.marketplace import egress
+
+            egress.remove_app(user)
+        except Exception:
+            log.warning("could not remove egress entry %s", user, exc_info=True)
+
+    def _provision(self, bot: BotDefinitionModel, job: BotJobModel, env: dict,
+                   egress_env: dict | None = None) -> str:
         """Start the container. Runs in a thread — the docker SDK is blocking."""
         from case_service.marketplace.runtime import provision_app_container
 
         profile = service.RESOURCE_PROFILES.get(
             bot.resource_profile, service.RESOURCE_PROFILES["light"])
+        mem_limit = service.profile_mem_limit(bot.resource_profile)
         return provision_app_container(
             row_id=str(job.id),
             tenant_id=bot.tenant_id,
@@ -205,10 +307,12 @@ class BotRunner:
             image=bot.image,
             digest=bot.digest,
             granted_domains=list(bot.granted_domains or []),
+            egress_env=egress_env or None,
             declared_env=env,
             declared_command=list(bot.declared_command or []) or None,
             pids_limit=profile["pids_limit"],
             tmpfs=profile["tmpfs"],
+            mem_limit=mem_limit,
             labels={"velaris.bot": bot.name, "velaris.job": str(job.id)},
         )
 
@@ -219,7 +323,7 @@ class BotRunner:
 
     async def _await_result(self, job_id, timeout_seconds: int) -> bool:
         """Poll for the bot's result POST. Returns True if it timed out."""
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
 
         deadline = asyncio.get_running_loop().time() + max(1, timeout_seconds)
         while asyncio.get_running_loop().time() < deadline:
@@ -243,7 +347,7 @@ async def sweep_expired_leases(session) -> int:
     A lease that outlives its job is a live credential nobody is watching, and a
     crashed runner is exactly when that happens.
     """
-    from case_service.db.models import BotCredentialLeaseModel
+    from velaris_shared.db.models import BotCredentialLeaseModel
 
     now = _utcnow()
     rows = (await session.execute(

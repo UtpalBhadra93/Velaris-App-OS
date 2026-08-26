@@ -31,10 +31,10 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.core.error_codes import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.core.error_codes import (
     DBM_AI_502,
     DBM_AI_503,
     DBM_BLOCKED_400,
@@ -55,11 +55,11 @@ from case_service.core.error_codes import (
     DBM_TOOLARGE_413,
     coded,
 )
-from case_service.db.introspection import get_introspector
-from case_service.db.models import (
+from velaris_shared.db.introspection import get_introspector
+from velaris_shared.db.models import (
     DbManagerQueryLogModel, DmlBeforeImageModel, HelixUserModel, RevokedSessionModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 
 log = logging.getLogger(__name__)
 
@@ -528,7 +528,7 @@ async def _log_dbview_reveal(session: AsyncSession, user: AuthenticatedUser, whe
     re-auth already verified) — logged for the trail, but kept out of the
     breach-event counter that _fire_breach_event feeds (that would punish
     legitimate, granted use of the feature)."""
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session,
         event_type="DBMGR_DBVIEW_TIER2_REVEAL",
@@ -564,7 +564,7 @@ async def _fire_breach_event(
     if _is_service_account(user):
         return severity
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
 
     user_id = user.user_id
     if user_id not in _BREACH_LOCK:
@@ -627,7 +627,7 @@ async def _disable_account(
     When an admin reinstates via User Directory PATCH, _sync_auth_active() in
     user_directory.py mirrors is_active=True back into velaris_users automatically.
     """
-    from case_service.db.models import HelixUserModel, UserDirectoryModel
+    from velaris_shared.db.models import HelixUserModel, UserDirectoryModel
 
     try:
         hu = await session.get(HelixUserModel, uuid.UUID(user.user_id))
@@ -694,7 +694,7 @@ async def _send_breach_email(
 ) -> None:
     """Send suspension email to the affected user via the tenant's default SMTP account."""
     try:
-        from case_service.db.models import EmailAccountModel, HelixUserModel
+        from velaris_shared.db.models import EmailAccountModel, HelixUserModel
         from case_service.mail import EmailService
 
         account = (await session.execute(
@@ -881,7 +881,7 @@ async def dbview_reauth(
     async with _DBVIEW_ELEVATION_LOCK:
         _DBVIEW_ELEVATIONS[current_user.user_id] = expiry
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session,
         event_type="DBMGR_DBVIEW_REAUTH",
@@ -1289,7 +1289,7 @@ async def ai_generate_sql(
     """Natural language → SQL via HxNexus. Schema context is injected automatically."""
     _require_admin(current_user)
 
-    from case_service.hxnexus.factory import get_llm_backend, check_ai_available
+    from velaris_shared.llm.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
         raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 
@@ -1346,7 +1346,7 @@ async def ai_optimise_query(
     """Run EXPLAIN then ask HxNexus for optimisation suggestions."""
     _require_admin(current_user)
 
-    from case_service.hxnexus.factory import get_llm_backend, check_ai_available
+    from velaris_shared.llm.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
         raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 
@@ -1408,7 +1408,7 @@ async def get_index_advice(
     """AI index recommendations based on pg_stat_statements slow queries."""
     _require_admin(current_user)
 
-    from case_service.hxnexus.factory import get_llm_backend, check_ai_available
+    from velaris_shared.llm.factory import get_llm_backend, check_ai_available
     if not await check_ai_available():
         raise coded(503, DBM_AI_503, "HxNexus AI is not available")
 

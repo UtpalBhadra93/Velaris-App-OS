@@ -176,7 +176,7 @@ async def sync_case_variables(
     """
     from sqlalchemy import select
 
-    from case_service.db.models import CaseInstanceVariableModel
+    from velaris_shared.db.models import CaseInstanceVariableModel
 
     rows = (await session.execute(
         select(CaseInstanceVariableModel).where(

@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
 
-from case_service.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
+from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel, TenantModel
 
 PORTAL = "/api/v1/portal"
 
@@ -155,7 +155,7 @@ class TestOTPFlow:
                                   json={"email": "jane@example.com", "otp": otp})).status_code == 401
 
     async def test_expired_otp_401(self, client, session, tenant):
-        from case_service.db.models import PortalCustomerModel
+        from velaris_shared.db.models import PortalCustomerModel
         sent, patcher = _capture_otp()
         with patcher:
             await client.post(f"{PORTAL}/acme/auth/register",
@@ -224,8 +224,8 @@ class TestAdminCustomerManagement:
         assert body["customers"][0]["primary_email"] == "jane@example.com"
 
     async def test_non_admin_403(self, client, tenant):
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
         s = get_settings()
         viewer = create_dev_token(
             user_id=str(uuid.uuid4()), username="viewer", roles=["viewer"],
@@ -320,8 +320,8 @@ class TestSelfRegistrationToggle:
         assert (await client.post(f"{PORTAL}/acme/customers", json=body)).status_code == 409
 
     async def test_staff_creation_is_gated(self, client, tenant):
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
         s = get_settings()
         viewer = create_dev_token(
             user_id=str(uuid.uuid4()), username="viewer", roles=["viewer"],
@@ -362,7 +362,7 @@ class TestTheCodeCannotBeGuessed:
     """
 
     async def test_five_wrong_guesses_retire_the_code(self, client, session, tenant):
-        from case_service.db.models import PortalCustomerModel
+        from velaris_shared.db.models import PortalCustomerModel
         await _register_and_login(client, "acme", "jane@example.com")
         # a fresh code, so the count starts clean
         await client.post(f"{PORTAL}/acme/auth/request-otp", json={"email": "jane@example.com"})
@@ -415,7 +415,7 @@ class TestTheCodeCannotBeGuessed:
 
     async def test_a_typo_does_not_cost_the_code(self, client, session, tenant):
         # The control must bound an attacker without punishing the owner.
-        from case_service.db.models import PortalCustomerModel
+        from velaris_shared.db.models import PortalCustomerModel
         _, _ = await _register_and_login(client, "acme", "jane@example.com")
         cust = (await session.execute(
             select(PortalCustomerModel).where(
@@ -434,7 +434,7 @@ class TestTheCodeCannotBeGuessed:
         assert r.status_code == 200, "one wrong guess must not lock the owner out"
 
     async def test_a_new_code_starts_with_its_full_allowance(self, client, session, tenant):
-        from case_service.db.models import PortalCustomerModel
+        from velaris_shared.db.models import PortalCustomerModel
         await _register_and_login(client, "acme", "jane@example.com")
         cust = (await session.execute(
             select(PortalCustomerModel).where(

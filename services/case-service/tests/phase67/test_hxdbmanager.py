@@ -15,9 +15,9 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
-from case_service.db.models import DbManagerQueryLogModel
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.db.models import DbManagerQueryLogModel
 from case_service.main import app
 
 

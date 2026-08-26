@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     SyncDestinationModel,
     SyncFieldMappingModel,
@@ -102,7 +102,7 @@ async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
         wanted = {m["transform_module_id"] for m in mappings
                   if m["transform"] == "wasm" and m["transform_module_id"]}
         if wanted:
-            from case_service.db.models import HxSandboxModuleModel
+            from velaris_shared.db.models import HxSandboxModuleModel
             mod_rows = (await session.execute(
                 select(HxSandboxModuleModel).where(
                     HxSandboxModuleModel.tenant_id == dest.tenant_id,
@@ -190,7 +190,7 @@ async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
             # "We stopped sharing their data" is an assertion until there is a
             # record of it. Same reason the email gate audits its drops.
             try:
-                from case_service.enterprise.security_events import log_security_event
+                from velaris_shared.db.security_events import log_security_event
 
                 await log_security_event(
                     session,

@@ -30,14 +30,14 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import HelixUserModel, AuthOtpModel, SsoProviderModel, RefreshTokenModel, RevokedSessionModel, HelixSettingModel
-from case_service import hxguard
-from case_service.db.session import get_auth_session as get_session
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service.auth.models import AuthenticatedUser
-from case_service.auth.jwt_handler import create_dev_token
-from case_service.config import get_settings
-from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials
+from velaris_shared.db.models import HelixUserModel, AuthOtpModel, SsoProviderModel, RefreshTokenModel, RevokedSessionModel, HelixSettingModel
+from velaris_shared import hxguard
+from velaris_shared.db.session import get_auth_session as get_session
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.auth.jwt_handler import create_dev_token
+from velaris_shared.config import get_settings
+from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials, encrypt_credentials_vaulted
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -50,8 +50,8 @@ OTP_VALID_MINS = 10
 # ── D4: per-IP rate limits on credential endpoints ────────────────────────────
 # Complements the per-user lockout (MAX_ATTEMPTS): the lockout stops attacks
 # on one account; these stop one IP from spraying across many accounts.
-from case_service.middleware.endpoint_rate_limit import rate_limit
-from case_service.core.error_codes import (
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared.core.error_codes import (
     AUTH_CREDENTIALS_401,
     AUTH_DEVICE_MISMATCH_401,
     AUTH_DISABLED_403,
@@ -283,8 +283,8 @@ async def login_real(
         await session.commit()
         # Audit: failed login
         try:
-            from case_service.enterprise.security_events import log_security_event
-            from case_service.hxstream.emitter import emit_trace
+            from velaris_shared.db.security_events import log_security_event
+            from velaris_shared.hxstream.emitter import emit_trace
             evt = "auth.account_locked" if locked_now else "auth.login_failed"
             await log_security_event(
                 session,
@@ -325,7 +325,7 @@ async def login_real(
                 user.failed_attempts = 0
             await session.commit()
             try:
-                from case_service.enterprise.security_events import log_security_event
+                from velaris_shared.db.security_events import log_security_event
                 evt = "auth.account_locked" if locked_now else "auth.mfa_failed"
                 await log_security_event(
                     session, event_type=evt, severity="warning",
@@ -348,8 +348,8 @@ async def login_real(
 
     # Audit: login success
     try:
-        from case_service.enterprise.security_events import log_security_event
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.db.security_events import log_security_event
+        from velaris_shared.hxstream.emitter import emit_trace
         await log_security_event(
             session,
             event_type="auth.login",
@@ -372,7 +372,7 @@ async def login_real(
         pass  # audit failure must never block login
 
     # Group J: bind this session's refresh chain to a device record
-    from case_service.auth.devices import get_or_create_device
+    from velaris_shared.auth.devices import get_or_create_device
     device = await get_or_create_device(
         session, str(user.id),
         request.headers.get("user-agent", ""),
@@ -637,7 +637,7 @@ async def forgot_password(
         # on to "enter your code", where any code fails the same way an expired
         # one does. Refusing visibly here, or skipping that step, would make the
         # *flow* the oracle that the message was carefully written not to be.
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="password_reset_refused_federated", severity="low",
             resource_type="user", resource_id=str(u.id),
@@ -754,7 +754,8 @@ async def mfa_enrol(
     uri    = totp.provisioning_uri(name=u.email, issuer_name="Velaris")
 
     # Store encrypted — NOT enabled until verified
-    u.mfa_secret_enc = encrypt_credentials({"secret": secret})
+    u.mfa_secret_enc = await encrypt_credentials_vaulted(
+        session, {"secret": secret}, tenant_id=getattr(u, "tenant_id", None))
     u.updated_at = datetime.now(timezone.utc)
     await session.commit()
 
@@ -1123,7 +1124,8 @@ async def create_sso_provider(
         tenant_id=body.tenant_id,
         provider=body.provider,
         client_id=body.client_id,
-        client_secret_enc=encrypt_credentials({"secret": body.client_secret}),
+        client_secret_enc=await encrypt_credentials_vaulted(
+            session, {"secret": body.client_secret}, tenant_id=body.tenant_id),
         config=_validated_provider_config(body.config),
     )
     session.add(p)
@@ -1160,7 +1162,8 @@ async def update_sso_provider(
     if body.client_id is not None:
         p.client_id = body.client_id
     if body.client_secret:            # blank means "unchanged", not "erase"
-        p.client_secret_enc = encrypt_credentials({"secret": body.client_secret})
+        p.client_secret_enc = await encrypt_credentials_vaulted(
+            session, {"secret": body.client_secret}, tenant_id=p.tenant_id)
     if body.enabled is not None:
         p.enabled = body.enabled
     if body.tenant_id is not None:
@@ -1175,7 +1178,7 @@ async def update_sso_provider(
     await session.commit()
     await session.refresh(p)
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="sso_provider_updated", severity="medium",
         user_id=user.user_id, resource_type="sso_provider", resource_id=str(p.id),
@@ -1496,7 +1499,7 @@ async def sso_callback(
         # each other's account.
         raise HTTPException(400, "Provider did not return a subject identifier")
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     client_ip = request.client.host if request.client else None
 
     # Provisioning policy lives on the provider row's JSON config, so enabling
@@ -1620,7 +1623,7 @@ async def sso_callback(
     await session.refresh(u)
 
     # Group J: SSO sessions are device-bound too
-    from case_service.auth.devices import get_or_create_device
+    from velaris_shared.auth.devices import get_or_create_device
     device = await get_or_create_device(
         session, str(u.id),
         request.headers.get("user-agent", ""),
@@ -1717,7 +1720,7 @@ async def refresh_token_endpoint(
     # Group J: validate the device the chain is bound to. A revoked device or
     # a user-agent mismatch (token replayed from different software) kills
     # the whole chain — re-challenge with full credentials.
-    from case_service.auth.devices import check_device_on_refresh
+    from velaris_shared.auth.devices import check_device_on_refresh
     device_id = uuid.UUID(str(row[1])) if row[1] else None
     if not await check_device_on_refresh(
         session, device_id,
@@ -1791,7 +1794,7 @@ async def list_devices(
     session: AsyncSession = Depends(get_session),
 ):
     """The current user's active devices (sign-in sessions)."""
-    from case_service.db.models import AuthDeviceModel
+    from velaris_shared.db.models import AuthDeviceModel
 
     rows = (await session.execute(
         select(AuthDeviceModel)
@@ -1818,8 +1821,8 @@ async def revoke_device_endpoint(
     session:   AsyncSession = Depends(get_session),
 ):
     """Sign out a device: revokes it and every refresh token bound to it."""
-    from case_service.db.models import AuthDeviceModel
-    from case_service.auth.devices import revoke_device
+    from velaris_shared.db.models import AuthDeviceModel
+    from velaris_shared.auth.devices import revoke_device
 
     dev = await session.get(AuthDeviceModel, device_id)
     # 404 for both missing and foreign devices — don't confirm existence
@@ -1830,7 +1833,7 @@ async def revoke_device_endpoint(
 
     count = await revoke_device(session, dev, revoked_by=user.user_id)
     try:
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="auth.device_revoked", severity="info",
             user_id=user.user_id, resource_type="device", resource_id=str(device_id),
@@ -1856,7 +1859,7 @@ async def webauthn_register_options(
     session:  AsyncSession = Depends(get_session),
 ):
     """Begin passkey enrollment for the logged-in user."""
-    from case_service.auth import webauthn_service
+    from velaris_shared.auth import webauthn_service
 
     options_json = await webauthn_service.begin_registration(
         session, user.user_id, user.username,
@@ -1875,7 +1878,7 @@ async def webauthn_register_verify(
     session: AsyncSession = Depends(get_session),
 ):
     """Complete passkey enrollment: verify attestation, store the public key."""
-    from case_service.auth import webauthn_service
+    from velaris_shared.auth import webauthn_service
 
     try:
         cred = await webauthn_service.complete_registration(
@@ -1885,7 +1888,7 @@ async def webauthn_register_verify(
         raise HTTPException(400, f"Passkey registration failed: {e}")
 
     try:
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="auth.passkey_registered", severity="info",
             user_id=user.user_id, resource_type="passkey", resource_id=str(cred.id),
@@ -1904,7 +1907,7 @@ async def webauthn_list_credentials(
     session: AsyncSession = Depends(get_session),
 ):
     """The current user's registered passkeys."""
-    from case_service.db.models import WebAuthnCredentialModel
+    from velaris_shared.db.models import WebAuthnCredentialModel
 
     rows = (await session.execute(
         select(WebAuthnCredentialModel)
@@ -1930,7 +1933,7 @@ async def webauthn_delete_credential(
     session: AsyncSession = Depends(get_session),
 ):
     """Remove a passkey."""
-    from case_service.db.models import WebAuthnCredentialModel
+    from velaris_shared.db.models import WebAuthnCredentialModel
 
     cred = await session.get(WebAuthnCredentialModel, credential_id)
     # 404 for both missing and foreign credentials — don't confirm existence
@@ -1938,7 +1941,7 @@ async def webauthn_delete_credential(
         raise HTTPException(404, "Passkey not found")
     cred.revoked_at = datetime.now(timezone.utc)
     try:
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="auth.passkey_removed", severity="info",
             user_id=user.user_id, resource_type="passkey", resource_id=str(credential_id),
@@ -1968,7 +1971,7 @@ async def webauthn_login_options(
     discoverable-credential options as everyone else — the response shape
     never confirms whether an account exists (anti-enumeration).
     """
-    from case_service.auth import webauthn_service
+    from velaris_shared.auth import webauthn_service
 
     user_id: str | None = None
     if body.username:
@@ -2005,8 +2008,8 @@ async def webauthn_login_verify(
     verification, and phishing-resistant where TOTP is not — so no TOTP
     stage follows.
     """
-    from case_service.auth import webauthn_service
-    from case_service.auth.devices import get_or_create_device
+    from velaris_shared.auth import webauthn_service
+    from velaris_shared.auth.devices import get_or_create_device
 
     try:
         cred, user_verified = await webauthn_service.complete_authentication(
@@ -2014,7 +2017,7 @@ async def webauthn_login_verify(
         )
     except Exception as e:
         try:
-            from case_service.enterprise.security_events import log_security_event
+            from velaris_shared.db.security_events import log_security_event
             await log_security_event(
                 session, event_type="auth.login_failed", severity="warning",
                 user_id="unknown", resource_type="user", resource_id="unknown",
@@ -2047,8 +2050,8 @@ async def webauthn_login_verify(
     user.last_login_at   = datetime.now(timezone.utc)
 
     try:
-        from case_service.enterprise.security_events import log_security_event
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.db.security_events import log_security_event
+        from velaris_shared.hxstream.emitter import emit_trace
         await log_security_event(
             session, event_type="auth.login", severity="info",
             user_id=user.username, resource_type="user", resource_id=user.username,
@@ -2084,7 +2087,7 @@ async def webauthn_stepup_options(
     session: AsyncSession = Depends(get_session),
 ):
     """Begin a step-up assertion for the logged-in user (PUO approvals etc.)."""
-    from case_service.auth import webauthn_service
+    from velaris_shared.auth import webauthn_service
 
     try:
         options_json = await webauthn_service.begin_authentication(

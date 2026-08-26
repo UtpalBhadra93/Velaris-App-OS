@@ -17,7 +17,7 @@ def get_storage_backend() -> StorageBackend:
     transparent AES-256-GCM encryption — every file is encrypted before being
     written and decrypted after being read, regardless of backend type.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     s = get_settings()
     mode = getattr(s, "storage_backend", "local").lower()
 

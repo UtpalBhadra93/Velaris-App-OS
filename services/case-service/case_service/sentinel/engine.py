@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseAuditLogModel,
     CaseInstanceModel,
     CaseInstanceVariableModel,

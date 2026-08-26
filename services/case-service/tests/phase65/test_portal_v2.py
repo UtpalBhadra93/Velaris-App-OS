@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseSessionModel,
     CaseSessionParticipantModel,
@@ -266,7 +266,7 @@ class TestCustomerSessions:
         assert r2.status_code == 404
 
     async def test_invited_customer_gets_token(self, client, tenant, case_type, session):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         s = get_settings()
         s.livekit_url = "wss://livekit.test"
         s.livekit_api_key = "lk_test_key"
@@ -608,7 +608,7 @@ class TestAskFeedback:
         r = await client.post(f"{PORTAL}/acme/ask/feedback",
                               json={"question": "how do I reset my password?", "helpful": True})
         assert r.status_code == 201
-        from case_service.db.models import PortalAskFeedbackModel
+        from velaris_shared.db.models import PortalAskFeedbackModel
 
     async def test_unknown_portal_404(self, client):
         r = await client.post(f"{PORTAL}/nope/ask/feedback",
@@ -654,7 +654,7 @@ class TestLogo:
 
 class TestPortalForm:
     async def test_form_fields_served_when_configured(self, client, tenant, case_type, session):
-        from case_service.db.models import FormDefinitionModel
+        from velaris_shared.db.models import FormDefinitionModel
         form = FormDefinitionModel(name="Portal Intake", version="1.0", definition_json={
             "sections": [{"id": "s1", "order": 0, "title": "S1", "fields": [
                 {"id": "f1", "field_key": "policy_no", "label": "Policy number",

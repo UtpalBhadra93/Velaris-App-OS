@@ -15,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import MarketplaceInstallModel, StorefrontStoreModel
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import MarketplaceInstallModel, StorefrontStoreModel
 
 # 4-place id contract: must match official_registry.json, manifest.json, velaris.json.
 HXSTOREFRONT_PACKAGE_ID = "velaris/hxstorefront"

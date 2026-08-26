@@ -22,8 +22,8 @@ import uuid
 
 import pytest
 
-from case_service.hxguard import shadow
-from case_service.hxguard.actions import ACTIONS
+from velaris_shared.hxguard import shadow
+from velaris_shared.hxguard.actions import ACTIONS
 
 
 @pytest.fixture(autouse=True)
@@ -34,8 +34,8 @@ def _reset():
 
 
 def _headers(*roles: str) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
     s = get_settings()
     token = create_dev_token(
         user_id=str(uuid.uuid4()), username="shadow-tester", roles=list(roles),
@@ -118,8 +118,8 @@ class TestItRuns:
         """The Phase-2 sweep, kept: every indexed gate, every role shape, the
         privilege model against the rule `require_role` used to apply."""
         import importlib
-        from case_service.hxguard.actions import ACTION_BY_GATE, ACTIONS
-        from case_service.hxguard.privileges import legacy_role_gate_allows
+        from velaris_shared.hxguard.actions import ACTION_BY_GATE, ACTIONS
+        from velaris_shared.hxguard.privileges import legacy_role_gate_allows
 
         for gate, action in ACTION_BY_GATE.items():
             file, fn = gate.split("::")
@@ -224,7 +224,7 @@ class TestResolution:
         assert ACTIONS[got].legacy_roles == ("admin",)
 
     def test_every_indexed_gate_names_a_real_action(self):
-        from case_service.hxguard.actions import ACTION_BY_GATE, MODULE_ACTION_BY_FILE
+        from velaris_shared.hxguard.actions import ACTION_BY_GATE, MODULE_ACTION_BY_FILE
         for gate, action in ACTION_BY_GATE.items():
             assert action in ACTIONS, gate
         for f, action in MODULE_ACTION_BY_FILE.items():
@@ -234,7 +234,7 @@ class TestResolution:
         """A renamed handler would silently stop being compared. This is the
         only thing that notices."""
         import importlib
-        from case_service.hxguard.actions import ACTION_BY_GATE
+        from velaris_shared.hxguard.actions import ACTION_BY_GATE
         missing = []
         for gate in ACTION_BY_GATE:
             file, fn = gate.split("::")
@@ -255,13 +255,13 @@ class TestNamespaceBoundary:
         silently conferring platform administration — invisible today only
         because the role-name merge already does, and therefore invisible right
         up until Phase 4 removes that merge."""
-        from case_service.hxguard.privileges import effective_privileges, evaluate_privileges
+        from velaris_shared.hxguard.privileges import effective_privileges, evaluate_privileges
         legacy_admin = [{"resource": "*", "actions": ["*"], "case_type_id": "*"}]
         privs = effective_privileges(["viewer"], legacy_admin)
         assert not evaluate_privileges(privs, "identity.users.write")
 
     def test_legacy_case_vocabulary_grants_no_platform_action(self):
-        from case_service.hxguard.privileges import effective_privileges, evaluate_privileges
+        from velaris_shared.hxguard.privileges import effective_privileges, evaluate_privileges
         legacy = [
             {"resource": "case", "actions": ["create", "read", "update"]},
             {"resource": "case_type", "actions": ["*"]},
@@ -274,7 +274,7 @@ class TestNamespaceBoundary:
     def test_an_entry_written_in_the_new_namespace_does_grant(self):
         """The boundary refuses legacy vocabulary, not access groups themselves
         — otherwise Phase 3 could never grant anything through one."""
-        from case_service.hxguard.privileges import effective_privileges, evaluate_privileges
+        from velaris_shared.hxguard.privileges import effective_privileges, evaluate_privileges
         modern = [{"resource": "identity.users", "actions": ["read"]}]
         privs = effective_privileges(["viewer"], modern)
         assert evaluate_privileges(privs, "identity.users.read")
@@ -287,19 +287,19 @@ class TestShadowCoverage:
     def test_migrated_routers_are_no_longer_shadowed(self):
         """Once a router decides by privilege there is nothing to compare it
         against — the shadow exists only where require_role still rules."""
-        from pathlib import Path
-        from case_service.hxguard.actions import MIGRATED_ROUTERS
-        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+        from velaris_shared.hxguard.actions import MIGRATED_ROUTERS
+
+        from case_service.hxguard_ledger.legacy_sites import find_router
         for name in sorted(MIGRATED_ROUTERS):
-            assert "require_role(" not in (routers / name).read_text(), name
+            assert "require_role(" not in find_router(name).read_text(), name
 
     def test_the_shadow_still_covers_every_unmigrated_gate(self):
         """Phase 3 shrinks the shadow's job one router at a time. What must stay
         true is that a gate is either migrated or shadowed — never neither."""
-        from pathlib import Path
-        from case_service.hxguard.actions import (
+        from velaris_shared.hxguard.actions import (
             ACTION_BY_GATE, MIGRATED_ROUTERS, MODULE_ACTION_BY_FILE)
-        routers = Path(__file__).resolve().parents[2] / "case_service" / "api" / "routers"
+
+        from case_service.hxguard_ledger.legacy_sites import find_router
         known = {g.split("::")[0] for g in ACTION_BY_GATE} | set(MODULE_ACTION_BY_FILE)
         for name in sorted(known - MIGRATED_ROUTERS):
-            assert "require_role(" in (routers / name).read_text(), name
+            assert "require_role(" in find_router(name).read_text(), name

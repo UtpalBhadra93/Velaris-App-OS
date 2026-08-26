@@ -22,7 +22,7 @@ import pytest
 
 from case_service.compliance import pii_detect as d
 from case_service.compliance import pii_scan as sc
-from case_service.db.models import FormDefinitionModel, PIIFindingModel
+from velaris_shared.db.models import FormDefinitionModel, PIIFindingModel
 
 pytestmark = pytest.mark.asyncio
 

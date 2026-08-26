@@ -24,9 +24,9 @@ from typing import Any
 
 from temporalio import activity
 
-from case_service.db import repository as repo
-from case_service.db.models import CaseSLAInstanceModel
-from case_service.db.session import get_session_factory
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseSLAInstanceModel
+from velaris_shared.db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
 

@@ -15,13 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from case_service.costing import service as costing
-from case_service.db import repository as repo
-from case_service.config import get_settings
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.config import get_settings
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/costing", tags=["costing"])
 
@@ -163,7 +163,7 @@ async def add_time_entry(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Direct timesheet entry — effort logged after the fact."""
-    from case_service.db.models import CaseTimeEntryModel
+    from velaris_shared.db.models import CaseTimeEntryModel
     cid = await _authorized_case(session, user, case_id, "case.update")
     entry = CaseTimeEntryModel(
         tenant_id=_tenant(user), case_id=cid, user_id=str(user.user_id),
@@ -194,7 +194,7 @@ async def delete_time_entry(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Own entries only (admins included — effort claims belong to their author)."""
-    from case_service.db.models import CaseTimeEntryModel
+    from velaris_shared.db.models import CaseTimeEntryModel
     entry = await session.get(CaseTimeEntryModel, entry_id)
     if entry is None or entry.user_id != str(user.user_id):
         raise HTTPException(404, "Time entry not found")   # anti-oracle
@@ -236,7 +236,7 @@ async def export_billing(
     # findings redact — a heuristic guess must not blank a billing column.
     # Off by default; enabling it is a deliberate act.
     if get_settings().pii_redact_exports:
-        from case_service.core import pii_redaction as _pii
+        from velaris_shared.db import pii_redaction as _pii
 
         _paths = await _pii.confirmed_field_paths(session, tenant_id=_tenant(user))
         lines = _pii.redact_rows(lines, _paths)

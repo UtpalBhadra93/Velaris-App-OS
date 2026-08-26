@@ -22,7 +22,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ConnectorRegistryModel,
     PaymentRequestModel,
     PaymentWebhookEventModel,
@@ -330,7 +330,7 @@ async def test_webhook_succeeded_updates_payment_status(
     from sqlalchemy import select as _select
 
     from case_service.compliance import ledger, ledger_posting
-    from case_service.db.models import LedgerAccountModel, LedgerEntryModel
+    from velaris_shared.db.models import LedgerAccountModel, LedgerEntryModel
 
     cash_entries = (await session.execute(
         _select(LedgerEntryModel)
@@ -452,7 +452,7 @@ async def test_unsigned_webhook_cannot_mark_a_payment_paid(
     moved a real payment request from `pending` to `succeeded`, completed its
     workflow step and posted to the ledger.
     """
-    from case_service.db.models import PaymentRequestModel
+    from velaris_shared.db.models import PaymentRequestModel
     from sqlalchemy import select as _select
 
     case = await _make_case(client)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from case_service.db.models import MarketplaceInstallModel
+from velaris_shared.db.models import MarketplaceInstallModel
 
 PKG = "velaris/hxstorefront"
 

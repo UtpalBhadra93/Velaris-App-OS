@@ -14,7 +14,7 @@ from case_service.core.sla_escalation import (
     record_pause_with_reason, record_resume,
 )
 from case_service.core.sla_tracker import start_sla_v2
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel, CaseSLAInstanceModel,
     EscalationTreeModel, CaseAssignmentModel,
 )

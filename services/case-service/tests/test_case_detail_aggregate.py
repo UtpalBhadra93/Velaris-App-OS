@@ -88,7 +88,7 @@ class TestAggregationDoesNotWidenAccess:
 
     async def test_invisible_case_type_degrades_to_null_not_404(self, session, client):
         """Losing sight of the type must not make the case unreadable."""
-        from case_service.db.models import CaseInstanceModel, CaseTypeModel
+        from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
 
         ct = CaseTypeModel(
             name=f"Other {uuid.uuid4().hex[:6]}", version="1.0.0",

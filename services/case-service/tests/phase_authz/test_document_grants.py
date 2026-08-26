@@ -62,7 +62,7 @@ class TestGrantProperties:
     def test_the_signing_key_is_not_the_jwt_secret(self):
         """Derived, so a leak of one is not a leak of the other, and a document
         grant can never be mistaken for a token by the JWT decoder."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         secret = (get_settings().auth_secret or "")
         grant = access_tokens.mint(uuid.uuid4())
@@ -89,7 +89,7 @@ class TestRoutesRefuseAnonymousCallers:
 
     @pytest.mark.asyncio
     async def test_anonymous_cannot_read_a_document(self, anon_client, session):
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
 
         doc_id = uuid.uuid4()
         session.add(DocumentModel(
@@ -105,7 +105,7 @@ class TestRoutesRefuseAnonymousCallers:
 
     @pytest.mark.asyncio
     async def test_a_wrong_grant_does_not_open_a_document(self, anon_client, session):
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
 
         doc_id, other = uuid.uuid4(), uuid.uuid4()
         session.add(DocumentModel(
@@ -119,7 +119,7 @@ class TestRoutesRefuseAnonymousCallers:
 
     @pytest.mark.asyncio
     async def test_a_valid_grant_reaches_the_document(self, anon_client, session):
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
 
         doc_id = uuid.uuid4()
         session.add(DocumentModel(
@@ -148,7 +148,7 @@ class TestPortalStillWorks:
         """The regression this whole design exists to avoid: gating the routes
         must not break the customer who was never authenticated in the first
         place."""
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
 
         doc_id = uuid.uuid4()
         session.add(DocumentModel(

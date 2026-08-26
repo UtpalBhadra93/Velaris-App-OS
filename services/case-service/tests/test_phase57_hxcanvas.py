@@ -5,7 +5,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.db.models import HxCanvasBoardModel, HxCanvasItemModel
+from velaris_shared.db.models import HxCanvasBoardModel, HxCanvasItemModel
 
 from tests.conftest import client, session  # type: ignore[attr-defined]
 

@@ -1,0 +1,70 @@
+{{/*
+analytics-service — extracted from case-service at roadmap 13c (2026-08-23).
+
+The ingress routes /api/v1/analytics and /api/v1/process-mining here. Same image family, same database, its own
+pool and its own replica count: that separation is the point of the split.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "helix.analyticsServiceName" . }}
+  labels: { app: analytics-service }
+spec:
+  replicas: {{ .Values.analyticsService.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector: { matchLabels: { app: analytics-service } }
+  template:
+    metadata: { labels: { app: analytics-service } }
+    spec:
+      terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
+      containers:
+        - name: analytics-service
+          image: "{{ .Values.image.analyticsService.repository }}:{{ .Values.image.analyticsService.tag }}"
+          imagePullPolicy: {{ .Values.image.analyticsService.pullPolicy }}
+          # Stop accepting new work, then linger while the endpoint is
+          # withdrawn from every node's kube-proxy. Without this a deleted pod
+          # closes connections that are still in flight: measured at 29 of
+          # 26,561 requests (0.11%) on a three-node cluster, and invisible on
+          # one node because the replacement is local.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.terminationDrainSeconds | default 5 }}"]
+          ports:
+            - containerPort: {{ .Values.analyticsService.port }}
+          env:
+            - name: VELARIS_CASE_DATABASE_URL
+              value: {{ include "helix.databaseUrl" . | quote }}
+            - name: VELARIS_CASE_DATABASE_BACKEND
+              value: {{ include "helix.databaseBackend" . | quote }}
+            - name: VELARIS_CASE_REDIS_URL
+              value: {{ include "helix.redisUrl" . | quote }}
+            {{- range $k, $v := .Values.analyticsService.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.analyticsService.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: {{ .Values.analyticsService.port }} }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: {{ .Values.analyticsService.port }} }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "helix.analyticsServiceName" . }}
+spec:
+  selector: { app: analytics-service }
+  ports:
+    - port: 8200
+      targetPort: {{ .Values.analyticsService.port }}
+      name: http

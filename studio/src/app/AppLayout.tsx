@@ -93,6 +93,7 @@ function userHasRole(user: { is_admin: boolean; is_designer: boolean; is_case_wo
     if (r === "admin")       return user.is_admin;
     if (r === "manager")     return user.roles.includes("manager");
     if (r === "designer")    return user.is_designer || user.roles.includes("designer");
+    if (r === "developer")   return user.is_designer || user.roles.includes("developer");
     if (r === "case_worker") return user.is_case_worker || user.roles.includes("case_worker");
     if (r === "devops")      return user.roles.includes("devops");
     if (r === "integration") return user.roles.includes("integration");

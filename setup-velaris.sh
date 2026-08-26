@@ -181,17 +181,23 @@ require_cmd() {
   fi
 }
 
-# Core packages
-require_cmd curl curl "curl"
-require_cmd git git "git"
-require_cmd nc netcat-openbsd "netcat (nc)"
-require_cmd fuser psmisc "fuser (psmisc)"
-require_cmd node nodejs "Node.js"
-require_cmd npm npm "npm"
-require_cmd pg_isready postgresql-client "postgresql-client"
-# Step 2b moves Docker's storage with rsync -aHAX. Priority:standard, so it is
-# present on a normal Ubuntu install but NOT on minimal/cloud images.
-require_cmd rsync rsync "rsync"
+# Core packages, from the one list `update-velaris.sh` also checks. Two copies
+# of this list is how an update ends up demanding a package the installer never
+# installs — or the reverse. Step 2b moves Docker's storage with rsync -aHAX,
+# which is priority:standard and therefore present on a normal Ubuntu install
+# but NOT on minimal or cloud images, so it is in that list too.
+# shellcheck source=/dev/null
+. "$VELARIS_DIR/deploy/deps/velaris-deps.sh"
+while IFS= read -r _dep; do
+  [ -n "$_dep" ] || continue
+  _cmd="${_dep%%:*}"; _rest="${_dep#*:}"; _pkg="${_rest%%:*}"; _label="${_rest#*:}"
+  # Docker is handled by its own block below (engine, compose plugin, daemon and
+  # group membership are four separate things), so do not queue it here.
+  [ "$_cmd" = "docker" ] && continue
+  require_cmd "$_cmd" "$_pkg" "$_label"
+done <<SETUP_DEPS_EOF
+$VELARIS_REQUIRED_COMMANDS
+SETUP_DEPS_EOF
 
 # ask "question" → 0 = yes. --non-interactive and a missing tty both answer yes,
 # so an unattended install still completes instead of stalling on a prompt.
@@ -204,6 +210,55 @@ ask() {
   read -rp "$(yellow "  ? $1 [Y/n] ")" reply || reply=""
   [ -z "$reply" ] || [[ "$reply" =~ ^[Yy] ]]
 }
+
+# ── Ports: ask before anything binds ─────────────────────────────
+#
+# A client's machine is not ours, and every port here was a literal until
+# 2026-08-24. The failure without this check is late and confusing: the install
+# completes, a service cannot bind, and the operator is left reading logs to
+# find out that something unrelated already had 8202.
+#
+# Checked here — before Docker, the database or any file is touched — so a clash
+# costs a question rather than a half-installed platform. Ports already held by
+# Velaris are fine: this is the second run of an installer, not a conflict.
+step "Step 1b/9 — Checking ports..."
+# shellcheck source=/dev/null
+. "$VELARIS_DIR/deploy/ports/velaris-ports.sh"
+
+_setup_choose_ports() {
+  local attempt
+  for attempt in 1 2 3; do
+    _velaris_ports_preflight && return 0
+    echo ""
+    if [ "$NONINTERACTIVE" = "1" ] || [ ! -t 0 ]; then
+      # Never silently pick a different port for someone who is not watching:
+      # they would end up with a platform on ports their firewall and their
+      # documentation do not know about.
+      err "Ports above are taken. Set them in .env and re-run, e.g."
+      err "  echo 'VELARIS_ANALYTICS_PORT=9202' >> .env"
+      return 1
+    fi
+    local line name var port reply owner
+    while IFS= read -r line; do
+      name="${line%%:*}"; var="${line##*:}"
+      eval "port=\${$var}"
+      owner=$(_velaris_port_owner "$port")
+      case "$owner" in free|velaris) continue ;; esac
+      read -rp "$(yellow "  ? Port for ${name} [${port} is taken, enter another]: ")" reply || reply=""
+      [ -n "$reply" ] && eval "$var=\$reply" && export "${var?}"
+    done <<PORTS_EOF
+$VELARIS_PORT_TABLE
+PORTS_EOF
+  done
+  err "Ports are still not free after three attempts."
+  return 1
+}
+
+if _setup_choose_ports; then
+  ok "Ports available"
+else
+  exit 1
+fi
 
 # ── Docker: engine, compose plugin, daemon, group membership ─────
 # All four have to be true before anything else works, and each one used to
@@ -457,6 +512,29 @@ _write_if_missing VELARIS_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
 # should use a dedicated key so crypto-shredding is independent of auth_secret.
 _write_if_missing VELARIS_CASE_KEK               "$(openssl rand -hex 32)"
 _write_if_missing VELARIS_CASE_STORAGE_BACKEND     "minio"
+
+# The ports this install actually uses. Written whatever was chosen — including
+# the defaults — so the units, the gateway template and the documentation all
+# read one source instead of each repeating a literal.
+_write_if_missing VELARIS_CASE_SERVICE_PORT        "$VELARIS_CASE_SERVICE_PORT"
+_write_if_missing VELARIS_ENGINE_PORT              "$VELARIS_ENGINE_PORT"
+_write_if_missing VELARIS_CASE_PORT                "$VELARIS_CASE_PORT"
+_write_if_missing VELARIS_ANALYTICS_PORT           "$VELARIS_ANALYTICS_PORT"
+_write_if_missing VELARIS_HXGRAPH_PORT             "$VELARIS_HXGRAPH_PORT"
+_write_if_missing VELARIS_HXMIGRATE_PORT           "$VELARIS_HXMIGRATE_PORT"
+_write_if_missing VELARIS_STUDIO_PORT              "$VELARIS_STUDIO_PORT"
+
+# Workload identity (#18): the gateway injects this and every service refuses a
+# request without it, so no other process on the host can reach a service port
+# directly and go around the gateway. Generated for new installs; an existing
+# install with the variable absent simply has the check off, which is why the
+# services treat an empty value as "not configured" rather than failing closed.
+_write_if_missing VELARIS_GATEWAY_IDENTITY_SECRET  "$(openssl rand -hex 32)"
+# Internal mTLS stays OFF (see deploy/tls/README.md): everything talks over host
+# loopback behind a loopback-only gateway, so it would encrypt traffic nothing
+# can reach in exchange for a certificate authority to operate.
+_write_if_missing VELARIS_INTERNAL_TLS_ENABLED     "false"
+_write_if_missing VELARIS_UPSTREAM_SCHEME          "http"
 
 # Generate RSA-2048 key pair for JWT RS256 signing (idempotent — skipped if already set).
 # The private key stays on this host only; the public key is used by all services to verify.
@@ -770,7 +848,10 @@ if [ "$DB_FAMILY" = "mysql" ]; then
       mysql_client "$MY_NAME" -e "INSERT IGNORE INTO schema_migrations(filename) VALUES('$filename');"
       green "✓"; APPLIED=$((APPLIED + 1))
     else
-      red "FAILED"; cat /tmp/migration_err.log; exit 1
+      red "FAILED"; cat /tmp/migration_err.log
+      red "  $filename was NOT recorded as applied; the database is part-migrated."
+      red "  Fix the migration, then re-run: everything before it is already recorded."
+      exit 1
     fi
   done
   green "  ✓ Migrations: $APPLIED applied, $SKIPPED skipped"
@@ -837,13 +918,20 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
     SKIPPED=$((SKIPPED + 1)); continue
   fi
   echo -n "    apply $filename ... "
+  # ON_ERROR_STOP is what makes a failure a failure. Without it psql runs the
+  # remaining statements, exits 0, and the file below is recorded as applied —
+  # so a migration whose statements were rejected is marked done and never
+  # runs again. Migration 080 did exactly that on every fresh install.
   if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-      < "$migration_file" 2>/tmp/migration_err.log; then
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))
   else
-    red "FAILED"; cat /tmp/migration_err.log; exit 1
+    red "FAILED"; cat /tmp/migration_err.log
+    red "  $filename was NOT recorded as applied; the database is part-migrated."
+    red "  Fix the migration, then re-run: everything before it is already recorded."
+    exit 1
   fi
 done
 green "  ✓ Migrations: $APPLIED applied, $SKIPPED skipped"
@@ -1019,6 +1107,46 @@ else
   fi
 fi
 
+# ── Step 9b: Firewall ─────────────────────────────────────────────
+# Every container port in docker-compose.yml is bound to 127.0.0.1, so Docker
+# cannot punch a hole around the firewall the way a bare `ports: ["5432:5432"]`
+# would — that is how this box was cryptojacked once, and it is why the
+# loopback prefixes are not cosmetic. What is still open to the world is what
+# runs on the HOST: Studio on 5173, plus sshd. This step closes everything else.
+#
+# Deliberately NOT enabled silently: enabling a firewall over an SSH session
+# with the wrong rules locks the operator out of their own server, so ssh is
+# allowed FIRST and the whole thing is a question, not a default.
+step "Step 9b — Firewall (recommended)..."
+if ! command -v ufw >/dev/null 2>&1; then
+  warn "ufw is not installed — skipping. Your server has NO firewall configured."
+  echo "    Install with: sudo apt-get install -y ufw, then re-run this script."
+elif sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
+  ok "ufw is already active — leaving your rules alone."
+  echo "    Studio needs inbound 5173/tcp: sudo ufw allow 5173/tcp"
+  sudo ufw status numbered 2>/dev/null | sed 's/^/    /'
+elif ask "Enable the firewall (allow SSH + Studio 5173, deny everything else)?"; then
+  # Order matters: allow ssh BEFORE the default-deny, and before enabling.
+  sudo ufw allow OpenSSH >/dev/null 2>&1 || sudo ufw allow 22/tcp >/dev/null 2>&1 || true
+  sudo ufw allow 5173/tcp >/dev/null 2>&1 || true   # Studio — the only public ingress
+  sudo ufw default deny incoming  >/dev/null 2>&1 || true
+  sudo ufw default allow outgoing >/dev/null 2>&1 || true
+  if sudo ufw --force enable >/dev/null 2>&1; then
+    ok "Firewall active — inbound SSH + 5173 only."
+    echo "    Everything else (Postgres, Redis, Kafka, MinIO, OpenBao, the API"
+    echo "    gateway) is loopback-bound and was never reachable from outside."
+    echo "    Adding TLS later: allow 443/tcp and put Studio behind it."
+  else
+    warn "Could not enable ufw — configure a firewall before exposing this host."
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  warn "No firewall. Port 5173 (Studio) and sshd are open to every network this"
+  echo "    host is on. Enable one before this server touches a public IP:"
+  echo "      sudo ufw allow OpenSSH && sudo ufw allow 5173/tcp"
+  echo "      sudo ufw default deny incoming && sudo ufw enable"
+fi
+
 # The marker means "setup ran to completion", NOT "licensed" — verify_key.py
 # treats a missing KEY as a warning and a missing MARKER as a hard error, so
 # writing it unconditionally here is what lets an unactivated box start.
@@ -1049,7 +1177,7 @@ else
       # too, otherwise the platform is "installed and enabled" but down until
       # the next reboot — and the operator reaches for start-velaris.sh, which
       # would then double-bind the ports at the next boot.
-      sudo systemctl start velaris-engine velaris-case-service velaris-studio 2>/dev/null || true
+      sudo systemctl start velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio 2>/dev/null || true
       SYSTEMD_MANAGED=1
       ok "systemd units installed, enabled and started"
       echo "    Status:  sudo systemctl status velaris-case-service"

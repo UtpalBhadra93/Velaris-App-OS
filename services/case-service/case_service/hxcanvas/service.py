@@ -9,7 +9,7 @@ from sqlalchemy import select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from case_service.db.models import HxCanvasBoardModel, HxCanvasItemModel, GraphNodeModel
+from velaris_shared.db.models import HxCanvasBoardModel, HxCanvasItemModel, GraphNodeModel
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseInstanceModel, CaseOutcomeModel, CaseRiskModelModel
+from velaris_shared.db.models import CaseInstanceModel, CaseOutcomeModel, CaseRiskModelModel
 from case_service.sentinel import engine as eng
 from case_service.sentinel import packs
 

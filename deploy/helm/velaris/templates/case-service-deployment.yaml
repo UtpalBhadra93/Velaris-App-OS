@@ -14,15 +14,27 @@ spec:
   template:
     metadata: { labels: { app: case-service } }
     spec:
+      terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
       containers:
         - name: case-service
           image: "{{ .Values.image.caseService.repository }}:{{ .Values.image.caseService.tag }}"
           imagePullPolicy: {{ .Values.image.caseService.pullPolicy }}
+          # Stop accepting new work, then linger while the endpoint is
+          # withdrawn from every node's kube-proxy. Without this a deleted pod
+          # closes connections that are still in flight: measured at 29 of
+          # 26,561 requests (0.11%) on a three-node cluster, and invisible on
+          # one node because the replacement is local.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.terminationDrainSeconds | default 5 }}"]
           ports:
             - containerPort: {{ .Values.caseService.port }}
           env:
             - name: VELARIS_CASE_DATABASE_URL
               value: {{ include "helix.databaseUrl" . | quote }}
+            - name: VELARIS_CASE_DATABASE_BACKEND
+              value: {{ include "helix.databaseBackend" . | quote }}
             - name: VELARIS_CASE_REDIS_URL
               value: {{ include "helix.redisUrl" . | quote }}
             {{- range $k, $v := .Values.caseService.env }}
@@ -32,7 +44,11 @@ spec:
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
           readinessProbe:
-            httpGet: { path: /health, port: {{ .Values.caseService.port }} }
+            # /ready checks the database; /health only says the process is up.
+            # The extracted services already split them this way — case-service
+            # was the one deployment probing /health for BOTH, so it reported
+            # Ready with no database behind it.
+            httpGet: { path: /ready, port: {{ .Values.caseService.port }} }
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:

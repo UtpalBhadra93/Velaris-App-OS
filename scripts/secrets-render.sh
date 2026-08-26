@@ -7,6 +7,7 @@
 #
 #   ./scripts/secrets-render.sh           # render to .env
 #   ./scripts/secrets-render.sh --check   # render to stdout key names only (no write)
+#   ./scripts/secrets-render.sh --allow-drop  # permit a render that removes keys .env has
 set -euo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,6 +40,27 @@ docker run --rm \
 [ -s "$RENDERED" ] || { echo "✗ render produced no output — .env left untouched"; exit 1; }
 grep -q '^VELARIS_CASE_DATABASE_URL=' "$RENDERED" \
   || { echo "✗ rendered file missing anchor key VELARIS_CASE_DATABASE_URL — .env left untouched"; exit 1; }
+
+# 3b. Nothing that exists TODAY may silently vanish tomorrow.
+#
+# An operator who turns a feature on by adding its key to .env by hand, and
+# never pushes it to OpenBao, loses it at the next render — which on a reboot
+# means the platform quietly comes back with that feature OFF and nothing
+# saying so. That is exactly how workload identity (#18) switched itself off,
+# and it would do the same to any future secret. Refuse the swap and name the
+# keys; fail-closed matches the rest of this script.
+if [ -f "$TARGET" ] && [ "${1:-}" != "--allow-drop" ]; then
+  _keys() { sed -nE 's/^([A-Z_0-9]+)=.*/\1/p' "$1" | sort -u; }
+  DROPPED=$(comm -23 <(_keys "$TARGET") <(_keys "$RENDERED") || true)
+  if [ -n "$DROPPED" ]; then
+    echo "✗ the render would DROP keys that .env has today — .env left untouched:"
+    printf '    %s\n' $DROPPED
+    echo "  Push them first:  ./scripts/secrets-push.sh KEY=VALUE"
+    echo "  Or, if the removal is deliberate:  $0 --allow-drop"
+    rm -f "$RENDERED"
+    exit 1
+  fi
+fi
 
 if [ "${1:-}" = "--check" ]; then
   echo "✓ render OK — keys:"

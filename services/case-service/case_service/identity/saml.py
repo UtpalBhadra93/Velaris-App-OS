@@ -1053,7 +1053,7 @@ RELAY_TTL_SECONDS = 15 * 60
 
 
 def _relay_key() -> bytes:
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     return hmac.new(
         (get_settings().auth_secret or "").encode(), _RELAY_PURPOSE, hashlib.sha256,

@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from case_service.db.models import AccessGroupModel, HelixUserModel, UserDirectoryModel
+from velaris_shared.db.models import AccessGroupModel, HelixUserModel, UserDirectoryModel
 
 SCHEMA_USER = "urn:ietf:params:scim:schemas:core:2.0:User"
 SCHEMA_GROUP = "urn:ietf:params:scim:schemas:core:2.0:Group"

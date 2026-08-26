@@ -144,7 +144,7 @@ async def record_conformance_run(session, package: dict, *, triggered_by: str,
     Returns the persisted TestRunModel. status = passed | failed.
     """
     from datetime import datetime, timezone
-    from case_service.db.models import TestRunModel, TestResultModel
+    from velaris_shared.db.models import TestRunModel, TestResultModel
 
     result = run_structural(package)
     run = TestRunModel(

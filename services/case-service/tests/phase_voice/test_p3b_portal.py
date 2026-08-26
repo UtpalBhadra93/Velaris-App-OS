@@ -37,7 +37,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseAuditLogModel,
     CaseInstanceModel,
     PortalCustomerCaseLinkModel,
@@ -192,7 +192,7 @@ async def portal_case(client, tenant):
     token = await _register(client, SLUG, "jo@example.com")
 
     async with TestSessionFactory() as s:
-        from case_service.db.models import PortalCustomerModel
+        from velaris_shared.db.models import PortalCustomerModel
         cust = (await s.execute(select(PortalCustomerModel))).scalars().first()
         row = await s.get(CaseInstanceModel, uuid.UUID(case["id"]))
         row.tenant_id = tenant.id
@@ -448,7 +448,7 @@ class TestConsentAndAudit:
 
     async def test_clip_is_not_stored_anywhere(self, client, portal_case, fake_asr):
         """No document row is created — the clip dies with the request."""
-        from case_service.db.models import DocumentModel
+        from velaris_shared.db.models import DocumentModel
         async with TestSessionFactory() as s:
             before = len((await s.execute(select(DocumentModel))).scalars().all())
         await client.post(_url(portal_case["case_id"], "transcribe"),
@@ -551,7 +551,7 @@ class TestFill:
                                  uuid.UUID(portal_case["case_id"]))).data
         assert before == after
 
-        from case_service.db.models import CaseStepCompletionModel
+        from velaris_shared.db.models import CaseStepCompletionModel
         async with TestSessionFactory() as s:
             done = (await s.execute(select(CaseStepCompletionModel))).scalars().all()
         assert done == []

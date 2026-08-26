@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseTypeModel
+from velaris_shared.db.models import CaseTypeModel
 from case_service.intake import service as intake
 from case_service.intake.filters import apply_field_mapping, evaluate_filters
 
@@ -62,7 +62,7 @@ class TestIngest:
 
     async def test_source_kind_is_recorded_on_the_case(self, session):
         """What a second transport would set — proving it is not hardcoded."""
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
         ct = await _case_type(session)
         out = await intake.ingest(
@@ -95,7 +95,7 @@ class TestFiltering:
 
     async def test_filtered_event_is_still_recorded(self, session):
         """So "why was nothing created" stays answerable."""
-        from case_service.db.models import IntakeEventModel
+        from velaris_shared.db.models import IntakeEventModel
 
         ct = await _case_type(session, filters={
             "rules": [{"field": "type", "operator": "eq", "value": "claim"}],
@@ -127,7 +127,7 @@ class TestMapping:
         assert apply_field_mapping({}, {"a.b": "x"}) == {}
 
     async def test_raw_payload_is_kept_for_traceability(self, session):
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
 
         ct = await _case_type(session)
         payload = {"original": "value"}

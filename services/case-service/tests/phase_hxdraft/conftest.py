@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from case_service.hxnexus.guard import chat_rate_limiter
+from velaris_shared.llm.guard import chat_rate_limiter
 
 
 @pytest.fixture(autouse=True)

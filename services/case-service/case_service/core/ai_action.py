@@ -36,8 +36,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.models import AIActionProposalModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import AIActionProposalModel
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ async def execute(
     )
 
     try:
-        from case_service.hxnexus.factory import active_model, generate_json
+        from velaris_shared.llm.factory import active_model, generate_json
 
         parsed = await generate_json(prompt, temperature=0.1, max_tokens=500)
         ident = active_model()

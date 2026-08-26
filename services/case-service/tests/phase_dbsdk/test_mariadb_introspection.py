@@ -13,9 +13,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from case_service.db.introspection import get_introspector
-from case_service.db.introspection.mariadb import MariadbIntrospector
-from case_service.db.introspection.mysql import MysqlIntrospector
+from velaris_shared.db.introspection import get_introspector
+from velaris_shared.db.introspection.mariadb import MariadbIntrospector
+from velaris_shared.db.introspection.mysql import MysqlIntrospector
 
 
 class _FakeBind:

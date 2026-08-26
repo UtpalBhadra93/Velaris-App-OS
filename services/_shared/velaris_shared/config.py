@@ -1,0 +1,638 @@
+"""Case-service configuration via environment variables.
+
+Copyright (c) 2024-2025 Velaris Contributors
+SPDX-License-Identifier: BSL-1.1
+"""
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import AliasChoices, Field, model_validator
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Case-service settings loaded from env / .env file."""
+
+    # Service
+    service_name: str = "velaris-case-service"
+    service_host: str = "0.0.0.0"
+    service_port: int = 8200
+    debug: bool = False
+
+    # Database (DB SDK — multi-dialect). `database_backend` selects a FIRST-PARTY backend
+    # from the baked-in allowlist (velaris_shared.db.backends.ALLOWED_BACKENDS); an unknown
+    # value aborts startup. Set once by start-velaris.sh from `velaris.yaml: database:`.
+    database_backend: str = Field(
+        default="postgresql",
+        validation_alias=AliasChoices("VELARIS_CASE_DATABASE_BACKEND", "DATABASE_BACKEND"),
+    )
+    # Full URL takes precedence when set (current behaviour; trusted operator / OpenBao
+    # config). Empty → the backend builds the URL from the typed components below.
+    database_url: str = (
+        "postgresql+asyncpg://velaris:velaris_dev_password@localhost:5432/velaris"
+    )
+    # Typed connection components (used only when database_url is empty). Password is never
+    # read from velaris.yaml plaintext — only from env / OpenBao.
+    db_host: str = ""
+    db_port: int | None = None
+    db_name: str = ""
+    db_user: str = ""
+    db_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("VELARIS_DB_PASSWORD", "VELARIS_CASE_DB_PASSWORD"),
+    )
+    db_echo: bool = False
+    db_pool_size: int = 10           # operations pool (case CRUD, forms, etc.)
+    db_max_overflow: int = 5
+    db_auth_pool_size: int = 3       # dedicated auth pool — never starved by analytics
+    db_analytics_pool_size: int = 3  # analytics / compliance / sync pool
+    # Optional READ-ONLY replica (hot standby) for heavy analytics queries.
+    # Empty = those queries share the analytics pool on the primary. Served
+    # via get_replica_session only — the analytics pool itself stays on the
+    # primary because compliance seals, hxsync, PUO, and saved-report CRUD
+    # write through it and would fail on a standby.
+    db_analytics_url: str = ""
+
+    # D2: request body size limits (three tiers)
+    max_body_bytes: int = 10 * 1024 * 1024             # JSON payloads
+    max_upload_bytes: int = 25 * 1024 * 1024           # multipart uploads (docs, portal, etc.)
+    max_migrate_upload_bytes: int = 200 * 1024 * 1024  # hxmigrate BPM exports only
+
+    # Temporal
+    temporal_host: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "velaris-case-queue"
+
+    # Engine API (for deploying lifecycle processes)
+    engine_api_url: str = "http://localhost:8100"
+
+    # NLP settings
+    nlp_enabled: bool = True
+    nlp_fallback_enabled: bool = True  # Use heuristic fallback if LLM unavailable
+
+    # Auth
+    # IMPORTANT: auth_secret MUST be set via VELARIS_CASE_AUTH_SECRET in production.
+    # The default is intentionally weak and prints a startup warning if unchanged.
+    auth_mode: str = "jwt"  # "jwt" | "oidc"
+    auth_secret: str = "velaris-dev-secret-change-in-production"
+    auth_issuer: str = "velaris"
+    auth_audience: str = "velaris-api"
+    token_expiry_days: int = 60             # refresh token lifetime; overridden by velaris_settings DB table
+    access_token_expiry_minutes: int = 15   # short-lived access token (override via VELARIS_CASE_ACCESS_TOKEN_EXPIRY_MINUTES)
+    oidc_discovery_url: str = ""
+    oidc_client_id: str = "velaris-studio"
+
+    # RS256 asymmetric JWT (recommended for production).
+    # When both are set, RS256 is used for all token operations and auth_secret is ignored.
+    # Generate with: python -c "from velaris_shared.auth.jwt_handler import generate_rsa_keypair; generate_rsa_keypair()"
+    # Set VELARIS_CASE_AUTH_RSA_PRIVATE_KEY and VELARIS_CASE_AUTH_RSA_PUBLIC_KEY to the PEM strings.
+    # Newlines in env vars must be encoded as literal \n  (most .env loaders handle this).
+    auth_rsa_private_key: str = ""  # PEM-encoded RSA-2048 private key (signing only)
+    auth_rsa_public_key: str = ""   # PEM-encoded RSA-2048 public key  (verification only)
+
+    # ── Workload identity (roadmap #18) ──────────────────────────────────
+    # The gateway is the only door, but "only door" was a routing statement, not
+    # an enforced one: every service binds loopback, and any other process on the
+    # host could reach 8201-8204 directly and skip whatever the gateway does.
+    #
+    # When this secret is set, the gateway injects it as a header and each
+    # service refuses any request that does not carry it. That makes the gateway
+    # the only *caller*, not merely the only route — and it keeps working
+    # unchanged if a service moves to another host, which is when it stops being
+    # theoretical.
+    #
+    # Empty (the default) means the check is OFF, so an existing install is not
+    # locked out by an upgrade. `setup-velaris.sh` generates one for new installs.
+    # Health, readiness and metrics are always exempt: systemd, Docker and the
+    # metrics scrape reach those directly and legitimately.
+    gateway_identity_secret: str = Field(
+        default="", validation_alias="VELARIS_GATEWAY_IDENTITY_SECRET")
+
+    # Internal TLS (#18, second half) — OFF by default and deliberately so.
+    # Everything currently talks over host loopback behind a loopback-only
+    # gateway, so mTLS would encrypt traffic no one can reach while adding a
+    # certificate authority to operate. The plumbing is built and the scripts are
+    # in deploy/tls/; switch this on when a service actually moves off this host.
+    internal_tls_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_INTERNAL_TLS_ENABLED")
+    internal_tls_dir: str = Field(
+        default="deploy/tls/certs", validation_alias="VELARIS_INTERNAL_TLS_DIR")
+
+    # HxVault (#19) — master Key-Encryption-Key that wraps per-tenant DEKs.
+    # 32 bytes, hex (64 chars) or base64. MUST be set via VELARIS_CASE_KEK in
+    # production (rendered from OpenBao). New env vars use the VELARIS_CASE_ prefix
+    # (field-level alias; the class default prefix is still VELARIS_CASE_ for legacy
+    # vars). When empty, a dev KEK is derived from auth_secret (round-trips fine;
+    # crypto-shred still works since DEKs are random+stored) + startup warning.
+    kek: str = Field(default="", validation_alias="VELARIS_CASE_KEK")
+    # HxVault multi-worker coherence: how often each worker reconciles its in-process
+    # DEK cache with the DB (picks up DEKs created on other workers, evicts shredded
+    # ones). Lower = faster cross-worker propagation, more DB reads. 0 disables.
+    vault_cache_resync_seconds: int = Field(default=30, validation_alias="VELARIS_CASE_VAULT_RESYNC_SECONDS")
+
+    # >>> P24 document storage
+    storage_backend: str = "local"  # "local" | "minio"
+    storage_local_path: str = Field(
+        default="./data/velaris-docs",  # relative to working dir
+        # Explicit alias is redundant now that the class prefix is VELARIS_CASE_,
+        # but kept so the name stays greppable at the field it configures.
+        validation_alias="VELARIS_CASE_STORAGE_LOCAL_PATH",
+    )
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "velaris"
+    minio_secret_key: str = "velaris_dev_password"
+    minio_bucket: str = "velaris-docs"
+    minio_secure: bool = False
+
+    # At-rest encryption for document storage (local and MinIO).
+    # Set VELARIS_CASE_STORAGE_MASTER_KEY to a 64-char hex string (32 bytes).
+    # Generate with: openssl rand -hex 32
+    # When set, every file is encrypted with AES-256-GCM before being written
+    # to disk or MinIO. Admins with direct filesystem/bucket access see only
+    # ciphertext. Empty = encryption disabled (dev default).
+    storage_master_key: str = ""
+    # <<< P24 document storage
+
+    # >>> HxMeet P1 (real-time case sessions)
+    # Platform-default session driver. P1 ships off_platform only (Teams/Zoom/
+    # Meet/generic connector creates the meeting); embedded (LiveKit) is P2.
+    # Per-tenant override lives in tenant.settings["meet"] (driver / provider /
+    # connector_id).
+    meet_driver: str = Field(default="off_platform", validation_alias="VELARIS_CASE_MEET_DRIVER")
+    # <<< HxMeet P1
+
+    # >>> HxMeet P2 (embedded driver — self-hosted LiveKit)
+    # The embedded driver is available only when all three LiveKit settings
+    # are set; otherwise selecting it fails closed with 501. The API secret
+    # is server-side only — the browser only ever sees a minted, room-scoped,
+    # short-TTL access token.
+    livekit_url: str = Field(default="", validation_alias="VELARIS_CASE_LIVEKIT_URL")
+    livekit_api_key: str = Field(default="", validation_alias="VELARIS_CASE_LIVEKIT_API_KEY")
+    livekit_api_secret: str = Field(default="", validation_alias="VELARIS_CASE_LIVEKIT_API_SECRET")
+    # TTLs: room access tokens are minted per join, minutes-lived; guest
+    # invite links are single-use and expire independently.
+    meet_token_ttl_seconds: int = Field(default=300, validation_alias="VELARIS_CASE_MEET_TOKEN_TTL")
+    meet_guest_invite_ttl_seconds: int = Field(default=900, validation_alias="VELARIS_CASE_MEET_GUEST_INVITE_TTL")
+    # Where **Studio** is reachable from a browser, e.g.
+    # "https://velaris.example.com" — not this API's own address.
+    #
+    # It matters because the pages a guest lands on are Studio routes:
+    # `/meet/join?token=…` is served by the front end, which in this deployment
+    # runs on its own port (5173) behind whatever the operator puts in front of
+    # it. Falling back to the origin of the API request would post a link to a
+    # page the API does not serve, and for an external guest it would point at a
+    # host they cannot reach at all.
+    #
+    # Unset, anything that needs a guest link says so instead of emailing one
+    # that cannot work.
+    public_base_url: str = Field(default="", validation_alias="VELARIS_CASE_PUBLIC_BASE_URL")
+    # <<< HxMeet P2
+
+    # >>> HxMeet P4a (session intelligence) — local Whisper model size
+    meet_whisper_model: str = Field(default="base", validation_alias="VELARIS_CASE_MEET_WHISPER_MODEL")
+    # <<< HxMeet P4a
+
+    # >>> HxMeet P4a-live (streaming captions)
+    # ASR engine selection: auto probes the machine (NVIDIA>CUDA, AMD/Intel
+    # GPU>whisper.cpp Vulkan, else CPU lag mode); override only to pin for
+    # support (auto | cuda | vulkan | rocm | cpu).
+    meet_asr_backend: str = Field(default="auto", validation_alias="VELARIS_CASE_MEET_ASR_BACKEND")
+    # Live model = the latency/accuracy dial; post-session P4a keeps its own.
+    meet_asr_live_model: str = Field(default="small", validation_alias="VELARIS_CASE_MEET_ASR_LIVE_MODEL")
+    # <<< HxMeet P4a-live
+
+    # >>> HxMeet P3 (sealed recording)
+    # Shared directory where the LiveKit egress worker drops finished
+    # recordings and case-service picks them up for sealing (sha256 >
+    # tenant-DEK seal > case document > audit chain). The file is deleted
+    # after ingest. Empty = recording endpoints fail closed with 501.
+    meet_recordings_dir: str = Field(default="", validation_alias="VELARIS_CASE_MEET_RECORDINGS_DIR")
+    # HTTP base of the LiveKit server for Egress API calls (Twirp). Defaults
+    # to livekit_url with ws>http scheme swap when unset.
+    livekit_http_url: str = Field(default="", validation_alias="VELARIS_CASE_LIVEKIT_HTTP_URL")
+    # <<< HxMeet P3
+
+    # >>> HxGuard Phase B (env: VELARIS_CASE_HXGUARD_CASE_ENFORCEMENT)
+    # off    = case-level ReBAC checks skipped entirely
+    # shadow = evaluated + would-be denials audited, requests pass
+    # enforce = denials return 404 (anti-oracle) — the DEFAULT
+    #
+    # Defaults to enforce because the rollout it was built for is over. In
+    # shadow EVERY case gate is advisory, including meet.recording.view, so a
+    # fresh install that never sets this env var would serve sealed recordings
+    # and transcripts to any authenticated user. A deployment mid-migration can
+    # still opt back to shadow explicitly; silence must not mean "open".
+    hxguard_case_enforcement: str = "enforce"
+    #: Phase 2 of privilege-based authorization: evaluate the privilege model
+    #: alongside every `require_role` gate and record disagreements. Observation
+    #: only — it never changes a decision. Off switches the comparison off
+    #: entirely (the gate is unaffected either way).
+    hxguard_privilege_shadow: bool = True
+    # <<< HxGuard Phase B
+
+    # >>> HxNexus Operator (MCP) P1
+    # ai_tools=False exposes only the deterministic tool profile (tools/list
+    # omits AI-backed tools and calling one is rejected) — MCP keeps working
+    # where AI egress is disabled or the LLM backend is down.
+    mcp_ai_tools: bool = Field(default=True, validation_alias="VELARIS_CASE_MCP_AI_TOOLS")
+    mcp_rate_per_min: int = Field(default=30, validation_alias="VELARIS_CASE_MCP_RATE_PER_MIN")
+    # P2 writes are opt-in: mutating tools are hidden from tools/list AND
+    # rejected on call until an operator turns them on. "AI that acts" is the
+    # riskier surface, so default-off is the safe posture.
+    mcp_writes_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_MCP_WRITES_ENABLED")
+    # P3 stateful lifecycle actions (advance/status/close/create) — separate,
+    # higher-risk opt-in; and by default they require human confirmation (the
+    # AI proposes, a human executes) until the injection posture is proven.
+    mcp_stateful_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_MCP_STATEFUL_ENABLED")
+    mcp_confirm_stateful: bool = Field(default=True, validation_alias="VELARIS_CASE_MCP_CONFIRM_STATEFUL")
+    mcp_proposal_ttl_minutes: int = Field(default=60, validation_alias="VELARIS_CASE_MCP_PROPOSAL_TTL_MINUTES")
+    # P4 external agents: per-tool short-lived scoped tokens. Master switch is
+    # default-off AND acts as a kill switch — turning it off instantly rejects
+    # every outstanding scoped token, not just new mints.
+    mcp_external_tokens_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_MCP_EXTERNAL_TOKENS_ENABLED")
+    mcp_external_rate_per_min: int = Field(default=15, validation_alias="VELARIS_CASE_MCP_EXTERNAL_RATE_PER_MIN")
+    mcp_token_default_ttl_minutes: int = Field(default=30, validation_alias="VELARIS_CASE_MCP_TOKEN_DEFAULT_TTL_MINUTES")
+    mcp_token_max_ttl_minutes: int = Field(default=60, validation_alias="VELARIS_CASE_MCP_TOKEN_MAX_TTL_MINUTES")
+    # <<< HxNexus Operator (MCP) P1
+
+    # >>> P32 scaling
+    redis_enabled: bool = False
+    redis_url: str = "redis://localhost:6379/0"
+    redis_channel_prefix: str = "velaris:rt:"
+    rate_limit_backend: str = "memory"  # "memory" | "redis"
+    # <<< P32 scaling
+
+    # >>> Unified AI backend (used by HxNexus, NLP Builder, Scout AI)
+    #
+    # SIMPLE (new) — set just these 3-4 vars for any provider:
+    #   VELARIS_CASE_AI_PROVIDER = groq | mistral | gemini | together | openai | anthropic | ollama | custom
+    #   VELARIS_CASE_AI_API_KEY  = your API key
+    #   VELARIS_CASE_AI_MODEL    = model name (e.g. llama-3.1-70b-versatile)
+    #   VELARIS_CASE_AI_EMBED_MODEL = embedding model (optional, falls back to ollama)
+    #   VELARIS_CASE_AI_BASE_URL = only needed for 'custom' or to override a known provider
+    #
+    # LEGACY (still supported) — existing vars keep working as before.
+    #
+    # Group E: AI egress policy — local_only | minimized | full
+    #   local_only — external AI providers refused; local Ollama used instead
+    #   minimized  — external completions allowed, embeddings always stay local
+    #   full       — external provider used as-is (explicit opt-in)
+    ai_egress_policy: str = "minimized"
+
+    # Group H: chunk minimization when completions go to an external provider
+    ai_egress_top_k: int = 3                    # retrieved chunks sent externally (local uses 5)
+    ai_egress_min_score: float = 0.25           # relevance floor for external context
+    ai_egress_max_context_chars: int = 6000     # total context cap per external call
+
+    # §5.3 LLM hardening: model-DoS guard — max chars (prompt + system) per LLM
+    # call, enforced at the universal choke point. ~50k tokens. Configurable.
+    ai_max_prompt_chars: int = 200_000
+
+    ai_provider: str = ""                   # universal provider name (overrides ai_backend when set)
+    ai_api_key: str = ""                    # universal API key
+    ai_model: str = ""                      # universal model name
+    ai_embed_model: str = ""               # universal embed model (optional)
+    ai_base_url: str = ""                  # universal base URL (for custom or override)
+
+    # Legacy vars (backwards compat — keep working)
+    ai_backend: str = "ollama"              # "ollama" | "openai" | "anthropic"
+    ai_ollama_url: str = "http://localhost:11434"
+    ai_ollama_model: str = "llama3.2"
+    ai_ollama_embed_model: str = "nomic-embed-text"
+    ai_openai_api_key: str = ""
+    ai_openai_model: str = "gpt-4o-mini"
+    ai_openai_embed_model: str = "text-embedding-3-small"
+    ai_anthropic_api_key: str = ""
+    ai_anthropic_model: str = "claude-haiku-4-5-20251001"
+    # <<< Unified AI backend
+
+    # >>> Connector executor limits
+    connector_pagination_default_size: int = 50
+    connector_overflow_threshold_bytes: int = 256 * 1024   # 256 KB → S3 overflow
+    connector_hard_reject_bytes: int = 16 * 1024 * 1024   # 16 MB → reject + DLQ
+    # <<< Connector executor limits
+
+    # >>> Marketplace
+    # marketplace_enabled is now version-based — controlled via the Release Scheduler
+    # in the admin dashboard (releases.py / is_feature_enabled("marketplace")).
+    # This kill switch is kept for emergency use only (set false to hard-disable).
+    marketplace_kill_switch: bool = False
+    marketplace_dev_only: bool = True
+    # Roadmap #27 conformance gate: off | warn | enforce.
+    # Defaults to `warn` deliberately — an existing platform that upgrades must
+    # not begin refusing installs purely because new code shipped. Flip to
+    # `enforce` once publishers have had the grandfather window to submit
+    # results (same shadow-then-enforce path HxGuard used for case enforcement).
+    marketplace_conformance_gate: str = Field(
+        default="warn", validation_alias="VELARIS_CASE_MARKETPLACE_CONFORMANCE_GATE"
+    )
+    # Temporal `definition_json` interpreter (Tier-1 §12 / Tier-2 #21).
+    # Option A of docs/Future/temporal-decision-record.md. OFF by default AND
+    # requiring the case type to declare `"orchestration": "temporal"` — a
+    # workflow that drives case advancement must never switch itself on for
+    # case types authored without it.
+    temporal_interpreter_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_TEMPORAL_INTERPRETER_ENABLED"
+    )
+    # Event sourcing for the Case aggregate (#30a / §2.2). OFF by default and
+    # a CLEAN CUTOVER when switched on: cases created from that point carry
+    # `event_sourced=True` and get a full append-only stream; earlier cases are
+    # deliberately NOT backfilled (§7.5 — their history was never recorded as a
+    # stream, so reconstructing it would produce a guess dressed as a fact).
+    event_sourcing_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_EVENT_SOURCING_ENABLED"
+    )
+    # HxStatus (§8.8) — periodic health sampling. ON by default: the status
+    # page is worthless without a history, the cost is one tiny insert per
+    # component per interval, and pruning keeps the table bounded.
+    health_sampler_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_ENABLED"
+    )
+    health_sampler_interval_seconds: int = Field(
+        default=60, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_INTERVAL"
+    )
+    # Slightly longer than the 30d reporting window, so a 30-day figure is
+    # never computed from a partially-pruned history.
+    health_sampler_retention_days: int = Field(
+        default=35, validation_alias="VELARIS_CASE_HEALTH_SAMPLER_RETENTION_DAYS"
+    )
+    # Retention scheduler. TWO switches on purpose: the first only reports
+    # what would go, the second actually deletes. A single flag is easy to
+    # flip while skim-reading a config, and this one destroys customer data.
+    # There is deliberately no "enabled implies apply".
+    retention_scheduler_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_ENABLED"
+    )
+    retention_scheduler_apply: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_APPLY"
+    )
+    retention_scheduler_interval_seconds: int = Field(
+        default=86_400, validation_alias="VELARIS_CASE_RETENTION_SCHEDULER_INTERVAL"
+    )
+    # HxPrivacy (§8.10) — scheduled PII scan. ON by default for the same
+    # reason as the health sampler: an inventory nobody refreshes still looks
+    # authoritative. Daily, because forms are edited by people, not traffic;
+    # the scanner floors this at 1h so it cannot be turned into a load test.
+    pii_scanner_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_PII_SCANNER_ENABLED"
+    )
+    pii_scanner_interval_seconds: int = Field(
+        default=86_400, validation_alias="VELARIS_CASE_PII_SCANNER_INTERVAL"
+    )
+    # HxPrivacy — redact confirmed personal data from exports that LEAVE the
+    # tenant (billing, saved analytics reports). Deliberately NOT applied to
+    # the GDPR Article 15 export, whose entire purpose is to disclose that data
+    # to the subject it belongs to.
+    pii_redact_exports: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_PII_REDACT_EXPORTS"
+    )
+    # HxLedger (§8.4) — post captured payments and refunds into the books.
+    # ON by default, for the same reason the health sampler is: a ledger with
+    # no postings is worthless, and `/ledger/reconcile` reports every captured
+    # payment as a discrepancy until something keeps it. Purely additive — it
+    # writes new rows and changes no existing payment path.
+    ledger_posting_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_LEDGER_POSTING_ENABLED"
+    )
+    # Durable event log (§2.1) — fan-out of the transactional outbox onto
+    # Redpanda/Kafka so consumers other than webhooks can read the stream.
+    # OFF by default: the outbox is already safe on disk, so this adds
+    # distribution, not durability, and it should be a deliberate act.
+    event_bus_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_EVENT_BUS_ENABLED"
+    )
+    # 19092 is the EXTERNAL listener. The broker advertises `events:9092` on
+    # its internal listener, which a host-run case-service cannot resolve —
+    # it bootstraps and then fails DNS. Containers use events:9092.
+    event_bus_brokers: str = Field(
+        default="127.0.0.1:19092", validation_alias="VELARIS_CASE_EVENT_BUS_BROKERS"
+    )
+    event_bus_topic_prefix: str = Field(
+        default="velaris", validation_alias="VELARIS_CASE_EVENT_BUS_TOPIC_PREFIX"
+    )
+    # HxSandbox (#17) — execution of customer-authored WASM modules.
+    # OFF by default and deliberately so: turning this on lets a marketplace
+    # package's own compiled code run in-process (fuel/memory/wall-clock capped,
+    # no host imports). While off, `runtime: wasm` packages are refused at
+    # INSTALL, which is where roadmap #15 put the refusal — never at first run.
+    hxsandbox_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_HXSANDBOX_ENABLED"
+    )
+    # HxShield live detection. **Default off**, and the flag matters more than
+    # usual here: the engine has eight detection patterns that have never run
+    # against real traffic, because until 2026-08-24 nothing on a request path
+    # called it — `evaluate()` had a single caller, the explicit `POST
+    # /hxshield/score`. Turning eight untested rules on unattended across a
+    # fleet is how a quiet platform becomes an incident storm at 3am, so an
+    # operator switches it on, watches what fires, and then decides.
+    hxshield_detect_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_HXSHIELD_DETECT_ENABLED"
+    )
+    # RPA bot runner. **Default off**: this loop starts containers on the host,
+    # so it is an opt-in per deployment rather than a platform default. While
+    # off, definitions and jobs can still be created and reviewed — they simply
+    # queue, which is visible, instead of failing somewhere obscure.
+    bot_runner_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_BOT_RUNNER_ENABLED"
+    )
+    # Where a bot container reaches us to POST its result. It sits on the
+    # internal `velaris-apps` network, so this is the address of the ONE
+    # container bridging that network — NOT a public URL, and not derived from
+    # the request.
+    #
+    # It must name a container ATTACHED to `velaris-apps`, because docker's
+    # embedded DNS only resolves those. `velaris-gateway` is `network_mode:
+    # host` and therefore has no record there: pointing at it made every job
+    # time out with "the bot did not return", which is what a container has to
+    # be started to notice. `velaris-broker-gw` is dual-homed by design and
+    # allowlists exactly the result and progress paths.
+    bot_result_base_url: str = Field(
+        default="http://velaris-broker-gw",
+        validation_alias="VELARIS_CASE_BOT_RESULT_BASE_URL",
+    )
+    # The scheduler loop. **On by default**, unlike the bot runner: it writes
+    # rows and sends mail rather than starting containers, and what it can fire
+    # is bounded by the approval gate — with nothing approved, an enabled loop
+    # does nothing at all.
+    scheduler_enabled: bool = Field(
+        default=True, validation_alias="VELARIS_CASE_SCHEDULER_ENABLED"
+    )
+    # How many bot jobs this process may run at once. **This is the host-wide
+    # ceiling**: a worker only exists while it holds a job, so N workers is N
+    # containers, and the per-bot and per-tenant limits sit underneath it.
+    # Sizing: concurrency = (jobs x average runtime) / window. 1,000 two-minute
+    # jobs across an eight-hour night is ~5 concurrent; the same 1,000 at five
+    # minutes each is ~11. Multiply by the profile's memory to size the box.
+    # Default 2 — deliberately low, because the cost of raising it is visible
+    # (RAM) and the cost of a default that overcommits a small box is not.
+    bot_runner_workers: int = Field(
+        default=2, validation_alias="VELARIS_CASE_BOT_RUNNER_WORKERS")
+    # Memory ceiling for a `browser` bot. It needs its own, above the Layer-2
+    # default: a browser profile's tmpfs is sized 512m + 256m, and **tmpfs pages
+    # count against the container's own memory cgroup** — so a 512m limit means a
+    # bot that fills its scratch space OOM-kills itself, in a way that looks like
+    # a flaky website rather than a misconfiguration.
+    bot_browser_mem_limit: str = Field(
+        default="1536m", validation_alias="VELARIS_CASE_BOT_BROWSER_MEM_LIMIT")
+    # How long one scheduled action may take before it is abandoned. A
+    # scheduler runs actions one after another, so an action that never returns —
+    # a connector against a supplier's site that holds the connection open, a
+    # sync against an unreachable warehouse — would stall EVERY other schedule
+    # indefinitely, silently. The timeout is what keeps one bad night from
+    # stopping the timetable.
+    scheduler_action_timeout_seconds: int = Field(
+        default=300, validation_alias="VELARIS_CASE_SCHEDULER_ACTION_TIMEOUT"
+    )
+    # A tenant-wide ceiling on concurrent bot jobs. `max_concurrency` bounds one
+    # definition; without this, twenty definitions each at their own limit could
+    # fill the host between them — and a bot is a container, not a coroutine.
+    # A `bot_tenant_limits` row overrides this per tenant.
+    bot_tenant_max_concurrent: int = Field(
+        default=4, validation_alias="VELARIS_CASE_BOT_TENANT_MAX_CONCURRENT"
+    )
+    # Max concurrent sandbox workspaces per developer (raise based on available RAM/CPU).
+    marketplace_max_workspaces_per_user: int = 2
+    # URL of the official Velaris index file (sources.json) — override to self-host.
+    # Lives in the official/ folder of the Velaris-App-OS/Marketplace repo (write-
+    # protected; only the Velaris org can publish there).
+    marketplace_index_url: str = (
+        "https://raw.githubusercontent.com/Velaris-App-OS/Marketplace/main/official/sources.json"
+    )
+    # URL of the community index (community/ folder — fork + PR; anyone contributes).
+    # Seeded as a Community-tier source. Empty string disables community seeding.
+    marketplace_community_index_url: str = (
+        "https://raw.githubusercontent.com/Velaris-App-OS/Marketplace/main/community/sources.json"
+    )
+    # GitHub org (or orgs) whose source URLs are treated as Official tier.
+    # Comma-separated. Any source URL not matching these is always Community.
+    # GitHub org names (comma-separated) whose source URLs are Official.
+    # Just the org name — works for both github.com and raw.githubusercontent.com URLs.
+    # NOTE: org membership is necessary but NOT sufficient — a package is Official
+    # only if it is ALSO listed in case_service/marketplace/official_registry.json.
+    # (Official and Community share this org, split by folder, so the registry is
+    # the real disambiguator.)
+    marketplace_official_orgs: str = "velaris-app-os"
+    # Optional Velaris security report webhook — opt-in only, no customer data sent.
+    marketplace_report_webhook: str = ""
+    marketplace_report_webhook_secret: str = ""
+    # How often to poll community/private sources for new versions (hours).
+    marketplace_poll_interval_hours: int = 6
+    # How often to poll official Velaris sources (hours) — shorter because they are always up.
+    marketplace_official_poll_interval_hours: int = 1
+    # Sandbox workspace auto-expiry (days).
+    marketplace_workspace_expiry_days: int = 30
+    # >>> Marketplace Layer-2 (execution & trust model)
+    # Registries a Layer-2 image may be pulled from (comma-separated host
+    # prefixes). Empty = Layer-2 installs fail closed.
+    marketplace_l2_registries: str = Field(
+        default="docker.io,ghcr.io", validation_alias="VELARIS_CASE_MARKETPLACE_L2_REGISTRIES")
+    # Require a cosign signature on Layer-2 images (needs the cosign binary).
+    marketplace_l2_require_signature: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_MARKETPLACE_L2_REQUIRE_SIGNATURE")
+    # Resource caps for production app containers (sandbox caps stay in sandbox.py).
+    marketplace_l2_mem_limit: str = Field(
+        default="512m", validation_alias="VELARIS_CASE_MARKETPLACE_L2_MEM_LIMIT")
+    marketplace_l2_cpu_quota: int = Field(
+        default=50000, validation_alias="VELARIS_CASE_MARKETPLACE_L2_CPU_QUOTA")  # 50% of one core
+    # Egress host-filter: OFF = container domain grants refused fail-closed
+    # (pre-egress behavior); ON = granted domains reachable via the egress
+    # gateway only. Dir override points at a non-standard egress-gw folder.
+    marketplace_l2_egress_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_MARKETPLACE_L2_EGRESS")
+    marketplace_l2_egress_dir: str = Field(
+        default="", validation_alias="VELARIS_CASE_MARKETPLACE_L2_EGRESS_DIR")
+    # <<< Marketplace Layer-2
+    # AES key for encrypting source tokens and licence keys at rest (32-byte hex).
+    # Falls back to storage_master_key when empty.
+    # Generate: openssl rand -hex 32
+    marketplace_token_key: str = ""
+    # Days without a successful source sync before the admin alert fires.
+    marketplace_source_stale_days: int = 7
+    # <<< Marketplace
+
+    # HxDBManager Security is now version-gated via the Release Scheduler.
+    # Use is_feature_enabled("hxdbmanager_security", "v1.0.0") in code.
+    # <<< HxDBManager Security
+
+    # >>> Group I: thin webhook events + external audit anchoring
+    # Webhook payloads carry IDs + status only; consumers fetch fresh case
+    # variables via the API (which enforces auth). True embeds full variables
+    # in outbox rows — legacy consumers only.
+    webhook_full_payloads: bool = False
+    # RFC-3161 anchoring: a TSA signs the audit-chain tip daily, making the
+    # chain externally provable, not just internally tamper-evident.
+    audit_anchor_enabled: bool = True
+    audit_tsa_url: str = "https://freetsa.org/tsr"
+    audit_anchor_interval_hours: int = 24
+    # <<< Group I
+
+    # >>> Group J: WebAuthn / passkeys
+    # rp_id must be the registrable domain the app is served from; origin must
+    # match the browser's origin exactly or every ceremony fails verification.
+    webauthn_rp_id: str = "localhost"
+    webauthn_rp_name: str = "Velaris"
+    webauthn_origin: str = "http://localhost:5173"
+    # <<< Group J
+
+    # >>> HxCheckout (marketplace app `velaris/hxcheckout`)
+    # No `enabled` flag — availability is the marketplace install (the D2 gate,
+    # like HxTest); there is no bespoke on/off switch. New vars use the
+    # VELARIS_CASE_ alias prefix (the class default prefix stays VELARIS_CASE_).
+    checkout_default_currency: str = Field(
+        default="GBP", validation_alias="VELARIS_CASE_CHECKOUT_DEFAULT_CURRENCY")
+    # stripe → inline payment via the existing HxConnect Stripe connector;
+    # none → invoice / cash-on-collection (payment_url is null, order skips to fulfilment).
+    checkout_payment_provider: str = Field(
+        default="stripe", validation_alias="VELARIS_CASE_CHECKOUT_PAYMENT_PROVIDER")
+    # Auto-set to the seeded Order case_type id on first install; override to use a
+    # custom case type. Empty → resolve/seed the built-in Order template on demand.
+    checkout_order_case_type_id: str = Field(
+        default="", validation_alias="VELARIS_CASE_CHECKOUT_ORDER_CASE_TYPE_ID")
+    # Webhook HMAC: requests whose signed timestamp is older than this are rejected (replay guard).
+    checkout_hmac_clock_skew_seconds: int = Field(
+        default=300, validation_alias="VELARIS_CASE_CHECKOUT_HMAC_CLOCK_SKEW_SECONDS")
+    # Orders per minute per service token before auto-suspend (mass-order-spam guard).
+    checkout_token_rate_limit: int = Field(
+        default=100, validation_alias="VELARIS_CASE_CHECKOUT_TOKEN_RATE_LIMIT")
+    # Test-mode orders auto-purged after this many days (purge cron deferred post-v1).
+    checkout_test_order_purge_days: int = Field(
+        default=30, validation_alias="VELARIS_CASE_CHECKOUT_TEST_ORDER_PURGE_DAYS")
+    # <<< HxCheckout
+
+    # >>> HxStorefront (marketplace app `velaris/hxstorefront`)
+    # No `enabled` flag — availability is the marketplace install (D2 gate, like HxTest).
+    storefront_default_currency: str = Field(
+        default="GBP", validation_alias="VELARIS_CASE_STOREFRONT_DEFAULT_CURRENCY")
+    storefront_max_stores_per_tenant: int = Field(
+        default=5, validation_alias="VELARIS_CASE_STOREFRONT_MAX_STORES_PER_TENANT")
+    storefront_max_products_per_store: int = Field(
+        default=10000, validation_alias="VELARIS_CASE_STOREFRONT_MAX_PRODUCTS_PER_STORE")
+    storefront_max_images_per_product: int = Field(
+        default=20, validation_alias="VELARIS_CASE_STOREFRONT_MAX_IMAGES_PER_PRODUCT")
+    storefront_image_max_mb: int = Field(
+        default=10, validation_alias="VELARIS_CASE_STOREFRONT_IMAGE_MAX_MB")
+    storefront_cdn_url: str = Field(
+        default="", validation_alias="VELARIS_CASE_STOREFRONT_CDN_URL")
+    storefront_basket_abandonment_hours: int = Field(
+        default=24, validation_alias="VELARIS_CASE_STOREFRONT_BASKET_ABANDONMENT_HOURS")
+    # Custom domains + SSL provisioning are DEFERRED post-v1 (the doc's certbot flow).
+    storefront_custom_domains_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_STOREFRONT_CUSTOM_DOMAINS_ENABLED")
+    # <<< HxStorefront
+
+    @model_validator(mode="after")
+    def _fix_rsa_newlines(self) -> "Settings":
+        # .env files store \n as literal two-char sequence; convert to real newlines
+        if self.auth_rsa_private_key:
+            self.auth_rsa_private_key = self.auth_rsa_private_key.replace("\\n", "\n")
+        if self.auth_rsa_public_key:
+            self.auth_rsa_public_key = self.auth_rsa_public_key.replace("\\n", "\n")
+        return self
+
+    model_config = {"env_prefix": "VELARIS_CASE_", "env_file": ".env", "extra": "ignore"}
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

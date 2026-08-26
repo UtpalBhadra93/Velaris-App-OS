@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ConnectorRegistryModel,
     MarketplaceCapabilityGrantModel,
 )
@@ -196,7 +196,7 @@ async def _create_pending_container_grant(
     drift anchor: any new digest is new code and is always held for human
     re-approval, both tiers.
     """
-    from case_service.db.models import MarketplaceContainerModel
+    from velaris_shared.db.models import MarketplaceContainerModel
     from case_service.marketplace import runtime
 
     execution = manifest.get("execution") or {}
@@ -244,7 +244,7 @@ async def _create_pending_container_grant(
 
 
 async def _container_row(session: AsyncSession, grant: MarketplaceCapabilityGrantModel):
-    from case_service.db.models import MarketplaceContainerModel
+    from velaris_shared.db.models import MarketplaceContainerModel
     return (await session.execute(
         select(MarketplaceContainerModel).where(
             MarketplaceContainerModel.grant_id == grant.id)
@@ -731,8 +731,8 @@ async def log_marketplace_call(
     One retry: a transient lock (shared dev SQLite) must not lose audit rows."""
     import asyncio
 
-    from case_service.db.models import MarketplaceNetworkLogModel
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.models import MarketplaceNetworkLogModel
+    from velaris_shared.db.session import get_session_factory
     for attempt in (1, 2):
         try:
             factory = get_session_factory()

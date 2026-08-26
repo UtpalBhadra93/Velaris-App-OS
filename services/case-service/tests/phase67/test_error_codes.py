@@ -23,9 +23,9 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import ActiveAccessGroup, AuthenticatedUser
-from case_service.core import error_codes as ec
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import ActiveAccessGroup, AuthenticatedUser
+from velaris_shared.core import error_codes as ec
 from case_service.main import app
 
 DBM = "/api/v1/hxdbmanager"
@@ -224,7 +224,7 @@ class TestAiSplit:
         # The router imports this *inside* the handler, so the patch has to land
         # on the factory module — patching the router's namespace does nothing
         # and the test sails past the gate into the introspector.
-        monkeypatch.setattr("case_service.hxnexus.factory.check_ai_available",
+        monkeypatch.setattr("velaris_shared.llm.factory.check_ai_available",
                             _unavailable)
 
         r = await client.post(f"{DBM}/ai/sql", json={"question": "how many cases"})

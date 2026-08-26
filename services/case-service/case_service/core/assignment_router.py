@@ -17,10 +17,89 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.models import CaseAssignmentModel, UserDirectoryModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseAssignmentModel, UserDirectoryModel
 
 logger = logging.getLogger(__name__)
+
+#: How many candidates a load or turn-order query considers before the
+#: availability filter runs. Bounded because both queries are unbounded scans of
+#: the assignment table; deep enough that a whole team being away is what it
+#: takes to fall through to the role.
+_CANDIDATE_LIMIT = 50
+
+
+# ─── Availability (Calendar) ────────────────────────────────────
+#
+# Until Calendar existed, every strategy below picked people who were on
+# holiday: `business_calendars` describes the organisation, and nothing
+# described a person. These three helpers are the whole integration, and each
+# one **fails open** — an unanswerable calendar must never stop work being
+# assigned, because the failure mode of guessing "absent" is a queue that
+# silently fills up while everybody looks idle.
+
+
+async def _tenant_for(session: AsyncSession, context: dict[str, Any]) -> str:
+    """The tenant whose calendar applies, from the context or from the case."""
+    tenant = context.get("tenant_id")
+    if tenant:
+        return str(tenant)
+    case_id = context.get("case_id")
+    if case_id:
+        from velaris_shared.db.models import CaseInstanceModel
+
+        row = await session.get(CaseInstanceModel, case_id)
+        if row is not None and getattr(row, "tenant_id", None):
+            return str(row.tenant_id)
+    return "default"
+
+
+async def _available_only(
+    session: AsyncSession, user_ids: list[str], context: dict[str, Any],
+) -> list[str]:
+    """The candidates who are not on approved leave, in the order given.
+
+    **Leave only — never working hours.** An absence is an explicit fact
+    somebody approved; a working pattern is an assumption, and the platform
+    default (09:00–17:00, Mon–Fri) is one nobody chose. Filtering on hours here
+    would mean a case arriving at 22:00 is assigned to nobody, and every 24/7
+    deployment that never configured patterns would silently queue everything
+    overnight. Who *owns* the work is not the same question as who is at their
+    desk this minute.
+    """
+    if not user_ids:
+        return []
+    try:
+        from case_service.calendar import service as calendar
+
+        return await calendar.not_absent(
+            session, user_ids, tenant_id=await _tenant_for(session, context))
+    except Exception:                                    # pragma: no cover
+        logger.warning("availability filter unavailable; assigning as before",
+                       exc_info=True)
+        return list(user_ids)
+
+
+async def _cover_for(
+    session: AsyncSession, user_id: str, context: dict[str, Any],
+) -> str | None:
+    """Who covers for a named person who is away — `None` if nobody does.
+
+    Only used where the rule named **one** person. A named target is a decision
+    somebody made, so it is honoured unless that person is away AND has
+    nominated cover; silently spreading it across a team would be worse than a
+    late reply.
+    """
+    try:
+        from case_service.calendar import service as calendar
+
+        tenant = await _tenant_for(session, context)
+        if not await calendar.absent_at(session, user_id, tenant_id=tenant):
+            return None
+        return await calendar.delegate_for(session, user_id, tenant_id=tenant)
+    except Exception:                                    # pragma: no cover
+        logger.warning("cover lookup failed for %s", user_id, exc_info=True)
+        return None
 
 
 # ─── Strategy resolvers ───────────────────────────────────────────
@@ -29,8 +108,19 @@ logger = logging.getLogger(__name__)
 async def _resolve_specific_user(
     session: AsyncSession, rule: dict[str, Any], context: dict[str, Any]
 ) -> tuple[str, str]:
-    """Return (assignee_type, assignee_id) for SPECIFIC_USER."""
-    return "user", rule.get("target", "unassigned")
+    """Return (assignee_type, assignee_id) for SPECIFIC_USER.
+
+    If that person is away and has nominated cover, the cover gets it. With no
+    cover the assignment stands: a named target is somebody's decision, and
+    rerouting it to a queue would lose the reason it was named.
+    """
+    target = rule.get("target", "unassigned")
+    if target and target != "unassigned":
+        cover = await _cover_for(session, str(target), context)
+        if cover:
+            logger.info("specific_user: %s is away, assigning cover %s", target, cover)
+            return "user", cover
+    return "user", target
 
 
 async def _resolve_role_based(
@@ -56,8 +146,9 @@ async def _resolve_round_robin(
     and picks the one with the oldest ``assigned_at``.
     """
     role = rule.get("target", "default-role")
-    # Find all active assignments for this role, grouped by assignee,
-    # and pick the one whose latest assignment is oldest.
+    # Every candidate in turn-order rather than only the first: the person whose
+    # turn it is may be on holiday, and the point of round robin is the next
+    # person, not an empty desk.
     stmt = (
         select(
             CaseAssignmentModel.assignee_id,
@@ -69,12 +160,14 @@ async def _resolve_round_robin(
         )
         .group_by(CaseAssignmentModel.assignee_id)
         .order_by(func.max(CaseAssignmentModel.assigned_at).asc())
-        .limit(1)
+        .limit(_CANDIDATE_LIMIT)
     )
-    result = await session.execute(stmt)
-    row = result.first()
-    if row:
-        return "user", row.assignee_id
+    candidates = [r.assignee_id for r in (await session.execute(stmt)).all()]
+    if candidates:
+        free = await _available_only(session, candidates, context)
+        if free:
+            return "user", free[0]
+        logger.info("round_robin: everybody in turn-order is away, using role %s", role)
 
     # Fallback: nobody has been assigned yet → assign to role
     return "role", role
@@ -95,14 +188,18 @@ async def _resolve_least_loaded(
         )
         .group_by(CaseAssignmentModel.assignee_id)
         .order_by(func.count().asc())
-        .limit(1)
+        .limit(_CANDIDATE_LIMIT)
     )
-    result = await session.execute(stmt)
-    row = result.first()
-    if row:
-        return "user", row.assignee_id
-
+    # Lightest first, then the lightest who is actually in. Somebody on holiday
+    # has the lightest load of all, which is exactly why this needs the filter.
+    candidates = [r.assignee_id for r in (await session.execute(stmt)).all()]
     role = rule.get("target", "default-role")
+    if candidates:
+        free = await _available_only(session, candidates, context)
+        if free:
+            return "user", free[0]
+        logger.info("least_loaded: every candidate is away, using role %s", role)
+
     return "role", role
 
 
@@ -208,6 +305,13 @@ async def _resolve_manager_of(
         logger.info("manager_of: manager %s is inactive", manager_id)
         return "role", "manager"
 
+    # A manager on leave who nominated cover hands over to them; with no cover
+    # the escalation still reaches the manager, whose inbox is where it belongs.
+    cover = await _cover_for(session, str(manager_id), context)
+    if cover:
+        logger.info("manager_of: %s is away, assigning cover %s", manager_id, cover)
+        return "user", cover
+
     return "user", str(manager_id)
 
 
@@ -259,6 +363,14 @@ async def _resolve_skill_based(
     if not qualified:
         logger.info("skill_based: nobody holds %s, using queue %s", required, fallback)
         return "queue", fallback
+
+    # Holding the skill is not the same as being at work today.
+    present = await _available_only(session, qualified, context)
+    if not present:
+        logger.info("skill_based: everybody holding %s is away, using queue %s",
+                    required, fallback)
+        return "queue", fallback
+    qualified = present
 
     # Spread the work: pick whoever of the qualified holds the fewest active
     # assignments. Anyone with zero assignments has no row here, so they win by
@@ -347,7 +459,7 @@ async def _due_at_for_step(
         return None
 
     from case_service.core.sla_tracker import parse_iso8601_duration
-    from case_service.db.models import CaseInstanceModel, CaseTypeModel
+    from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
 
     ct_def = (
         await session.execute(
@@ -404,13 +516,18 @@ async def create_assignment_for_step(
     mode = cognitive_mode_for_step(step)
     if mode == "automatic":
         from sqlalchemy import select as _select
-        from case_service.db.models import CaseInstanceModel, CaseTypeModel
+        from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
         ct_def = (await session.execute(
             _select(CaseTypeModel.definition_json)
             .join(CaseInstanceModel, CaseInstanceModel.case_type_id == CaseTypeModel.id)
             .where(CaseInstanceModel.id == case_id)
         )).scalar_one_or_none()
         ai_enabled, threshold = decision_ai_config(ct_def)
+
+    # The calendar needs to know whose calendar to read, and the strategies
+    # reach it only through the context.
+    context = dict(context or {})
+    context.setdefault("case_id", case_id)
 
     outcome = await assignment_decision_point.resolve(
         session,

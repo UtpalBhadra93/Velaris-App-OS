@@ -13,8 +13,8 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
 from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials, mask_credentials
 from case_service.hxbridge.protocol import CONNECTOR_REGISTRY
 from case_service.main import app
@@ -49,7 +49,10 @@ class TestEncryption:
         creds = {"api_key": "sk-secret-123", "token": "bearer-abc"}
         stored = encrypt_credentials(creds)
         assert "_enc" in stored
-        assert stored["_enc"].startswith("hxv1:")
+        # hxv3 since 2026-08-24 — AES-256-GCM instead of the hand-rolled
+        # SHA-256 keystream. hxv1 is still READ (see
+        # phase_authz/test_credential_encryption.py) and never written.
+        assert stored["_enc"].startswith("hxv3:")
         recovered = decrypt_credentials(stored)
         assert recovered == creds
 

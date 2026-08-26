@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from case_service.hxcanvas import service
-from case_service.hxstream.emitter import emit_trace
+from velaris_shared.hxstream.emitter import emit_trace
 
 router = APIRouter(prefix="/hxcanvas", tags=["hxcanvas"])
 

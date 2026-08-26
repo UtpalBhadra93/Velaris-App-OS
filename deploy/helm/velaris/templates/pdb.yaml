@@ -1,0 +1,23 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- /*
+  One budget per workload. Deliberately opt-in: a PDB with minAvailable=1 on a
+  single-replica deployment makes `kubectl drain` block forever, which turns a
+  routine node upgrade into an outage. Enable it once replicas > 1.
+*/}}
+{{- range $svc := list "case-service" "engine" "worker" "analytics-service" "hxgraph-service" "hxmigrate-service" }}
+{{- $enabled := true }}
+{{- if and (eq $svc "worker") (hasKey $.Values "worker") }}{{ $enabled = $.Values.worker.enabled }}{{ end }}
+{{- if $enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "helix.fullname" $ }}-{{ $svc }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: {{ $svc }}
+{{- end }}
+{{- end }}
+{{- end }}

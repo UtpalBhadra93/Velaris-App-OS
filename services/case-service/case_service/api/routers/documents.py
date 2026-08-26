@@ -10,10 +10,10 @@ from fastapi import (
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard as _hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.core.error_codes import (
+from velaris_shared import hxguard as _hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.core.error_codes import (
     DOC_DELETE_403,
     DOC_FILETYPE_400,
     DOC_CASE_404,
@@ -24,8 +24,8 @@ from case_service.core.error_codes import (
     DOC_STORAGE_503,
     coded,
 )
-from case_service.db.models import CaseInstanceModel
-from case_service.db.session import get_session
+from velaris_shared.db.models import CaseInstanceModel
+from velaris_shared.db.session import get_session
 from case_service.documents import DocumentService, generate_preview
 from case_service.storage.backend import StorageError
 
@@ -58,7 +58,7 @@ async def _authorize_document_read(
     not read a document must not be able to confirm that the id exists.
     """
     from case_service.documents import access_tokens
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
 
     if access_tokens.verify(request.query_params.get("grant"), document_id):
         return
@@ -80,7 +80,7 @@ async def _optional_user(request: Request) -> AuthenticatedUser | None:
     Needed because these routes serve both an operator with a Bearer token and a
     portal customer with a grant; only after BOTH fail is the answer a refusal.
     """
-    from case_service.auth.dependencies import get_current_user as _gcu
+    from velaris_shared.auth.dependencies import get_current_user as _gcu
     from fastapi.security import HTTPAuthorizationCredentials
 
     header = request.headers.get("authorization") or ""
@@ -150,7 +150,7 @@ async def upload_document(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     await _hxguard.require_case(session, user, "case.update", case_id)
-    from case_service.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
+    from velaris_shared.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
     raw_name = file.filename or "unnamed"
     ok, reason = validate_upload_filename(raw_name, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
     if not ok:
@@ -202,7 +202,7 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
 ):
     await _authorize_document_read(session, request, document_id)
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
@@ -250,7 +250,7 @@ async def delete_document(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
@@ -276,7 +276,7 @@ async def upload_new_version(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
     _doc = await session.get(DocumentModel, document_id)
     if _doc is None or _doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
@@ -301,7 +301,7 @@ async def delete_document_version(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
@@ -363,7 +363,7 @@ async def set_portal_visibility(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Staff toggle — share or un-share a document with the customer portal."""
-    from case_service.db.models import DocumentModel
+    from velaris_shared.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
@@ -390,7 +390,7 @@ import io as _io
 import uuid as _uuid
 from datetime import date as _date
 
-from case_service.db.models import DocumentModel as _DocModel, DocumentVerificationModel as _DocVerif
+from velaris_shared.db.models import DocumentModel as _DocModel, DocumentVerificationModel as _DocVerif
 from sqlalchemy import select as _select
 
 

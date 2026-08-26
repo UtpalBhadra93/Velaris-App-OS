@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseEventLogModel,
     CaseInstanceVariableModel,
     DataLineageEventModel,
@@ -157,7 +157,7 @@ async def test_policy_default_rung_beats_monte_carlo(session):
 
 @pytest.mark.asyncio
 async def test_policy_alternative_rung_from_recorded_decision(client, session):
-    from case_service.db import repository as repo
+    from velaris_shared.db import repository as repo
     ct = await deploy_case_type(client, name=f"P3 CT {uuid.uuid4().hex[:6]}")
     case = await create_case(client, ct["id"])
     case_id, ct_id = uuid.UUID(case["id"]), uuid.UUID(ct["id"])

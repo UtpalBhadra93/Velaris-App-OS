@@ -20,7 +20,7 @@ async def hxtest_installed(session):
     tenant. HxTest is gated by being installed (D2) — no bespoke flag — so the
     endpoint tests below exercise the installed path. The default admin token
     carries no tenant, so the gate resolves to tenant "default"."""
-    from case_service.db.models import MarketplaceInstallModel
+    from velaris_shared.db.models import MarketplaceInstallModel
     session.add(MarketplaceInstallModel(
         tenant_id="default", package_id="velaris/hxtest",
         package_version="1.0.0", package_type="module", approved_by="test-admin"))
@@ -78,7 +78,7 @@ async def test_generate_endpoint_then_run(session, client, hxtest_installed):
     assert g.status_code == 200, g.text
     assert g.json()["structural"] == 1
     # fetch the generated suite and run it through the core runner
-    from case_service.db.models import TestSuiteModel
+    from velaris_shared.db.models import TestSuiteModel
     from sqlalchemy import select
     suite = (await session.execute(
         select(TestSuiteModel).where(TestSuiteModel.case_type_id == uuid.UUID(ct_id)))).scalar_one()
@@ -96,7 +96,7 @@ async def test_generate_scenarios_filters_invalid(monkeypatch):
             {"id": "good", "steps": [{"action": "api_get", "endpoint": "/health"}]},
             {"id": "bad", "steps": [{"action": "rm_rf", "endpoint": "/x"}]},  # invalid action
         ]}
-    monkeypatch.setattr("case_service.hxnexus.factory.generate_json", fake_generate_json)
+    monkeypatch.setattr("velaris_shared.llm.factory.generate_json", fake_generate_json)
     out = await generator.generate_scenarios({"stages": []}, case_type_name="X")
     assert [t["id"] for t in out] == ["good"]
     assert out[0]["generated_by"] == "hxnexus"
@@ -106,7 +106,7 @@ async def test_generate_scenarios_filters_invalid(monkeypatch):
 async def test_generate_scenarios_ai_unavailable(monkeypatch):
     async def none_generate_json(prompt, system="", **kw):
         return None
-    monkeypatch.setattr("case_service.hxnexus.factory.generate_json", none_generate_json)
+    monkeypatch.setattr("velaris_shared.llm.factory.generate_json", none_generate_json)
     assert await generator.generate_scenarios({"stages": []}) == []
 
 

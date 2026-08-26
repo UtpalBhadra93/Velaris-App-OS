@@ -220,7 +220,7 @@ class EventBusRelay:
 
     async def drain_once(self) -> int:
         """Publish one batch. Returns how many events were published."""
-        from case_service.db.models import OutboxEventModel
+        from velaris_shared.db.models import OutboxEventModel
 
         now = datetime.now(timezone.utc)
         stale = now - timedelta(seconds=_CLAIM_TTL)
@@ -289,7 +289,7 @@ async def backlog(session) -> dict[str, Any]:
     """How far behind the bus is — the number an operator actually wants."""
     from sqlalchemy import func
 
-    from case_service.db.models import OutboxEventModel
+    from velaris_shared.db.models import OutboxEventModel
 
     unpublished = (await session.execute(
         select(func.count()).where(OutboxEventModel.published_at.is_(None))

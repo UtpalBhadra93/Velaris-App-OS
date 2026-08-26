@@ -76,7 +76,7 @@ class PlatformUpdatePlanEngine:
         from case_service.api.routers.platform_updates import (
             _fetch_manifest, _read_json_file, _read_platform_config,
         )
-        from case_service.db.models import PlatformUpdatePlanModel
+        from velaris_shared.db.models import PlatformUpdatePlanModel
 
         cfg = _read_platform_config()
         manifest = await _fetch_manifest(cfg)
@@ -119,7 +119,7 @@ class PlatformUpdatePlanEngine:
     # ── 1. Auto-draft on local update success ─────────────────────────────────
 
     async def _auto_draft(self, session, cfg, _read_json_file) -> None:
-        from case_service.db.models import (
+        from velaris_shared.db.models import (
             EnvironmentRegistryModel, PlatformUpdatePlanModel,
             PlatformUpdateRunModel, PlatformUpdateSettingsModel,
         )
@@ -186,7 +186,7 @@ class PlatformUpdatePlanEngine:
     # ── 3/5. Ring advancement ─────────────────────────────────────────────────
 
     async def _advance_rings(self, session, plan, final: bool) -> None:
-        from case_service.db.models import EnvironmentRegistryModel, PlatformUpdateSettingsModel
+        from velaris_shared.db.models import EnvironmentRegistryModel, PlatformUpdateSettingsModel
 
         settings_row = await session.get(PlatformUpdateSettingsModel, 1)
         per_env = settings_row is not None and settings_row.mode == "per-env"
@@ -344,7 +344,7 @@ class PlatformUpdatePlanEngine:
             return False
 
     async def _runs(self, session, plan_id):
-        from case_service.db.models import PlatformUpdateRunModel
+        from velaris_shared.db.models import PlatformUpdateRunModel
         return (await session.execute(
             select(PlatformUpdateRunModel).where(PlatformUpdateRunModel.plan_id == plan_id)
         )).scalars().all()

@@ -16,8 +16,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import MCPActionProposalModel, _utcnow
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import MCPActionProposalModel, _utcnow
 
 
 def _summary(tool_name: str, args: dict) -> str:
@@ -29,7 +29,7 @@ async def create_proposal(
     session: AsyncSession, user: AuthenticatedUser, tool_name: str, args: dict,
 ) -> dict:
     """Record a pending proposal and return the confirmation envelope."""
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     case_id = None
     raw = args.get("case_id")

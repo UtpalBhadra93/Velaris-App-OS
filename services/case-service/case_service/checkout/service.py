@@ -23,10 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.checkout import case_type as ct_svc
 from case_service.checkout import notifications as notify_svc
-from case_service.config import get_settings
+from velaris_shared.config import get_settings
 from case_service.core import case_lifecycle
-from case_service.db import repository as repo
-from case_service.db.models import CheckoutOrderItemModel, CheckoutOrderModel, PaymentRequestModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CheckoutOrderItemModel, CheckoutOrderModel, PaymentRequestModel
 from case_service.payments import service as payment_svc
 
 logger = logging.getLogger(__name__)

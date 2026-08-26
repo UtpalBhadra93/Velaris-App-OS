@@ -20,9 +20,9 @@ from case_service.api.schemas.forms import (
     FormSubmission,
     FormSubmissionResponse,
 )
-from case_service.db import repository as repo
-from case_service.auth.dependencies import get_current_user
-from case_service.db.session import get_session
+from velaris_shared.db import repository as repo
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db.session import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,20 @@ def _validate_form_values(
                 errors.append(f"'{field_def.get('label', key)}' must be one of {options}")
 
     return errors
+
+
+def _values_fingerprint(values: dict | None) -> str:
+    """Stable hash of submitted form values — the replay signal without the data.
+
+    Sorted keys so the same answers hash the same regardless of field order,
+    and `default=str` so a date or Decimal cannot raise inside a producer that
+    must never break a submission.
+    """
+    import hashlib
+    import json as _json
+
+    canonical = _json.dumps(values or {}, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 @router.post(
@@ -184,6 +198,36 @@ async def submit_form(
                     case.process_instance_id,
                     e,
                 )
+
+    # HxShield producer (roadmap #25). `replay_attack` matches on `form_submit`
+    # and nothing had ever written it. The pattern hashes the payload to spot a
+    # resubmitted form, so the values go into `details` — that hash is the whole
+    # signal, and without it the rule has nothing to compare.
+    try:
+        from velaris_shared.db.security_events import log_security_event
+        await log_security_event(
+            session, event_type="form_submit", severity="info",
+            user_id=getattr(assignment, "assignee_id", None),
+            resource_type="form", resource_id=str(assignment_id),
+            action="submit", outcome="success",
+            ip_address=request.client.host if request.client else None,
+            # A FINGERPRINT of the payload, never the payload.
+            #
+            # `replay_attack` needs to know whether the same form came back, and
+            # a hash answers that exactly as well as the values do. Copying the
+            # values would put submitted form fields — a customer's answers,
+            # which is where personal data lives — into `security_events.details`
+            # and from there into `shield_events.raw_context`. Neither is a place
+            # HxPrivacy classifies or an erasure request reaches: retention
+            # deletes security events by AGE only, and touches `shield_events`
+            # not at all. A detection signal must not become an uncontrolled
+            # second copy of case data.
+            details={"case_id": str(case.id) if case else None,
+                     "values_sha256": _values_fingerprint(body.values),
+                     "field_count": len(body.values or {})},
+        )
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("form_submit security event not recorded: %s", _e)
 
     return FormSubmissionResponse(
         assignment_id=assignment_id,

@@ -17,7 +17,7 @@ from tests.phase_hxmcp.test_p2_writes import REQUIRES_CONCURRENT_WRITERS
 
 @pytest.fixture
 def _stateful_on(monkeypatch):
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     monkeypatch.setattr(get_settings(), "mcp_stateful_enabled", True)
     return get_settings()
 
@@ -42,7 +42,7 @@ class TestStatefulProfile:
 
     async def test_stateful_independent_of_writes_flag(self, client, _stateful_on, monkeypatch):
         # stateful on, P2 writes OFF: stateful tools show, P2 writes don't
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_writes_enabled", False)
         listed = {t["name"] for t in
                   (await client.post(MCP, json=rpc("tools/list"))).json()["result"]["tools"]}
@@ -115,7 +115,7 @@ class TestProposalFlow:
 class TestProposalTenantScoping:
     async def _seed(self, session, tenant: str | None) -> uuid.UUID:
         from datetime import timedelta
-        from case_service.db.models import MCPActionProposalModel, _utcnow
+        from velaris_shared.db.models import MCPActionProposalModel, _utcnow
         row = MCPActionProposalModel(
             user_id=str(uuid.uuid4()), tenant_id=tenant,
             tool_name="case_set_status",
@@ -152,7 +152,7 @@ class TestProposalTenantScoping:
 
 class TestConfirmAuthz:
     async def test_confirmer_without_case_rights_cannot_execute(self, client, _stateful_on):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         get_settings().hxguard_case_enforcement = "enforce"
         try:
             ct = await deploy_case_type(client, name="MCP P3 Authz CT")
@@ -176,7 +176,7 @@ class TestConfirmAuthz:
 class TestNoConfirm:
     @REQUIRES_CONCURRENT_WRITERS
     async def test_stateful_executes_immediately_when_confirm_off(self, client, _stateful_on, monkeypatch):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "mcp_confirm_stateful", False)
         ct = await deploy_case_type(client, name="MCP P3 NoConfirm CT")
         case = await create_case(client, ct["id"])

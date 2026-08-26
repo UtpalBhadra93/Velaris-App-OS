@@ -18,8 +18,8 @@ import uuid
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.config import get_settings
-from case_service.db.models import CaseSessionModel, TenantModel
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import CaseSessionModel, TenantModel
 from tests.conftest import create_case, deploy_case_type
 
 MEET = "/api/v1/meet"
@@ -157,7 +157,7 @@ class TestChallengeScript:
         await _enable_kyc(session)
         row = await _kyc_session(client, session)
         await client.post(f"{MEET}/sessions/{row.id}/challenges", json={})
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         audit = (await session.execute(
             select(CaseAuditLogModel)
             .where(CaseAuditLogModel.action == "kyc_challenges_issued")
@@ -212,7 +212,7 @@ class TestChallengeResults:
         await client.post(
             f"{MEET}/sessions/{row.id}/challenges/{challenges[0]['id']}/result",
             json={"result": "failed"})
-        from case_service.db.models import CaseAuditLogModel
+        from velaris_shared.db.models import CaseAuditLogModel
         audit = (await session.execute(
             select(CaseAuditLogModel)
             .where(CaseAuditLogModel.action == "kyc_challenge_result")
@@ -225,7 +225,7 @@ class TestKycAuthorization:
     async def test_kyc_run_registered_with_hxguard(self, client, session, kyc_cfg):
         """Enforce mode: meet.kyc.run must be registered; an unrelated user
         gets the 404 anti-oracle, the case owner still passes."""
-        from case_service.auth.jwt_handler import create_dev_token
+        from velaris_shared.auth.jwt_handler import create_dev_token
         await _enable_kyc(session)
         row = await _kyc_session(client, session)
         s = get_settings()

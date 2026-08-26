@@ -1,0 +1,3 @@
+# Written by stop-velaris-k8s.sh to remember replica counts across a stop.
+# Local runtime state, never a distribution artifact.
+.stopped-scale.*

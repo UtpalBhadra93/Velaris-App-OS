@@ -127,7 +127,7 @@ class TestWasmTransform:
 class TestInstallGate:
     async def test_wasm_install_refused_while_sandbox_disabled(self, client):
         """Default posture: HxSandbox off, so wasm packages cannot be installed."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         assert get_settings().hxsandbox_enabled is False
 

@@ -27,15 +27,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     AccessGroupModel,
     HelixUserModel,
     IdentityGroupMappingModel,
     IdentityProvisionLogModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.identity import provisioning
 from case_service.identity.provisioning import SOURCES
 from case_service.tenancy.identity import resolve_tenant
@@ -141,7 +141,7 @@ async def create_group_mapping(
     await session.commit()
     await session.refresh(row)
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="identity_group_mapping_created", severity="high",
         user_id=user.user_id, resource_type="identity_group_mapping",
@@ -172,7 +172,7 @@ async def delete_group_mapping(
         await session.delete(row)
         await session.commit()
 
-        from case_service.enterprise.security_events import log_security_event
+        from velaris_shared.db.security_events import log_security_event
         await log_security_event(
             session, event_type="identity_group_mapping_deleted", severity="medium",
             user_id=user.user_id, resource_type="identity_group_mapping",
@@ -288,7 +288,7 @@ async def link_account(
                      f"'{result.detail.get('held_by')}'.")
         raise HTTPException(400, "The account could not be linked.")
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="identity_account_linked", severity="high",
         user_id=user.user_id, resource_type="velaris_user",
@@ -328,7 +328,7 @@ async def unlink_account(
             raise HTTPException(403, "That account cannot be linked to a directory.")
         raise HTTPException(400, "The account could not be unlinked.")
 
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     await log_security_event(
         session, event_type="identity_account_unlinked", severity="medium",
         user_id=user.user_id, resource_type="velaris_user",

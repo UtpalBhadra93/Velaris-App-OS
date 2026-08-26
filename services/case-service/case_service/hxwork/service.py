@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
     HxWorkBoardModel,
@@ -300,7 +300,7 @@ async def ask_nexus(board_id: uuid.UUID, question: str, analytics: dict) -> str:
         f"Give a concise, actionable answer in 2-4 sentences."
     )
     try:
-        from case_service.hxnexus.factory import generate_json
+        from velaris_shared.llm.factory import generate_json
         result = await generate_json(prompt, system="You are an Agile project management AI assistant.")
         if result and "answer" in result:
             return result["answer"]

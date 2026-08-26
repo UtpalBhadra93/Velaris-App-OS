@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AppPackageModel,
     AccessGroupModel,
     BusinessCalendarModel,

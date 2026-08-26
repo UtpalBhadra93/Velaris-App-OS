@@ -42,7 +42,9 @@ const S: Record<string, React.CSSProperties> = {
   body:   { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)" },
   tabBar: { display: "flex", gap: 2, borderBottom: "1px solid var(--border-subtle)", marginBottom: "var(--space-lg)" },
   tab:    { padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)", textTransform: "uppercase" as const, letterSpacing: "0.04em", border: "none", cursor: "pointer", color: "var(--text-muted)", background: "transparent", borderBottom: "2px solid transparent", marginBottom: -1 },
-  tabA:   { color: "var(--accent)", borderBottomColor: "var(--accent)" },
+  tabA:   { color: "var(--accent)", borderBottom: "2px solid var(--accent)" },  // full shorthand, not borderBottomColor: React warns when a rerender
+          // mixes the two for one value, and the warning is right — the
+          // shorthand below would win on a rerender.
   card:   { background: "var(--bg-card)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-md)", padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
   label:  { fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4, display: "block" },
   value:  { fontSize: 13, color: "var(--text-primary)", marginBottom: 12 },
@@ -363,6 +365,8 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
   const [caseTypes, setCaseTypes]   = useState<any[]>([]);
   const [forms, setForms]           = useState<any[]>([]);
   const [connectors, setConnectors] = useState<any[]>([]);
+  const [bots, setBots]             = useState<any[]>([]);
+  const [schedules, setSchedules]   = useState<any[]>([]);
   const [toEnv, setToEnv]           = useState("");
   const [fromEnv, setFromEnv]       = useState("");
   const [notes, setNotes]           = useState("");
@@ -370,11 +374,13 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
   const [selCTs, setSelCTs]         = useState<string[]>([]);
   const [selForms, setSelForms]     = useState<string[]>([]);
   const [selConns, setSelConns]     = useState<string[]>([]);
-  const [inclSLA, setInclSLA]       = useState(true);
+  const [selBots, setSelBots]       = useState<string[]>([]);
+  const [selScheds, setSelScheds]   = useState<string[]>([]);
   const [inclRules, setInclRules]   = useState(true);
   const [assignUserId, setAssignUserId] = useState("");
   const [showRaw, setShowRaw]       = useState(false);
-  const [rawJson, setRawJson]       = useState('{"case_types":[],"forms":[],"connectors":[],"include_sla":true,"include_rules":true,"version":"1.0.0"}');
+  const [rawJson, setRawJson]       = useState('{"case_types":[],"forms":[],"connectors":[],"bots":[],"schedules":[],"include_rules":true,"version":"1.0.0"}');
+  const [sealed, setSealed]         = useState<{ name: string; version: string; checksum: string } | null>(null);
   const [risk, setRisk]             = useState<any | null>(null);
   const [loading, setLoading]       = useState(false);
   const [bundlePreview, setBundlePreview] = useState<any | null>(null);
@@ -402,6 +408,14 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
       .then(r => r.ok ? r.json() : [])
       .then((d: any) => setConnectors(Array.isArray(d) ? d : []))
       .catch(() => {});
+    fetch("/api/v1/bots", { headers: authHdr() })
+      .then(r => r.ok ? r.json() : [])
+      .then((d: any) => setBots(Array.isArray(d) ? d : (d.items ?? d.bots ?? [])))
+      .catch(() => {});
+    fetch("/api/v1/scheduler/schedules", { headers: authHdr() })
+      .then(r => r.ok ? r.json() : [])
+      .then((d: any) => setSchedules(Array.isArray(d) ? d : (d.items ?? d.schedules ?? [])))
+      .catch(() => {});
     fetch("/api/v1/user-directory?limit=200", { headers: authHdr() })
       .then(r => r.ok ? r.json() : [])
       .then((d: any) => setUsers(Array.isArray(d) ? d : []))
@@ -413,7 +427,8 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
 
   const buildManifest = () => {
     if (showRaw) { try { return JSON.parse(rawJson); } catch { return {}; } }
-    return { case_types: selCTs, forms: selForms, connectors: selConns, include_sla: inclSLA, include_rules: inclRules, version };
+    return { case_types: selCTs, forms: selForms, connectors: selConns,
+             bots: selBots, schedules: selScheds, include_rules: inclRules, version };
   };
   const syncRaw = () => setRawJson(JSON.stringify(buildManifest(), null, 2));
 
@@ -445,6 +460,13 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
       if (r.ok) {
         const run = await r.json();
         const assignMsg = assignUserId ? ` Assigned to ${body.assign_to_name} for approval.` : " Go to Deployment Runs to approve.";
+        // The selection was resolved into a package and sealed. Showing its
+        // checksum is the point of sealing: this run ships these bytes and no
+        // later edit in dev can change what the approver is approving.
+        if (run.package_id) {
+          const p = await apiFetch(`/packages/${run.package_id}`);
+          if (p.ok) { const pkg = await p.json(); setSealed({ name: pkg.name, version: pkg.version, checksum: pkg.checksum }); }
+        }
         setMsg({ text: `Queued — awaiting approval (risk: ${run.risk_level}).${assignMsg}`, ok: true });
         onDone();
       } else {
@@ -456,7 +478,7 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
   };
 
   const rc = risk ? (RISK_COLOR[risk.risk_level] ?? "#94a3b8") : null;
-  const totalSel = selCTs.length + selForms.length + selConns.length;
+  const totalSel = selCTs.length + selForms.length + selConns.length + selBots.length + selScheds.length;
 
   return (
     <div style={{ maxWidth: 800 }}>
@@ -539,16 +561,45 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
                 <span style={S.label}>Additional Artifacts</span>
                 <div style={{ padding: "8px 10px", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", background: "var(--bg-input)", display: "flex", flexDirection: "column" as const, gap: 8 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-                    <input type="checkbox" checked={inclSLA} onChange={e => setInclSLA(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
-                    <span style={{ color: "var(--text-primary)" }}>SLA Policies</span>
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
                     <input type="checkbox" checked={inclRules} onChange={e => setInclRules(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
                     <span style={{ color: "var(--text-primary)" }}>Business Rules</span>
                   </label>
+                  {/* SLA policies live inside a case type's definition, so they
+                      travel with it. The checkbox that used to sit here filtered
+                      nothing, which is worse than not offering the choice. */}
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    SLA policies travel inside their case type.
+                  </div>
                 </div>
               </div>
             </div>
+
+            <div style={S.grid2}>
+              <div>
+                <span style={S.label}>Bots</span>
+                <MultiSelectDropdown
+                  label="Bots"
+                  items={bots.map((b: any) => ({ id: b.id, name: `${b.name}${b.status && b.status !== "active" ? ` (${b.status})` : ""}` }))}
+                  selected={selBots} onToggle={toggle(setSelBots)}
+                  emptyMsg="No bots — all included" />
+              </div>
+              <div>
+                <span style={S.label}>Schedules</span>
+                <MultiSelectDropdown
+                  label="Schedules"
+                  items={schedules.map((sc: any) => ({ id: sc.id, name: `${sc.name} (${sc.cron})` }))}
+                  selected={selScheds} onToggle={toggle(setSelScheds)}
+                  emptyMsg="No schedules — all included" />
+              </div>
+            </div>
+
+            {(selBots.length > 0 || selScheds.length > 0) && (
+              <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 4, background: "var(--accent-dim)", border: "1px solid var(--accent)", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                Bots and schedules arrive as <b>drafts</b>. Nothing runs in the target
+                until somebody there approves it, and bot credentials never travel —
+                they are listed for the target admin to re-enter.
+              </div>
+            )}
           </div>
         )}
 
@@ -587,6 +638,19 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
         )}
 
         {msg && <div style={{ fontSize: 12, padding: "8px 12px", borderRadius: 4, marginBottom: 12, background: msg.ok ? "#22c55e22" : "#ef444422", color: msg.ok ? "#22c55e" : "#ef4444" }}>{msg.text}</div>}
+
+        {sealed && (
+          <div style={{ ...S.card, marginBottom: 12, background: "#22c55e11", border: "1px solid #22c55e44" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#22c55e", marginBottom: 6 }}>🔒 Sealed — {sealed.name} v{sealed.version}</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
+              This run ships these exact bytes. Editing anything in dev from now on does
+              not change what the approver approves.
+            </div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", marginTop: 6, wordBreak: "break-all" as const }}>
+              sha256:{sealed.checksum}
+            </div>
+          </div>
+        )}
 
         {bundlePreview && (
           <div style={{ ...S.card, marginBottom: 12, background: "#6366f111", border: "1px solid #6366f144" }}>
@@ -639,10 +703,14 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
             // Use delta bundle if env is selected (only include changed artifacts since last push)
             const selectedEnv = envs.find((e: any) => e.id === toEnv);
             let r;
+            // Preview through the SAME manifest the promotion will resolve, so
+            // what is shown here is what the package would ship. It used to send
+            // case types alone, which made the preview wider than the package.
+            const previewBody = JSON.stringify({ manifest: buildManifest() });
             if (toEnv && selectedEnv?.last_deployed_at) {
-              r = await apiFetch(`/package/delta?env_id=${toEnv}`, { method: "POST", body: JSON.stringify({ case_type_ids: selCTs.length ? selCTs : null }) });
+              r = await apiFetch(`/package/delta?env_id=${toEnv}`, { method: "POST", body: previewBody });
             } else {
-              r = await apiFetch("/package", { method: "POST", body: JSON.stringify({ case_type_ids: selCTs.length ? selCTs : null }) });
+              r = await apiFetch("/package", { method: "POST", body: previewBody });
             }
             if (r.ok) setBundlePreview(await r.json());
             setLoadingBundle(false);
@@ -963,6 +1031,23 @@ function RunsTab({ activeEnv }: { activeEnv: string }) {
                 </div>
               )}
 
+              {/* What this run ships, and the seal it was approved against. A run
+                  used to name no payload at all — the bundle was rebuilt from
+                  live dev at execute time. */}
+              {selected.package_id && (
+                <div style={{ marginBottom: 10, padding: 10, background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Package</div>
+                  <div style={{ fontSize: 12, color: "var(--text-primary)" }}>
+                    {selected.risk_summary?.push_result?.package ?? selected.package_id}
+                  </div>
+                  {selected.package_checksum && (
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)", marginTop: 4, wordBreak: "break-all" as const }}>
+                      approved against sha256:{selected.package_checksum}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {selected.status === "deployed" && (
                 <Button size="sm" variant="secondary" onClick={() => healthCheck(selected.id)}>Health Check</Button>
               )}
@@ -1241,6 +1326,142 @@ function WindowsTab({ activeEnv }: { activeEnv: string }) {
 
 // ── Packages Tab (from App Registry) ─────────────────────────────────────────
 
+// ── Promotion packages ────────────────────────────────────────────────────────
+//
+// Distinct from the App Snapshots tab below, which is the app registry. A
+// promotion package is the frozen artifact a deployment run ships: built from a
+// selection, sealed, and pushed as those exact bytes.
+
+type DeployPkg = {
+  id: string; name: string; version: string; description: string;
+  status: string; checksum: string | null; summary: Record<string, any>;
+  selection: Record<string, any>; created_by: string; created_at: string;
+  sealed_by: string | null; sealed_at: string | null;
+};
+
+function PromotionPackagesTab() {
+  const [pkgs, setPkgs]       = useState<DeployPkg[]>([]);
+  const [sel, setSel]         = useState<DeployPkg | null>(null);
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState<string | null>(null);
+  const [form, setForm]       = useState({ name: "", version: "", description: "" });
+  const [creating, setCreating] = useState(false);
+
+  const load = useCallback(async () => {
+    const r = await apiFetch("/packages");
+    if (r.ok) setPkgs(await r.json());
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const act = async (path: string, method = "POST") => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiFetch(path, { method });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); setErr(b?.detail || `Failed (${r.status})`); return null; }
+      await load();
+      return r.status === 204 ? {} : await r.json();
+    } finally { setBusy(false); }
+  };
+
+  const create = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await apiFetch("/packages", { method: "POST", body: JSON.stringify(form) });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); setErr(b?.detail || "Failed"); return; }
+      setForm({ name: "", version: "", description: "" });
+      setCreating(false);
+      await load();
+    } finally { setBusy(false); }
+  };
+
+  const counts = (p: DeployPkg) =>
+    Object.entries(p.summary || {})
+      .filter(([k, v]) => typeof v === "number" && v > 0 && k !== "needs_configuration")
+      .map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`);
+
+  return (
+    <div>
+      <div style={{ ...S.card, background: "var(--accent-dim)", border: "1px solid var(--accent)", marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+          A package is built once from a selection and then <b>sealed</b>. A sealed package
+          cannot be edited or deleted — a change is a new version — and the run that ships it
+          records its checksum, so what the approver approved is what the target receives.
+        </div>
+      </div>
+
+      {err && <div style={{ fontSize: 12, padding: "8px 12px", borderRadius: 4, marginBottom: 12, background: "#ef444422", color: "#ef4444" }}>{err}</div>}
+
+      {creating ? (
+        <div style={S.card}>
+          <span style={S.label}>Name</span>
+          <input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="release" />
+          <span style={S.label}>Version</span>
+          <input style={S.input} value={form.version} onChange={e => setForm(f => ({ ...f, version: e.target.value }))} placeholder="1.0.0" />
+          <span style={S.label}>Description</span>
+          <input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="What is in this release?" />
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
+            Built with no selection, so it holds the whole environment. Use the Promote tab to
+            build a narrower one.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button size="sm" disabled={busy || !form.name || !form.version} onClick={create}>Build draft</Button>
+            <Button size="sm" variant="secondary" onClick={() => setCreating(false)}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <Button size="sm" onClick={() => setCreating(true)}>New package</Button>
+      )}
+
+      <div style={{ marginTop: 14 }}>
+        {pkgs.length === 0 && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No packages yet.</div>}
+        {pkgs.map(p => (
+          <div key={p.id} style={{ ...S.card, cursor: "pointer" }} onClick={() => setSel(sel?.id === p.id ? null : p)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>{p.name} v{p.version}</span>
+                <span style={{ ...S.badge, marginLeft: 10, background: p.status === "sealed" ? "#22c55e22" : "#f59e0b22", color: p.status === "sealed" ? "#22c55e" : "#f59e0b" }}>
+                  {p.status === "sealed" ? "🔒 sealed" : "draft"}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{p.created_by}</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+              {counts(p).join(" · ") || "empty"}
+            </div>
+            {p.checksum && (
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)", marginTop: 4, wordBreak: "break-all" as const }}>
+                sha256:{p.checksum}
+              </div>
+            )}
+            {sel?.id === p.id && (
+              <div style={{ marginTop: 10, display: "flex", gap: 8 }} onClick={e => e.stopPropagation()}>
+                {p.status === "draft" && (
+                  <>
+                    <Button size="sm" disabled={busy} onClick={() => act(`/packages/${p.id}/seal`)}>Seal</Button>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => act(`/packages/${p.id}/rebuild`)}>Rebuild</Button>
+                    <Button size="sm" variant="danger" disabled={busy} onClick={() => act(`/packages/${p.id}`, "DELETE")}>Discard</Button>
+                  </>
+                )}
+                {/* Fetched, not opened: a new tab carries no Authorization
+                    header, so the old link answered 401 every time. */}
+                <Button size="sm" variant="secondary" onClick={async () => {
+                  const r = await apiFetch(`/packages/${p.id}/bundle`);
+                  if (!r.ok) { setErr(`Could not read the bundle (${r.status})`); return; }
+                  const blob = new Blob([JSON.stringify(await r.json(), null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  window.open(url, "_blank");
+                  setTimeout(() => URL.revokeObjectURL(url), 30000);
+                }}>View bundle</Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 const APPS_API = "/api/v1/apps";
 
 type Pkg = {
@@ -1516,15 +1737,18 @@ function DiffTab() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-type Tab = "environments" | "promote" | "runs" | "windows" | "packages" | "diff";
+type Tab = "environments" | "promote" | "runs" | "windows" | "deploy-packages" | "packages" | "diff";
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: "environments", label: "Environments" },
-  { key: "promote",      label: "Promote" },
-  { key: "runs",         label: "Deployment Runs" },
-  { key: "windows",      label: "Change Windows" },
-  { key: "packages",     label: "Packages" },
-  { key: "diff",         label: "Diff" },
+  { key: "environments",    label: "Environments" },
+  { key: "promote",         label: "Promote" },
+  { key: "runs",            label: "Deployment Runs" },
+  { key: "windows",         label: "Change Windows" },
+  { key: "deploy-packages", label: "Promotion Packages" },
+  // The app registry, not the promotion pipeline. Two things called "packages"
+  // in one screen is how the wrong one gets clicked.
+  { key: "packages",        label: "App Snapshots" },
+  { key: "diff",            label: "Diff" },
 ];
 
 export default function HxDeploy() {
@@ -1582,6 +1806,7 @@ export default function HxDeploy() {
         {tab === "promote"      && <PromoteTab onDone={() => setTab("runs")} activeEnv={activeEnv} />}
         {tab === "runs"         && <RunsTab activeEnv={activeEnv} />}
         {tab === "windows"      && <WindowsTab activeEnv={activeEnv} />}
+        {tab === "deploy-packages" && <PromotionPackagesTab />}
         {tab === "packages"     && <PackagesTab />}
         {tab === "diff"         && <DiffTab />}
       </div>

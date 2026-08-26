@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     BotCredentialLeaseModel,
     BotCredentialModel,
     BotJobModel,

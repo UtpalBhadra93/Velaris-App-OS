@@ -23,18 +23,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard, hxvault
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from case_service import hxvault
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     CaseInstanceModel,
     HxDBMigrateAnalysisModel,
     HxDBMigrateMigrationRunModel,
     HxDBMigrateRowLinkModel,
     HxDBMigrateSourceModel,
 )
-from case_service.db.session import get_session
-from case_service.db import repository as repo
+from velaris_shared.db.session import get_session
+from velaris_shared.db import repository as repo
 from case_service.hxbridge.encryption import decrypt_credentials, encrypt_credentials
 from case_service.hxdbmigrate import (casegen, certificate as cert_mod,
                                       migrate as migrate_mod, report,
@@ -113,8 +114,8 @@ async def _bg_graph_sync() -> None:
     """Re-sync HxGraph after a migration milestone (non-fatal, own connection)."""
     try:
         from sqlalchemy.ext.asyncio import AsyncSession as _S, async_sessionmaker
-        from case_service.db.session import get_engine
-        from case_service.hxgraph.sync import sync_graph
+        from velaris_shared.db.session import get_engine
+        from velaris_shared.hxgraph.sync import sync_graph
         async with async_sessionmaker(get_engine(), class_=_S,
                                       expire_on_commit=False)() as s:
             await sync_graph(s)

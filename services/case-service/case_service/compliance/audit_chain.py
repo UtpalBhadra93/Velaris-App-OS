@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # Held for the duration of the sealing transaction; auto-released on commit/rollback.
 _SEAL_LOCK_KEY = int.from_bytes(b"HELIXCHA", "big")
 
-from case_service.db.models import AuditChainModel, CaseAuditLogModel
+from velaris_shared.db.models import AuditChainModel, CaseAuditLogModel
 
 log = logging.getLogger(__name__)
 GENESIS_HASH = "0" * 64

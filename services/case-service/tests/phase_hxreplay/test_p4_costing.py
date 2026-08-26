@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.costing import service as C
-from case_service.db.models import CaseEventLogModel, RateCardModel
+from velaris_shared.db.models import CaseEventLogModel, RateCardModel
 from tests.conftest import create_case, deploy_case_type
 
 _T0 = datetime(2026, 6, 1, 9, 0, 0, tzinfo=timezone.utc)
@@ -116,7 +116,7 @@ _CANDIDATE = {"rules": [{
 
 @pytest.mark.asyncio
 async def test_replay_summary_gains_cost_block_with_rate_card(client, session):
-    from case_service.db.models import CaseInstanceVariableModel, DataLineageEventModel
+    from velaris_shared.db.models import CaseInstanceVariableModel, DataLineageEventModel
     ct = await deploy_case_type(client, name=f"CostRep CT {uuid.uuid4().hex[:6]}")
     case = await create_case(client, ct["id"])
     cid, ctid = uuid.UUID(case["id"]), uuid.UUID(ct["id"])

@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.session import get_session
 from case_service.comms import service
 
 router = APIRouter(prefix="/comms", tags=["comms"])
@@ -138,7 +138,7 @@ async def list_comms_connectors(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import ConnectorRegistryModel
+    from velaris_shared.db.models import ConnectorRegistryModel
     rows = (await session.execute(
         select(ConnectorRegistryModel).where(
             ConnectorRegistryModel.connector_type.in_(["twilio", "slack"]),
@@ -156,7 +156,7 @@ async def list_all_sms(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import SmsMessageModel
+    from velaris_shared.db.models import SmsMessageModel
     q = select(SmsMessageModel).order_by(SmsMessageModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(SmsMessageModel.status == status)
@@ -172,7 +172,7 @@ async def list_all_slack(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
-    from case_service.db.models import SlackNotificationModel
+    from velaris_shared.db.models import SlackNotificationModel
     q = select(SlackNotificationModel).order_by(SlackNotificationModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(SlackNotificationModel.status == status)

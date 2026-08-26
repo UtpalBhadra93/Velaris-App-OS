@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CheckoutOrderModel, MarketplaceInstallModel, StorefrontProductVariantModel,
 )
 

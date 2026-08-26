@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseRiskFeedbackModel,
     CaseRiskFindingModel,
     CaseRiskScoreDisputeModel,

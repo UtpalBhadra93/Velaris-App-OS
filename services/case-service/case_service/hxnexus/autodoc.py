@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import GraphNodeModel, GraphEdgeModel, GeneratedDocModel
+from velaris_shared.db.models import GraphNodeModel, GraphEdgeModel, GeneratedDocModel
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,7 @@ async def get_business_guide(session: AsyncSession, force: bool = False, llm=Non
 
     if llm is None:
         try:
-            from case_service.hxnexus.factory import get_llm_backend
+            from velaris_shared.llm.factory import get_llm_backend
             llm = get_llm_backend()
         except Exception:
             pass
@@ -313,7 +313,7 @@ async def get_dev_guide(session: AsyncSession, force: bool = False, llm=None) ->
 
     if llm is None:
         try:
-            from case_service.hxnexus.factory import get_llm_backend
+            from velaris_shared.llm.factory import get_llm_backend
             llm = get_llm_backend()
         except Exception:
             pass

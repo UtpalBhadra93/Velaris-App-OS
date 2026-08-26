@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 from lxml import etree
 
-from case_service.db.models import SsoProviderModel, TenantModel
+from velaris_shared.db.models import SsoProviderModel, TenantModel
 from case_service.identity import saml, saml_encryption, saml_keys
 from case_service.tenancy import identity as tenant_identity
 from tests.phase_identity import _saml_fixtures as fx
@@ -342,7 +342,7 @@ class TestSloEndpoint:
 
     @pytest.mark.asyncio
     async def test_an_unsigned_logout_revokes_nothing(self, session, anon_client):
-        from case_service.db.models import HelixUserModel, RefreshTokenModel
+        from velaris_shared.db.models import HelixUserModel, RefreshTokenModel
 
         await _provider(session, slo_enabled=True)
         user = HelixUserModel(username="slo-user", email="slo@acme.com", roles=["viewer"],
@@ -368,7 +368,7 @@ class TestSloEndpoint:
     ):
         from sqlalchemy import select
 
-        from case_service.db.models import HelixUserModel, RefreshTokenModel
+        from velaris_shared.db.models import HelixUserModel, RefreshTokenModel
 
         await _provider(session, slo_enabled=True)
         user = HelixUserModel(username="slo-user2", email="slo2@acme.com", roles=["viewer"],
@@ -418,7 +418,7 @@ class TestInResponseTo:
     async def test_login_records_the_request_it_sent(self, session, anon_client):
         from sqlalchemy import select
 
-        from case_service.db.models import SamlAuthnRequestModel
+        from velaris_shared.db.models import SamlAuthnRequestModel
 
         await _provider(session)
         r = await anon_client.get(f"/api/v1/auth/saml/{TENANT_SLUG}/login",
@@ -460,7 +460,7 @@ class TestInResponseTo:
         same request."""
         from sqlalchemy import select
 
-        from case_service.db.models import SamlAuthnRequestModel
+        from velaris_shared.db.models import SamlAuthnRequestModel
 
         await _provider(session)
         await anon_client.get(f"/api/v1/auth/saml/{TENANT_SLUG}/login",

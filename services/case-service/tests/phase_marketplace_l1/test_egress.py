@@ -17,14 +17,15 @@ import base64
 import hashlib
 import importlib.util
 import json
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     MarketplaceCapabilityGrantModel,
     MarketplaceNetworkLogModel,
 )
@@ -273,3 +274,70 @@ class TestAccessLogIngest:
 
     async def test_missing_log_is_fine(self, session, egress_dir):
         assert await egress.ingest_access_log(session) == 0
+
+    async def test_a_bot_job_anchors_on_job_id_not_grant_id(self, session, egress_dir):
+        """A bot's egress lines must land against the JOB.
+
+        They used to be written with the job id in `grant_id`, which keys
+        `marketplace_capability_grants` — so every insert violated the foreign
+        key, the ingest's caller swallowed the failure, and the Bot Console's
+        Audit view reported that the bot had reached no hosts at all. Found
+        2026-08-21 by watching a real container reach `example.com` and then
+        finding an empty table.
+        """
+        from velaris_shared.db.models import BotDefinitionModel, BotJobModel
+
+        bot = BotDefinitionModel(
+            tenant_id="default", name="egress-bot", description="",
+            image="registry.test/bot", digest=DIGEST,
+            declared_command=[], declared_env={}, credential_refs=[],
+            input_schema={}, output_schema={}, granted_domains=["example.com"],
+            status="active", created_by="author")
+        session.add(bot)
+        await session.commit()
+        job = BotJobModel(tenant_id="default", bot_id=bot.id, trigger="api",
+                          input={}, artifacts=[], status="running")
+        session.add(job)
+        await session.commit()
+
+        log = egress_dir / "log" / "egress-access.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps({
+            "user": f"bot-{job.id}", "job_id": str(job.id),
+            "package_id": "bot:egress-bot", "target": "example.com:443",
+            "status": "allowed", "bytes_sent": 1, "bytes_received": 2}) + "\n")
+
+        assert await egress.ingest_access_log(session) == 1
+        await session.commit()
+        row = (await session.execute(
+            select(MarketplaceNetworkLogModel))).scalars().one()
+        assert row.job_id == job.id
+        assert row.grant_id is None          # never borrows the other anchor
+        assert row.destination_url == "egress://example.com:443"
+
+    async def test_a_vanished_anchor_keeps_the_row(self, session, egress_dir):
+        """One dead anchor must not cost the whole batch.
+
+        A grant revoked while its container was still running, or a job purged
+        by retention, leaves a log line naming a parent that has gone. The host
+        it reached and the verdict are the evidence — dropping them because the
+        foreign key no longer resolves loses exactly what the log is for.
+        """
+        log = egress_dir / "log" / "egress-access.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("\n".join([
+            json.dumps({"user": "app-x", "grant_id": str(uuid.uuid4()),
+                        "package_id": "pkg", "target": "a.example.com:443",
+                        "status": "allowed"}),
+            json.dumps({"user": "bot-x", "job_id": str(uuid.uuid4()),
+                        "package_id": "bot:x", "target": "b.example.com:443",
+                        "status": "blocked"}),
+        ]) + "\n")
+
+        assert await egress.ingest_access_log(session) == 2
+        await session.commit()
+        rows = (await session.execute(
+            select(MarketplaceNetworkLogModel))).scalars().all()
+        assert len(rows) == 2
+        assert all(r.grant_id is None and r.job_id is None for r in rows)
+        assert {r.status for r in rows} == {"allowed", "blocked"}

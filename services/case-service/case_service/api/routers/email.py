@@ -8,14 +8,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user, require_role
-from case_service import hxguard
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared import hxguard
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     EmailAccountModel, EmailTemplateModel, EmailMessageModel, CaseInstanceModel,
 )
-from case_service.db.session import get_session
-from case_service.core.error_codes import CONSENT_REFUSED_403, coded
+from velaris_shared.db.session import get_session
+from velaris_shared.core.error_codes import CONSENT_REFUSED_403, coded
 from case_service.mail import EmailService
 from case_service.mail.service import ConsentRefused
 from case_service.mail.templates import render_template, TemplateError
@@ -490,7 +490,7 @@ async def poll_now(
     user: AuthenticatedUser = Depends(hxguard.guard("platform.email.operate")),
 ):
     from case_service.mail.worker import poll_one_account
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     q = select(EmailAccountModel).where(EmailAccountModel.is_active.is_(True))
     if account_id:

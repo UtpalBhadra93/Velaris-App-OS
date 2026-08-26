@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from case_service.db.models import ConnectorRegistryModel, TenantModel
+from velaris_shared.db.models import ConnectorRegistryModel, TenantModel
 from tests.conftest import create_case, deploy_case_type
 
 MEET = "/api/v1/meet"
@@ -116,7 +116,7 @@ class TestStartSession:
         assert r.status_code == 502
 
     async def test_embedded_driver_not_built_501(self, client, teams_connector):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         case = await _case(client)
         s = get_settings()
         # The credentials must be cleared explicitly, not assumed absent: a dev
@@ -206,8 +206,8 @@ class TestEnforceMode:
         """Enforce mode: meet.start must be a known case action (unknown = fail-closed
         404 for everyone, the live incident this test pins) — and an unrelated
         non-admin still gets the 404 anti-oracle."""
-        from case_service.auth.jwt_handler import create_dev_token
-        from case_service.config import get_settings
+        from velaris_shared.auth.jwt_handler import create_dev_token
+        from velaris_shared.config import get_settings
         case = await _case(client)
         s = get_settings()
         prior = s.hxguard_case_enforcement

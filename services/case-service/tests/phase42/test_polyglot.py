@@ -16,9 +16,9 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
-from case_service.db.models import BpmConceptModel, GeneratedDocModel, CaseTypeModel
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.db.models import BpmConceptModel, GeneratedDocModel, CaseTypeModel
 from case_service.hxnexus.polyglot import translate, analyze, compare, _fuzzy_score
 from case_service.hxnexus.autodoc import get_business_guide, get_dev_guide, _is_stale
 from case_service.main import app
@@ -185,7 +185,7 @@ class TestAutodoc:
         assert stale is True
 
     async def test_dev_guide_with_case_type_in_graph(self, session):
-        from case_service.hxgraph.sync import sync_graph
+        from velaris_shared.hxgraph.sync import sync_graph
         session.add(CaseTypeModel(
             name="Test Process", version="1.0",
             definition_json={"stages": [{"id": "s1", "name": "Start", "steps": []}]},
@@ -259,7 +259,7 @@ class TestPolyglotAPI:
         # a model server running. autodoc imports the factory at call time, so
         # patching the factory attribute is what takes effect.
         monkeypatch.setattr(
-            "case_service.hxnexus.factory.get_llm_backend", lambda *a, **k: _NoLLM()
+            "velaris_shared.llm.factory.get_llm_backend", lambda *a, **k: _NoLLM()
         )
         _override()
         try:

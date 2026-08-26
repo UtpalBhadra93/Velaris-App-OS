@@ -3,8 +3,19 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "helix.fullname" . }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  # Without this the platform is served over plain HTTP: tokens, case data and
+  # the session cookie all cross the network in clear text. Supply a secret
+  # holding the certificate, or terminate TLS in front of the cluster.
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host | quote }}
@@ -15,8 +26,14 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ $.Release.Name }}-helix-{{ .service }}
-                port: { number: 8200 }
+                # `service` names which workload serves this path. Omitted, it is
+                # case-service — the same fall-through the gateway uses — so an
+                # operator who writes the ordinary Helm ingress shape without it
+                # gets a working ingress instead of a backend named "-".
+                name: {{ $.Release.Name }}-helix-{{ .service | default "case-service" }}
+                # Every API service publishes 8200; the engine publishes 8100, so a
+                # path routed there must say so.
+                port: { number: {{ .port | default 8200 }} }
           {{- end }}
     {{- end }}
 {{- end }}

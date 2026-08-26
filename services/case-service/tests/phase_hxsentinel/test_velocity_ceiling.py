@@ -19,7 +19,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import CaseInstanceModel, CaseRiskSignalModel
+from velaris_shared.db.models import CaseInstanceModel, CaseRiskSignalModel
 from case_service.sentinel import engine as risk_engine
 from case_service.sentinel import rules as rulecat
 from tests.phase_hxsentinel._seed import seed_case

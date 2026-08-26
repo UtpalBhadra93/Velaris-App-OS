@@ -23,8 +23,8 @@ import jwt
 import pytest
 import pytest_asyncio
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionParticipantModel,
     PortalCustomerModel,
     TenantModel,
@@ -142,7 +142,7 @@ class TestWorkerToken:
 
     async def test_token_on_off_platform_session_400(self, client, session, livekit_cfg):
         # Manufacture a P1-style session row directly.
-        from case_service.db.models import CaseSessionModel
+        from velaris_shared.db.models import CaseSessionModel
         case = await _case(client)
         row = CaseSessionModel(case_id=uuid.UUID(case["id"]), tenant_id="default",
                                driver="off_platform", provider="teams",
@@ -165,7 +165,7 @@ class TestWorkerToken:
         """Enforce mode: meet.join must be a registered case action (unknown =
         fail-closed 404 for everyone) — and an unrelated user gets the 404
         anti-oracle, not a 403."""
-        from case_service.auth.jwt_handler import create_dev_token
+        from velaris_shared.auth.jwt_handler import create_dev_token
         sess = await _embedded_session(client)
         s = get_settings()
         s.hxguard_case_enforcement = "enforce"

@@ -34,8 +34,8 @@ def tool_payload(body: dict) -> dict:
 
 
 def _limited_headers(roles: list[str]) -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
 
     s = get_settings()
     token = create_dev_token(
@@ -108,7 +108,7 @@ class TestRegistry:
                          "case_type_list", "case_type_get", "graph_query"}
 
     async def test_deterministic_profile_hides_and_blocks_ai_tools(self, client):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         settings = get_settings()
         original = settings.mcp_ai_tools
         settings.mcp_ai_tools = False
@@ -187,7 +187,7 @@ class TestAuthz:
     async def test_enforce_mode_denied_case_reads_404_not_oracle(self, client, monkeypatch):
         """An unrelated user gets the same anti-probing 404 through MCP as
         through REST — for detail AND timeline."""
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "hxguard_case_enforcement", "enforce")
 
         ct = await deploy_case_type(client, name="MCP Authz CT")
@@ -202,7 +202,7 @@ class TestAuthz:
             assert payload["status"] == 404, tool        # never 403 — no oracle
 
     async def test_enforce_mode_list_is_relationship_filtered(self, client, monkeypatch):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         monkeypatch.setattr(get_settings(), "hxguard_case_enforcement", "enforce")
 
         ct = await deploy_case_type(client, name="MCP Filter CT")
@@ -215,7 +215,7 @@ class TestAuthz:
 
     async def test_rate_limit_429(self, client, monkeypatch):
         from case_service.api.routers import hxmcp as transport
-        from case_service.hxnexus.guard import _RateLimiter
+        from velaris_shared.llm.guard import _RateLimiter
         monkeypatch.setattr(transport, "_rate_limiter",
                             _RateLimiter(max_calls=2, window_seconds=60))
         hdrs = _limited_headers(["user"])                # fresh user id

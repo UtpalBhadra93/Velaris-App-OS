@@ -788,6 +788,11 @@ export interface MeetGuestInvite {
   identity: string;
   invite_token: string;
   join_path: string;
+  /** Absolute, when the deployment has said where Studio lives
+   *  (`VELARIS_CASE_PUBLIC_BASE_URL`). Null otherwise — the browser's own
+   *  origin is the fallback, which is right for a link a host copies out and
+   *  wrong for one a server sends on. */
+  join_url: string | null;
   expires_at: string;
 }
 
@@ -1415,6 +1420,157 @@ export async function updateCalendar(id: string, body: Record<string, any>): Pro
 
 export async function listCalendars(): Promise<any[]> {
   return caseRequest("/admin/calendars");
+}
+
+// ── Calendar — people time ─────────────────────────────────────────────────
+//
+// Distinct from the business calendars above: those describe the ORGANISATION's
+// hours (what the SLA clock counts), these describe a PERSON's.
+
+export interface Absence {
+  id: string;
+  user_id: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  status: "requested" | "approved" | "cancelled";
+  delegate_user_id: string | null;
+  source: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_by: string;
+  created_at: string;
+  // Personal — present only where the caller is the person, their manager or an
+  // admin. A colleague sees busy, never why.
+  kind?: string;
+  note?: string;
+}
+
+export async function listAbsences(params: {
+  user_id?: string; status?: string; start?: string; end?: string;
+} = {}): Promise<Absence[]> {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, v); });
+  const qs = q.toString();
+  return caseRequest(`/calendar/absences${qs ? `?${qs}` : ""}`);
+}
+
+export async function createAbsence(body: {
+  user_id?: string; kind?: string; starts_at: string; ends_at: string;
+  all_day?: boolean; delegate_user_id?: string | null; note?: string;
+}): Promise<Absence> {
+  return caseRequest("/calendar/absences", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function approveAbsence(id: string): Promise<Absence> {
+  return caseRequest(`/calendar/absences/${id}/approve`, { method: "POST" });
+}
+
+export async function cancelAbsence(id: string): Promise<Absence> {
+  return caseRequest(`/calendar/absences/${id}/cancel`, { method: "POST" });
+}
+
+export async function getAvailability(userIds: string[], at?: string): Promise<{
+  at: string;
+  users: { user_id: string; available: boolean; delegate_user_id?: string | null }[];
+}> {
+  const q = new URLSearchParams();
+  userIds.forEach(u => q.append("user_ids", u));
+  if (at) q.set("at", at);
+  return caseRequest(`/calendar/availability?${q.toString()}`);
+}
+
+export async function getWorkPattern(userId: string): Promise<{
+  user_id: string; work_days: number[]; work_start_hour: number;
+  work_end_hour: number; timezone: string;
+}> {
+  return caseRequest(`/calendar/patterns/${encodeURIComponent(userId)}`);
+}
+
+export async function saveWorkPattern(body: {
+  user_id: string; business_calendar_id?: string | null; work_days?: number[] | null;
+  work_start_hour?: number | null; work_end_hour?: number | null; timezone?: string | null;
+}): Promise<any> {
+  return caseRequest("/calendar/patterns", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export interface Recurrence { freq: "daily" | "weekly" | "monthly"; interval?: number; until?: string; count?: number }
+
+export interface CalendarEvent {
+  id: string; title: string; description: string;
+  starts_at: string; ends_at: string; timezone: string;
+  organiser_user_id: string; attendee_user_ids: string[];
+  external_emails: string[];
+  case_id: string | null; meet_session_id: string | null;
+  meeting_url: string | null;
+  recurrence: Recurrence | null; excluded_dates: string[];
+  /** `active`, `ended`, `cancelled`, or null when the meeting has no room. */
+  room_status?: string | null;
+  visibility: "team" | "private"; status: string;
+  created_by: string; created_at: string; updated_by?: string | null;
+  // Present on listings, which expand a series into its occurrences.
+  occurrence_date?: string; is_recurring?: boolean;
+}
+
+export async function listEvents(params: { start?: string; end?: string } = {}): Promise<CalendarEvent[]> {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v) q.set(k, v); });
+  const qs = q.toString();
+  return caseRequest(`/calendar/events${qs ? `?${qs}` : ""}`);
+}
+
+export async function createEvent(body: {
+  title: string; description?: string; starts_at: string; ends_at: string;
+  timezone?: string; attendee_user_ids?: string[]; external_emails?: string[];
+  case_id?: string | null; meet_session_id?: string | null;
+  meeting_url?: string | null; recurrence?: Recurrence | null;
+  visibility?: "team" | "private";
+  /** A start time in the past is refused unless this says it is deliberate. */
+  allow_past?: boolean;
+  /** Ask HxMeet for a room as part of scheduling, so the invitation has a link. */
+  create_room?: boolean;
+  /** Email the guests now. On by default at creation; an edit never sends. */
+  send_invites?: boolean;
+}): Promise<CalendarEvent & {
+  join_url?: string | null;
+  room_error?: string;
+  invitations?: { sent: string[]; failed: { email: string; error: string }[]; from?: string };
+}> {
+  return caseRequest("/calendar/events", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateEvent(id: string, body: Record<string, unknown>): Promise<CalendarEvent> {
+  return caseRequest(`/calendar/events/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+/** Cancel one occurrence of a series — "we skip next Monday". */
+export async function skipOccurrence(id: string, on: string): Promise<CalendarEvent> {
+  return caseRequest(`/calendar/events/${id}/skip?on=${encodeURIComponent(on)}`, { method: "POST" });
+}
+
+/** Ask HxMeet for a room. HxMeet owns rooms; this only remembers the answer. */
+/** Ask HxMeet for a room. A live one is reused; one LiveKit already closed is
+ *  replaced, so rejoining a stand-up puts you back in a room. */
+export async function createMeetingRoom(id: string): Promise<CalendarEvent & { join_url: string | null; driver: string; reused: boolean }> {
+  return caseRequest(`/calendar/events/${id}/meeting`, { method: "POST" });
+}
+
+export async function inviteGuests(id: string): Promise<{ sent: string[]; failed: { email: string; error: string }[] }> {
+  return caseRequest(`/calendar/events/${id}/invite`, { method: "POST" });
+}
+
+export async function updateAbsence(id: string, body: Record<string, unknown>): Promise<Absence> {
+  return caseRequest(`/calendar/absences/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function cancelEvent(id: string): Promise<CalendarEvent> {
+  return caseRequest(`/calendar/events/${id}/cancel`, { method: "POST" });
+}
+
+export async function proposeSlots(body: {
+  user_ids: string[]; start: string; end: string; minutes?: number; limit?: number;
+}): Promise<{ slots: { starts_at: string; ends_at: string }[]; searched: Record<string, unknown> }> {
+  return caseRequest("/calendar/slots", { method: "POST", body: JSON.stringify(body) });
 }
 
 export async function listRules(): Promise<any> {
@@ -2150,16 +2306,37 @@ export async function listCaseConversations(caseId: string):
 export interface BotDefinition {
   id: string; tenant_id: string; name: string; description: string;
   image: string; digest: string; signature_verified: boolean;
+  declared_command?: string[]; declared_env?: Record<string, unknown>;
+  input_schema?: Record<string, unknown>; output_schema?: Record<string, unknown>;
   credential_refs: string[]; granted_domains: string[];
   timeout_seconds: number; max_concurrency: number; resource_profile: string;
+  /** Null = no fan-out. Names the input key holding the collection to spread
+   *  over; it lives on the definition so the approver reviews it. */
+  fanout_input_key?: string | null; fanout_max?: number;
   status: string; created_by: string; approved_by: string | null;
   approved_at: string | null;
+}
+
+export interface BotCredential {
+  id: string; tenant_id: string; ref: string; version: number;
+  created_by: string; env_name: string; updated_at: string | null;
+}
+
+export interface BotBatch {
+  batch_id: string; bot_id: string; size: number; finished: boolean;
+  succeeded: number; counts: Record<string, number>; jobs: string[];
 }
 
 export interface BotJob {
   id: string; bot_id: string; case_id: string | null; trigger: string;
   requested_by: string | null; status: string; attempt: number;
   error: string | null; output: Record<string, unknown> | null;
+  /** Set when this job is one of a fan-out batch: N ordinary jobs from one run,
+   *  sharing a batch id so they can be reported together. */
+  batch_id?: string | null; batch_index?: number | null; batch_size?: number | null;
+  /** Not before this instant — a retry serving its backoff, or a queued
+   *  scheduled run. */
+  run_after?: string | null;
   queued_at: string | null; started_at: string | null; ended_at: string | null;
 }
 
@@ -2195,6 +2372,194 @@ export async function runBot(id: string, body: {
   input?: Record<string, unknown>; case_id?: string; step_id?: string;
 }): Promise<BotJob> {
   return caseRequest(`/bots/${id}/run`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Creates a bot **draft**. It cannot run until a second person approves it. */
+export async function createBot(
+  body: Partial<BotDefinition>,
+): Promise<BotDefinition> {
+  return caseRequest("/bots", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** **Any change returns the bot to draft**, clearing its approver — editing an
+ *  approved container image without a second review is the thing the approval
+ *  gate exists to prevent. Saving with nothing changed changes nothing. */
+export async function updateBot(
+  id: string, body: Partial<BotDefinition>,
+): Promise<BotDefinition> {
+  return caseRequest(`/bots/${id}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function disableBot(id: string):
+  Promise<{ disabled: boolean; cancelled_jobs: number }> {
+  return caseRequest(`/bots/${id}/disable`, { method: "POST" });
+}
+
+export async function listBotCredentials(): Promise<BotCredential[]> {
+  const d = await caseRequest<{ credentials: BotCredential[] }>("/bots/credentials");
+  return d.credentials ?? [];
+}
+
+/** The value is write-only: it is encrypted under the tenant's key and is never
+ *  returned to anyone, including whoever stored it. */
+export async function upsertBotCredential(body: {
+  ref: string; secret: string; tenant_id?: string;
+}): Promise<{ ref: string; version: number; env_name: string }> {
+  return caseRequest("/bots/credentials", {
+    method: "PUT", body: JSON.stringify(body),
+  });
+}
+
+export interface BotJobAudit {
+  job: BotJob;
+  events: { kind: string; detail: Record<string, unknown>; at: string | null }[];
+  /** The reference and the lease window — never the value, which nothing can
+   *  read back at all. */
+  credentials: { ref: string; leased_at: string | null;
+                 expires_at: string | null; revoked_at: string | null }[];
+  /** Every host the container tried to reach, allowed or blocked, from the
+   *  egress gateway's own log. */
+  network: { destination: string; ip: string | null; status: string;
+             declared: boolean; bytes_out: number | null;
+             bytes_in: number | null; at: string | null }[];
+}
+
+/** The whole account of one run: what it did, which credentials it held while
+ *  doing it, and every host it tried to reach. */
+export async function getBotJob(id: string): Promise<BotJobAudit> {
+  return caseRequest(`/bots/jobs/${id}`);
+}
+
+export async function getBotBatch(batchId: string): Promise<BotBatch> {
+  return caseRequest(`/bots/batches/${batchId}`);
+}
+
+export async function getBotLimits(): Promise<{
+  default: number;
+  limits: { tenant_id: string; max_concurrent_jobs: number;
+            updated_by: string; updated_at: string | null }[];
+}> {
+  return caseRequest("/bots/limits");
+}
+
+export async function setBotLimit(body: {
+  tenant_id: string; max_concurrent_jobs: number;
+}): Promise<{ tenant_id: string; max_concurrent_jobs: number }> {
+  return caseRequest("/bots/limits", { method: "PUT", body: JSON.stringify(body) });
+}
+
+/* ── Picker sources for the scheduler editor ─────────────────────── */
+
+/** Named things a schedule can point at. The editor asks for these by name so
+ *  nobody has to paste a UUID into a JSON box to say "run this bot". */
+export async function listSchedulerTargets(): Promise<{
+  bots: { id: string; name: string; status: string }[];
+  connectors: { id: string; name: string; enabled: boolean }[];
+  emailAccounts: { id: string; name: string; address: string }[];
+  syncDestinations: { id: string; name: string }[];
+}> {
+  const safe = async <T,>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+    // One unavailable list must not empty the whole editor: a deployment may
+    // legitimately have no mailer, no warehouse, or no connectors at all.
+    try { return await fn(); } catch { return fallback; }
+  };
+  const [bots, connectors, accounts, destinations] = await Promise.all([
+    safe(() => listBots(), [] as BotDefinition[]),
+    safe(() => caseRequest<{ connectors?: { id: string; name: string; enabled: boolean }[] }>(
+      "/hxbridge/connectors"), {}),
+    safe(() => caseRequest<{ accounts?: { id: string; name: string; address: string }[] }>(
+      "/email/accounts"), {}),
+    safe(() => caseRequest<{ destinations?: { id: string; name: string }[] }>(
+      "/sync/destinations"), {}),
+  ]);
+  const asArray = <T,>(v: unknown, key: string): T[] =>
+    Array.isArray(v) ? v as T[] : ((v as Record<string, unknown>)?.[key] as T[]) ?? [];
+  return {
+    bots: bots.map(b => ({ id: b.id, name: b.name, status: b.status })),
+    connectors: asArray(connectors, "connectors"),
+    emailAccounts: asArray(accounts, "accounts"),
+    syncDestinations: asArray(destinations, "destinations"),
+  };
+}
+
+/* ── The scheduler ───────────────────────────────────────────────── */
+
+export interface Schedule {
+  id: string; tenant_id: string; name: string; description: string;
+  cron: string; timezone: string; action_kind: string;
+  action_config: Record<string, unknown>;
+  status: string; created_by: string; approved_by: string | null;
+  approved_at: string | null; next_run_at: string | null;
+  last_run_at: string | null; last_status: string | null;
+  last_error: string | null;
+}
+
+export interface ScheduleRun {
+  id: string; status: string; fired_at: string | null;
+  duration_ms: number | null; detail: Record<string, unknown>;
+}
+
+export async function listSchedules(): Promise<Schedule[]> {
+  const d = await caseRequest<{ schedules: Schedule[] }>("/scheduler");
+  return d.schedules ?? [];
+}
+
+export async function getSchedule(id: string): Promise<{
+  schedule: Schedule; next: string[]; runs: ScheduleRun[];
+}> {
+  return caseRequest(`/scheduler/${id}`);
+}
+
+export async function listScheduleActions():
+  Promise<{ kind: string; label: string }[]> {
+  const d = await caseRequest<{ actions: { kind: string; label: string }[] }>(
+    "/scheduler/actions");
+  return d.actions ?? [];
+}
+
+/** The next few firing times for a cron line, so nobody saves one they misread. */
+export async function previewSchedule(body: {
+  cron: string; timezone?: string; count?: number;
+}): Promise<{ cron: string; timezone: string; next: string[] }> {
+  return caseRequest("/scheduler/preview", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function createSchedule(body: Partial<Schedule>): Promise<Schedule> {
+  return caseRequest("/scheduler", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** **Any change returns the schedule to draft** and clears its next firing —
+ *  a changed recipient list or cron line is exactly what the reviewer needed
+ *  to see. Saving with nothing changed changes nothing. */
+export async function updateSchedule(
+  id: string, body: Partial<Schedule>,
+): Promise<Schedule> {
+  return caseRequest(`/scheduler/${id}`, {
+    method: "PUT", body: JSON.stringify(body),
+  });
+}
+
+/** Refused (409) when the approver wrote it — approval IS the review. */
+export async function approveSchedule(id: string): Promise<Schedule> {
+  return caseRequest(`/scheduler/${id}/approve`, { method: "POST" });
+}
+
+export async function disableSchedule(id: string): Promise<Schedule> {
+  return caseRequest(`/scheduler/${id}/disable`, { method: "POST" });
+}
+
+/** Fires it now. The timetable is untouched, so testing a schedule does not
+ *  silently skip tonight's run. */
+export async function runScheduleNow(id: string): Promise<{
+  status: string; detail: Record<string, unknown>;
+}> {
+  return caseRequest(`/scheduler/${id}/run`, { method: "POST" });
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  await caseRequest(`/scheduler/${id}`, { method: "DELETE" });
 }
 
 export async function cancelBotJob(id: string): Promise<BotJob> {

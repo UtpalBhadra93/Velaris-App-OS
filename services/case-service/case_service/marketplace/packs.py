@@ -56,6 +56,13 @@ FORBIDDEN_SECTIONS = {
     "webhook_subscriptions": "webhook subscriptions define outbound egress",
     "outbound_connector_rules": "outbound rules define egress",
     "webhook_receiver_rules": "receiver rules expose an inbound surface",
+    # A bot is a container image, a command and an egress allowlist; a schedule
+    # is an unattended action on a timer. Both are exactly the class this list
+    # exists to keep out of a marketplace install — HxDeploy promotes them
+    # between two environments one operator owns, which is a different trust
+    # question from installing a stranger's pack.
+    "bot_definitions": "bot definitions name a container image and its egress",
+    "schedules": "schedules run unattended actions on a timer",
 }
 
 _MAX_SECTION_BYTES = 8 * 1024 * 1024
@@ -196,7 +203,7 @@ async def already_provisioned(session: AsyncSession, tenant_id: str, package_id:
     nothing on the other two engines, which is worse than no index at all
     because it would look enforced.
     """
-    from case_service.db.models import MarketplacePackInstallModel as M
+    from velaris_shared.db.models import MarketplacePackInstallModel as M
     r = await session.execute(
         select(M).where(M.tenant_id == tenant_id, M.package_id == package_id,
                         M.status == "provisioned").limit(1)
@@ -212,7 +219,7 @@ async def provision(session: AsyncSession, *, tenant_id: str, package_id: str,
     Sample data is opt-in and off by default: creating demo cases in a live
     tenant unasked is not a reasonable default.
     """
-    from case_service.db.models import MarketplacePackInstallModel
+    from velaris_shared.db.models import MarketplacePackInstallModel
     from case_service.hxdeploy.packager import apply_bundle
 
     existing = await already_provisioned(session, tenant_id, package_id)
@@ -327,7 +334,7 @@ async def _provision_sample_data(session: AsyncSession, *, tenant_id: str,
     ct_name = case_types[0].get("name") or "SyntheticCase"
 
     try:
-        from case_service.db.models import CaseInstanceModel, CaseTypeModel
+        from velaris_shared.db.models import CaseInstanceModel, CaseTypeModel
         from case_service.marketplace.synthetic_data import generate_dataset
         from case_service.tenancy.identity import resolve_tenant
 
@@ -433,7 +440,7 @@ def snapshot_of(bundle: dict[str, Any]) -> dict[str, Any]:
 
 async def _current_state(session: AsyncSession, bundle: dict[str, Any]) -> dict[str, dict]:
     """What the tenant's database holds today for the artifacts this pack owns."""
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseTypeModel, FormDefinitionModel, RuleDefinitionModel,
     )
     models = {
@@ -552,7 +559,7 @@ async def upgrade(session: AsyncSession, *, tenant_id: str, package_id: str,
     proceeds for everything that is not conflicted — refusing the whole upgrade
     over one customised form would make packs un-upgradable in practice.
     """
-    from case_service.db.models import MarketplacePackUpgradeModel
+    from velaris_shared.db.models import MarketplacePackUpgradeModel
     from case_service.hxdeploy.packager import apply_bundle
 
     install = await already_provisioned(session, tenant_id, package_id)
@@ -630,7 +637,7 @@ async def fork(session: AsyncSession, *, tenant_id: str, package_id: str,
     relationship to its parent, because a fork that still tracked upstream would
     reintroduce exactly the conflicts it was created to escape.
     """
-    from case_service.db.models import (
+    from velaris_shared.db.models import (
         CaseTypeModel, FormDefinitionModel, RuleDefinitionModel,
     )
 

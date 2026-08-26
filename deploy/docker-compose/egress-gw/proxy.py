@@ -45,7 +45,7 @@ _active_tunnels: dict[str, int] = {}
 
 
 def load_allowlist() -> dict:
-    """{'apps': {user: {'token_hash', 'domains', 'grant_id', 'package_id'}}}.
+    """{'apps': {user: {'token_hash', 'domains', 'grant_id', 'job_id', 'package_id'}}}.
     Any problem reading it = empty = deny all (fail-closed)."""
     try:
         with open(CONF_PATH, encoding="utf-8") as f:
@@ -194,6 +194,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
         def blocked(reason: str) -> None:
             log_event(user=user, grant_id=entry.get("grant_id"),
+                      job_id=entry.get("job_id"),
                       package_id=entry.get("package_id"), target=f"{host}:{port}",
                       status="blocked", reason=reason)
 
@@ -250,6 +251,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         finally:
             _active_tunnels[user] = max(0, _active_tunnels.get(user, 1) - 1)
         log_event(user=user, grant_id=entry.get("grant_id"),
+                  job_id=entry.get("job_id"),
                   package_id=entry.get("package_id"), target=f"{host}:{port}",
                   status="allowed", bytes_sent=counter["sent"],
                   bytes_received=counter["received"])

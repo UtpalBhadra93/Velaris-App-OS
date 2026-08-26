@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from case_service.channels import optout
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel,
     ChannelConversationModel,
     ChannelEndpointModel,
@@ -111,7 +111,7 @@ async def _customer_single_open_case(
     choose, and guessing puts one customer's message on another matter's record.
     Ambiguity falls through to rung 3 or 4, where a human decides.
     """
-    from case_service.db.models import PortalCustomerModel
+    from velaris_shared.db.models import PortalCustomerModel
     from case_service.tenancy.identity import resolve_tenant
 
     normalised = _normalise_phone(peer)

@@ -33,7 +33,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import ConsentRecordModel
+from velaris_shared.db.models import ConsentRecordModel
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,7 @@ async def allows_case_purpose(
     A case that cannot be loaded is refused: an unresolvable case is not
     evidence of a lawful basis.
     """
-    from case_service.db.models import CaseInstanceModel
+    from velaris_shared.db.models import CaseInstanceModel
 
     case = await session.get(CaseInstanceModel, case_id)
     if case is None:

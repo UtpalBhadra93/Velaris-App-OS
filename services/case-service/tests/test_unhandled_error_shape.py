@@ -33,7 +33,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import InterfaceError, OperationalError
 
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     DB_UNAVAILABLE_503,
     SYS_UNHANDLED_500,
     KNOWN_CODES,

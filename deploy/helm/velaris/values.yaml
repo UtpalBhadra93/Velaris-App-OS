@@ -12,6 +12,59 @@ image:
   worker:
     repository: helix/case-service  # Same image, different entrypoint
     tag: latest
+    pullPolicy: IfNotPresent
+  # Extracted from case-service at roadmap 13c-e — one image each.
+  analyticsService:
+    repository: helix/analytics-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  hxgraphService:
+    repository: helix/hxgraph-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  hxmigrateService:
+    repository: helix/hxmigrate-service
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# ── Services extracted from case-service (roadmap 13c-e) ─────────────
+# They scale independently of the case lifecycle, which is what the split was
+# for: a report sweep or a graph re-embed should not size the process that
+# serves case transitions. Redis is enabled on each so the rate limit is one
+# platform-wide budget rather than one per service.
+
+analyticsService:
+  replicaCount: 2
+  port: 8202
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+  env:
+    VELARIS_CASE_REDIS_ENABLED: "true"
+    VELARIS_CASE_RATE_LIMIT_BACKEND: "redis"
+    VELARIS_CASE_DEBUG: "false"
+
+hxgraphService:
+  replicaCount: 1
+  port: 8203
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { cpu: 1000m, memory: 2Gi }
+  env:
+    VELARIS_CASE_REDIS_ENABLED: "true"
+    VELARIS_CASE_RATE_LIMIT_BACKEND: "redis"
+    VELARIS_CASE_DEBUG: "false"
+
+hxmigrateService:
+  replicaCount: 1
+  port: 8204
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { cpu: 1000m, memory: 2Gi }
+  env:
+    VELARIS_CASE_REDIS_ENABLED: "true"
+    VELARIS_CASE_RATE_LIMIT_BACKEND: "redis"
+    VELARIS_CASE_DEBUG: "false"
 
 caseService:
   replicaCount: 2
@@ -62,18 +115,83 @@ postgresql:
     password: helix_dev_password
     database: helix
 
+# Exactly one database may be enabled. PostgreSQL stays the default: an
+# existing install upgrading to this chart version sees no change at all.
+# Enabling either of these means also setting postgresql.enabled=false.
+mysql:
+  enabled: false
+  auth:
+    username: helix
+    password: helix_dev_password
+    database: helix
+    rootPassword: helix_dev_root
+
+mariadb:
+  enabled: false
+  auth:
+    username: helix
+    password: helix_dev_password
+    database: helix
+    rootPassword: helix_dev_root
+
 valkey:
   enabled: true
   architecture: standalone
   auth:
     enabled: false
 
+# Seconds a pod keeps serving after it is told to stop, so in-flight requests
+# finish while its endpoint is withdrawn. 0 restores the previous behaviour.
+terminationDrainSeconds: 5
+
+# PodDisruptionBudgets: how many pods must stay up during a drain or node
+# upgrade. Disabled by default — enabling one on a single-replica deployment
+# blocks node drains entirely.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
 ingress:
   enabled: false
   className: nginx
+  # Annotations for the controller (e.g. force HTTPS, body size limits).
+  annotations: {}
+  # TLS is OFF until a certificate is supplied. Each entry is
+  #   - hosts: [velaris.example.com]
+  #     secretName: velaris-tls
+  # The secret must already exist in the release namespace.
+  tls: []
   hosts:
     - host: helix.local
       paths:
+        # Longest prefix first: the extracted services own their paths, and
+        # everything else falls through to case-service. These are the same
+        # prefixes the nginx gateway routes in the host deployment — the
+        # client-facing URLs are identical either way.
+        - path: /api/v1/analytics
+          pathType: Prefix
+          service: analytics-service
+        - path: /api/v1/process-mining
+          pathType: Prefix
+          service: analytics-service
+        - path: /api/v1/graph
+          pathType: Prefix
+          service: hxgraph-service
+        - path: /api/v1/hxmigrate
+          pathType: Prefix
+          service: hxmigrate-service
+        - path: /api/v1/importer
+          pathType: Prefix
+          service: hxmigrate-service
+        - path: /api/v1/scout
+          pathType: Prefix
+          service: hxmigrate-service
+        - path: /api/v1/scout-ai
+          pathType: Prefix
+          service: hxmigrate-service
+        - path: /api/v1/orchestrator
+          pathType: Prefix
+          service: hxmigrate-service
         - path: /
           pathType: Prefix
           service: case-service

@@ -14,8 +14,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 
 router = APIRouter(prefix="/hxlogs", tags=["hxlogs"])
 
@@ -299,7 +299,7 @@ async def analyse_log(
     _:    AuthenticatedUser = Depends(get_current_user),
 ):
     """Send a log block or traceback to HxNexus for AI root-cause analysis."""
-    from case_service.hxnexus.factory import generate_json
+    from velaris_shared.llm.factory import generate_json
 
     prompt = (
         f"Analyse this Velaris platform log output and identify the root cause:\n\n"

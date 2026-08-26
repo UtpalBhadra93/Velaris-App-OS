@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.process_mining import analyzer
+from velaris_shared.process_mining import analyzer
 
 MAX_CANDIDATES = 5          # a scan proposes a handful of things, not a firehose
 _MIN_OCCURRENCES = 5        # ignore signals backed by fewer events than this

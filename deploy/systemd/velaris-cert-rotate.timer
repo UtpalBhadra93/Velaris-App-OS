@@ -1,0 +1,16 @@
+[Unit]
+Description=Renew Velaris internal certificates before they expire
+Documentation=file://__VELARIS_DIR__/deploy/tls/README.md
+
+[Timer]
+# Daily, not weekly. Leaves last 90 days and renew inside 21, so daily gives 21
+# chances to succeed before anything expires — a weekly timer that fails twice
+# has already used most of its margin.
+OnCalendar=daily
+# Spread the restart it may trigger away from the top of the hour, and make it
+# catch up after a machine has been off.
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

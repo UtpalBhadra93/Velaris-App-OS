@@ -10,12 +10,21 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from case_service.core.timestamps import iso_utc
+from velaris_shared.db.session import get_session
 from case_service.hxdeploy import service
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared import hxguard
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
+
+#: The bundle receiver and the CI/CD callback authenticate on a shared key and
+#: an HMAC rather than a session, so they carry their own bound: without one,
+#: guessing an environment's import key is limited only by how fast a caller can
+#: send requests.
+_import_rl = rate_limit(max_calls=30, window_seconds=60, name="deploy-import")
 
 
 def _tenant(user: AuthenticatedUser) -> str:
@@ -105,6 +114,7 @@ class RunOut(BaseModel):
     to_env_id:       uuid.UUID | None
     from_env_id:     uuid.UUID | None
     package_id:      uuid.UUID | None
+    package_checksum: str | None = None
     created_at:      str
     deployed_at:     str | None
     completed_at:    str | None
@@ -117,6 +127,7 @@ class RunOut(BaseModel):
             approved_by=r.approved_by, rejected_by=r.rejected_by,
             rejection_reason=r.rejection_reason, deploy_notes=r.deploy_notes,
             to_env_id=r.to_env_id, from_env_id=r.from_env_id, package_id=r.package_id,
+            package_checksum=getattr(r, "package_checksum", None),
             created_at=r.created_at.isoformat(),
             deployed_at=r.deployed_at.isoformat() if r.deployed_at else None,
             completed_at=r.completed_at.isoformat() if r.completed_at else None,
@@ -163,7 +174,7 @@ class HealthCheckOut(BaseModel):
 @router.get("/environments", response_model=list[EnvOut])
 async def list_environments(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.environments.read")),
 ):
     envs = await service.list_environments(session, _tenant(user))
     return [EnvOut.from_model(e) for e in envs]
@@ -173,7 +184,7 @@ async def list_environments(
 async def register_environment(
     body: EnvIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.environments.write")),
 ):
     env = await service.register_environment(
         session, _tenant(user), body.name, body.label, body.url, body.order_index,
@@ -191,12 +202,9 @@ async def update_environment(
     env_id: uuid.UUID,
     body: EnvIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.environments.write")),
 ):
-    from case_service.db.models import EnvironmentRegistryModel
-    env = await session.get(EnvironmentRegistryModel, env_id)
-    if not env:
-        raise HTTPException(404, "Environment not found")
+    env = await _env_or_404(session, env_id, user)
     env.label            = body.label
     env.url              = body.url if body.url is not None else env.url
     env.order_index      = body.order_index
@@ -215,12 +223,9 @@ async def update_environment(
 async def delete_environment(
     env_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.environments.write")),
 ):
-    from case_service.db.models import EnvironmentRegistryModel
-    env = await session.get(EnvironmentRegistryModel, env_id)
-    if not env:
-        raise HTTPException(404, "Environment not found")
+    env = await _env_or_404(session, env_id, user)
     await session.delete(env)
     await session.commit()
 
@@ -229,8 +234,9 @@ async def delete_environment(
 async def get_environment_status(
     env_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.environments.read")),
 ):
+    await _env_or_404(session, env_id, user)
     return await service.get_environment_status(session, env_id)
 
 
@@ -240,7 +246,7 @@ async def get_environment_status(
 async def promote(
     body: PromoteIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.promote")),
 ):
     try:
         run = await service.promote(
@@ -264,7 +270,7 @@ async def promote(
 async def list_runs(
     status: str | None = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
 ):
     rows = await service.list_runs(session, _tenant(user), status=status)
     return [RunOut.from_model(r) for r in rows]
@@ -274,8 +280,9 @@ async def list_runs(
 async def get_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
 ):
+    await _run_or_404(session, run_id, user)
     run = await service.get_run(session, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
@@ -287,12 +294,17 @@ async def approve_run(
     run_id: uuid.UUID,
     body: ApproveIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.approve")),
 ):
+    await _run_or_404(session, run_id, user)
     try:
         run = await service.approve_run(session, run_id, _actor(user), body.package_manifest)
         await session.commit()
         return RunOut.from_model(run)
+    except PermissionError as exc:
+        # 403, not 400: the request is well formed and the caller holds the
+        # action — it is *this* caller who may not approve *this* run.
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -302,8 +314,9 @@ async def reject_run(
     run_id: uuid.UUID,
     body: RejectIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.approve")),
 ):
+    await _run_or_404(session, run_id, user)
     try:
         run = await service.reject_run(session, run_id, _actor(user), body.reason)
         await session.commit()
@@ -317,8 +330,9 @@ async def run_health_check(
     run_id: uuid.UUID,
     check_url: str | None = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
 ):
+    await _run_or_404(session, run_id, user)
     try:
         hc = await service.run_health_check(session, run_id, check_url)
         await session.commit()
@@ -332,12 +346,9 @@ async def update_run(
     run_id: uuid.UUID,
     body: RunPatchIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.promote")),
 ):
-    from case_service.db.models import DeploymentRunModel, EnvironmentRegistryModel
-    run = await session.get(DeploymentRunModel, run_id)
-    if not run:
-        raise HTTPException(404, "Run not found")
+    run = await _run_or_404(session, run_id, user)
     if run.status not in ("pending", "awaiting_approval"):
         raise HTTPException(400, f"Cannot edit run in status '{run.status}'")
 
@@ -345,15 +356,14 @@ async def update_run(
         run.deploy_notes = body.deploy_notes
 
     if body.to_env_id is not None and body.to_env_id != run.to_env_id:
-        env = await session.get(EnvironmentRegistryModel, body.to_env_id)
-        if not env:
-            raise HTTPException(404, "Target environment not found")
+        env = await _env_or_404(session, body.to_env_id, user)
         run.to_env_id = body.to_env_id
         manifest = body.package_manifest or {"case_types": (run.risk_summary or {}).get("affected_items", [])}
         risk = await service.classify_risk(manifest, env.name)
         run.risk_level  = risk.get("risk_level", run.risk_level)
         run.risk_summary = risk
     elif body.package_manifest is not None:
+        from velaris_shared.db.models import EnvironmentRegistryModel
         to_env = await session.get(EnvironmentRegistryModel, run.to_env_id) if run.to_env_id else None
         risk = await service.classify_risk(body.package_manifest, to_env.name if to_env else "unknown")
         run.risk_level  = risk.get("risk_level", run.risk_level)
@@ -367,12 +377,9 @@ async def update_run(
 async def delete_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.promote")),
 ):
-    from case_service.db.models import DeploymentRunModel
-    run = await session.get(DeploymentRunModel, run_id)
-    if not run:
-        raise HTTPException(404, "Run not found")
+    run = await _run_or_404(session, run_id, user)
     await session.delete(run)
     await session.commit()
 
@@ -383,9 +390,9 @@ async def delete_run(
 async def create_window(
     body: WindowIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.windows.write")),
 ):
-    from case_service.db.models import DeploymentWindowModel
+    from velaris_shared.db.models import DeploymentWindowModel
     w = DeploymentWindowModel(
         tenant_id=_tenant(user), env_id=body.env_id,
         name=body.name, days_of_week=body.days_of_week,
@@ -403,10 +410,10 @@ async def create_window(
 async def list_windows(
     env_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.windows.read")),
 ):
     from sqlalchemy import select
-    from case_service.db.models import DeploymentWindowModel
+    from velaris_shared.db.models import DeploymentWindowModel
     q = select(DeploymentWindowModel).where(DeploymentWindowModel.tenant_id == _tenant(user))
     if env_id:
         q = q.where(DeploymentWindowModel.env_id == env_id)
@@ -421,12 +428,10 @@ async def update_window(
     window_id: uuid.UUID,
     body: WindowIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.windows.write")),
 ):
-    from case_service.db.models import DeploymentWindowModel
-    w = await session.get(DeploymentWindowModel, window_id)
-    if not w:
-        raise HTTPException(404, "Window not found")
+    from velaris_shared.db.models import DeploymentWindowModel
+    w = await _window_or_404(session, window_id, user)
     w.name           = body.name
     w.days_of_week   = body.days_of_week
     w.start_hour_utc = body.start_hour_utc
@@ -442,12 +447,10 @@ async def update_window(
 async def delete_window(
     window_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.windows.write")),
 ):
-    from case_service.db.models import DeploymentWindowModel
-    w = await session.get(DeploymentWindowModel, window_id)
-    if not w:
-        raise HTTPException(404, "Window not found")
+    from velaris_shared.db.models import DeploymentWindowModel
+    w = await _window_or_404(session, window_id, user)
     await session.delete(w)
     await session.commit()
 
@@ -457,7 +460,7 @@ async def delete_window(
 @router.get("/my-approvals", response_model=list[RunOut])
 async def my_approvals(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
 ):
     """Return deployment runs awaiting approval assigned to the current user.
 
@@ -484,7 +487,7 @@ async def my_approvals(
 @router.post("/analyse-risk")
 async def analyse_risk(
     body: PromoteIn,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
 ):
     """Classify risk without starting a deployment — useful for pre-flight checks."""
     result = await service.classify_risk(body.package_manifest, str(body.to_env_id))
@@ -495,20 +498,74 @@ async def analyse_risk(
 
 class PackageIn(BaseModel):
     case_type_ids: list[uuid.UUID] | None = None   # None = all case types
+    #: {"sections": {"case_types": [...] | null, ...}} — see
+    #: `packager.normalise_selection`. Absent section = everything.
+    selection:     dict | None = None
+    #: The Promote screen's own manifest. Accepted so a preview resolves through
+    #: exactly the same mapping the promotion will use — a preview that shows
+    #: more than the package ships is the defect this phase exists to remove.
+    manifest:      dict | None = None
+
+
+def _selection_of(body: "PackageIn") -> dict | None:
+    if body.selection is not None:
+        return body.selection
+    if body.manifest is not None:
+        from case_service.hxdeploy.packages import manifest_to_selection
+        return manifest_to_selection(body.manifest)
+    return None
+
+
+class PackageCreateIn(BaseModel):
+    name:          str
+    version:       str
+    description:   str = ""
+    selection:     dict | None = None
+    source_env_id: uuid.UUID | None = None
+    delta_env_id:  uuid.UUID | None = None   # resolve delta at build time
+
+
+class PackageOut(BaseModel):
+    id:          uuid.UUID
+    name:        str
+    version:     str
+    description: str
+    status:      str
+    checksum:    str | None
+    summary:     dict
+    selection:   dict
+    created_by:  str
+    created_at:  str
+    sealed_by:   str | None
+    sealed_at:   str | None
+
+    @classmethod
+    def from_model(cls, p: Any) -> "PackageOut":
+        return cls(
+            id=p.id, name=p.name, version=p.version, description=p.description or "",
+            status=p.status, checksum=p.checksum, summary=p.summary or {},
+            selection=p.selection or {}, created_by=p.created_by,
+            created_at=iso_utc(p.created_at) or "",
+            sealed_by=p.sealed_by, sealed_at=iso_utc(p.sealed_at),
+        )
 
 
 @router.post("/package")
 async def build_package(
     body: PackageIn = PackageIn(),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.read")),
 ):
     """Serialise all (or selected) case types into a deployment bundle.
 
     Returns the full bundle JSON — ready to preview or POST to /deploy/import.
     """
     from case_service.hxdeploy.packager import build_bundle
-    bundle = await build_bundle(session, _tenant(user), body.case_type_ids)
+    try:
+        bundle = await build_bundle(session, _tenant(user), body.case_type_ids,
+                                    selection=_selection_of(body))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return bundle
 
 
@@ -517,18 +574,195 @@ async def build_delta_package(
     env_id: uuid.UUID,
     body: PackageIn = PackageIn(),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.read")),
 ):
     """Build a delta bundle: only artifacts changed since env's last deployment.
 
     Returns full bundle if env has never been deployed to (same as /package).
     """
     from case_service.hxdeploy.packager import build_delta_bundle
-    bundle = await build_delta_bundle(session, _tenant(user), env_id, body.case_type_ids)
+    # The delta is measured against THIS tenant's environment. Reading another
+    # tenant's `last_deployed_at` would leak when they last shipped.
+    await _env_or_404(session, env_id, user)
+    try:
+        bundle = await build_delta_bundle(session, _tenant(user), env_id,
+                                          body.case_type_ids, selection=_selection_of(body))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return bundle
 
 
-@router.post("/import")
+# ── Ownership ────────────────────────────────────────────────────────────────
+#
+# Every by-id path goes through one of these. Loading a row by primary key and
+# acting on it is how "who does this belong to?" gets forgotten — the bots and
+# scheduler routers had exactly this shape, and a 204 came back for another
+# tenant's schedule. A row belonging to somebody else answers **404**: it must
+# not be distinguishable from one that does not exist.
+
+async def _owned_or_404(session: AsyncSession, model, row_id, user: AuthenticatedUser,
+                        what: str):
+    from case_service.tenancy.identity import same_tenant
+
+    row = await session.get(model, row_id)
+    if row is None or not await same_tenant(session, row.tenant_id, _tenant(user)):
+        raise HTTPException(404, f"{what} not found")
+    return row
+
+
+async def _env_or_404(session, env_id, user):
+    from velaris_shared.db.models import EnvironmentRegistryModel
+    return await _owned_or_404(session, EnvironmentRegistryModel, env_id, user, "Environment")
+
+
+async def _run_or_404(session, run_id, user):
+    from velaris_shared.db.models import DeploymentRunModel
+    return await _owned_or_404(session, DeploymentRunModel, run_id, user, "Run")
+
+
+async def _window_or_404(session, window_id, user):
+    from velaris_shared.db.models import DeploymentWindowModel
+    return await _owned_or_404(session, DeploymentWindowModel, window_id, user, "Window")
+
+
+# ── Deployment packages (the frozen artifact a promotion ships) ──────────────
+
+async def _package_or_404(session: AsyncSession, package_id: uuid.UUID,
+                          user: AuthenticatedUser) -> Any:
+    """Load a package, refusing another tenant's as absent rather than forbidden."""
+    from velaris_shared.db.models import DeploymentPackageModel
+    from case_service.tenancy.identity import same_tenant
+
+    pkg = await session.get(DeploymentPackageModel, package_id)
+    if pkg is None or not await same_tenant(session, pkg.tenant_id, _tenant(user)):
+        raise HTTPException(404, "Package not found")
+    return pkg
+
+
+@router.post("/packages", response_model=PackageOut, status_code=201)
+async def create_package(
+    body: PackageCreateIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.write")),
+):
+    """Resolve a selection into a bundle and store it as a **draft** package.
+
+    Draft, not sealed: the point of a separate seal is that somebody can look at
+    what the selection actually resolved to before it becomes the thing that
+    ships.
+    """
+    from velaris_shared.db.models import EnvironmentRegistryModel
+    from case_service.hxdeploy import packages
+
+    since = None
+    if body.delta_env_id:
+        env = await _env_or_404(session, body.delta_env_id, user)
+        since = getattr(env, "last_deployed_at", None)
+
+    try:
+        pkg = await packages.create_package(
+            session, _tenant(user), name=body.name, version=body.version,
+            created_by=_actor(user), description=body.description,
+            selection=body.selection, source_env_id=body.source_env_id, since=since,
+        )
+    except packages.PackageError as exc:
+        raise HTTPException(400, str(exc))
+    await session.commit()
+    await session.refresh(pkg)
+    return PackageOut.from_model(pkg)
+
+
+@router.get("/packages", response_model=list[PackageOut])
+async def list_packages(
+    status: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.read")),
+):
+    from sqlalchemy import select as _select, desc
+    from velaris_shared.db.models import DeploymentPackageModel
+
+    stmt = (_select(DeploymentPackageModel)
+            .where(DeploymentPackageModel.tenant_id == _tenant(user))
+            .order_by(desc(DeploymentPackageModel.created_at)))
+    if status:
+        stmt = stmt.where(DeploymentPackageModel.status == status)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [PackageOut.from_model(p) for p in rows]
+
+
+@router.get("/packages/{package_id}", response_model=PackageOut)
+async def get_package(
+    package_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.read")),
+):
+    return PackageOut.from_model(await _package_or_404(session, package_id, user))
+
+
+@router.get("/packages/{package_id}/bundle")
+async def get_package_bundle(
+    package_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.read")),
+):
+    """The frozen bundle itself — what the target will receive, byte for byte."""
+    pkg = await _package_or_404(session, package_id, user)
+    return pkg.bundle
+
+
+@router.post("/packages/{package_id}/rebuild", response_model=PackageOut)
+async def rebuild_package(
+    package_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.write")),
+):
+    """Re-resolve a draft against the current environment. Refused once sealed."""
+    from case_service.hxdeploy import packages
+    pkg = await _package_or_404(session, package_id, user)
+    try:
+        await packages.rebuild_package(session, pkg)
+    except packages.PackageError as exc:
+        raise HTTPException(409, str(exc))
+    await session.commit()
+    await session.refresh(pkg)
+    return PackageOut.from_model(pkg)
+
+
+@router.post("/packages/{package_id}/seal", response_model=PackageOut)
+async def seal_package(
+    package_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.seal")),
+):
+    """Freeze the bundle and stamp its checksum. A sealed package never changes."""
+    from case_service.hxdeploy import packages
+    pkg = await _package_or_404(session, package_id, user)
+    try:
+        await packages.seal_package(session, pkg, _actor(user))
+    except packages.PackageError as exc:
+        raise HTTPException(409, str(exc))
+    await session.commit()
+    await session.refresh(pkg)
+    return PackageOut.from_model(pkg)
+
+
+@router.delete("/packages/{package_id}", status_code=204)
+async def delete_package(
+    package_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.packages.write")),
+):
+    """Discard a draft. A sealed package is evidence of what was shipped and
+    stays; runs reference it."""
+    pkg = await _package_or_404(session, package_id, user)
+    if pkg.status == "sealed":
+        raise HTTPException(409, "A sealed package cannot be deleted — it is what a run shipped.")
+    await session.delete(pkg)
+    await session.commit()
+    return None
+
+
+@router.post("/import", dependencies=[Depends(_import_rl)])
 async def import_bundle(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -541,7 +775,7 @@ async def import_bundle(
     Auth: Bearer <import_api_key> in Authorization header, OR X-Deploy-Key header.
     """
     from sqlalchemy import select as _select
-    from case_service.db.models import EnvironmentRegistryModel
+    from velaris_shared.db.models import EnvironmentRegistryModel
     from case_service.hxdeploy.packager import apply_bundle
 
     # Resolve the provided key
@@ -570,8 +804,25 @@ async def import_bundle(
     if not isinstance(bundle, dict):
         raise HTTPException(400, "Body must be a JSON object (bundle)")
 
+    # Integrity, not just authenticity. The key says who sent it; the checksum
+    # says the bundle is the one that was sealed and approved. A package built
+    # by this platform always carries one — an older sender may not, and that
+    # case is allowed through rather than breaking existing pushes.
+    declared = bundle.get("package_checksum")
+    if declared:
+        from case_service.hxdeploy.packages import canonical_bytes
+        from case_service.marketplace.checksum import ChecksumError, verify_checksum
+        try:
+            verify_checksum(canonical_bytes(bundle), str(declared))
+        except ChecksumError as exc:
+            raise HTTPException(400, str(exc))
+
     try:
-        result = await apply_bundle(session, bundle, target_tenant)
+        # The import identity, not a person: everything this bundle creates is
+        # attributed to the machine credential that delivered it, which is also
+        # what makes an imported bot's `created_by` somebody nobody can be.
+        result = await apply_bundle(session, bundle, target_tenant,
+                                    imported_by=f"import:{target_env.name}")
     except ValueError as ve:
         raise HTTPException(400, str(ve))
     await session.commit()
@@ -586,7 +837,7 @@ class DeployCallbackIn(BaseModel):
     error_message:    str | None = None
 
 
-@router.post("/runs/{run_id}/callback")
+@router.post("/runs/{run_id}/callback", dependencies=[Depends(_import_rl)])
 async def deploy_callback(
     run_id: uuid.UUID,
     body: DeployCallbackIn,
@@ -599,7 +850,7 @@ async def deploy_callback(
     Verifies HMAC signature against the environment's webhook_secret,
     then updates the run status accordingly.
     """
-    from case_service.db.models import DeploymentRunModel, EnvironmentRegistryModel
+    from velaris_shared.db.models import DeploymentRunModel, EnvironmentRegistryModel
 
     run = await session.get(DeploymentRunModel, run_id)
     if not run:

@@ -21,8 +21,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.models import ReplayRunModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import ReplayRunModel
 
 
 def result_digest(summary: dict[str, Any] | None) -> str:

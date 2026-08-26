@@ -11,7 +11,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     ArtifactBranchModel,
     CaseTypeModel,
     ConnectorRegistryModel,
@@ -29,8 +29,8 @@ _RULE_JSON = {
 
 
 def _viewer_headers() -> dict:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
     s = get_settings()
     token = create_dev_token(
         user_id=str(uuid.uuid4()), username="test-viewer", roles=["viewer"],

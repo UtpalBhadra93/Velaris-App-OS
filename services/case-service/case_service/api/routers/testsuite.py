@@ -21,17 +21,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     TestSuiteModel, TestRunModel, TestResultModel, MarketplaceWorkspaceModel, CaseTypeModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.testsuite import isolation, runner, conformance
 from case_service.testsuite.builtin import get_builtin_suite, list_builtin_suites
 from case_service.testsuite.generator import generate_structural
 
-from case_service.hxguard import service as hxguard
+from velaris_shared.hxguard import service as hxguard
 
 router = APIRouter(prefix="/testsuite", tags=["testsuite"])
 

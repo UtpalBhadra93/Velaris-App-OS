@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseSessionChallengeModel,
     CaseSessionModel,
     TenantModel,
@@ -359,7 +359,7 @@ def _embed_frames(frames: list):
 async def _verified_id_document(session: AsyncSession, case_id: uuid.UUID):
     """The most recent PASSED document verification's document for this case —
     the P4b gate gives the video stage its ground truth."""
-    from case_service.db.models import DocumentVerificationModel
+    from velaris_shared.db.models import DocumentVerificationModel
     return (await session.execute(
         select(DocumentVerificationModel)
         .where(DocumentVerificationModel.case_id == case_id,
@@ -375,7 +375,7 @@ async def _face_match_check(session: AsyncSession, row: CaseSessionModel,
     (and the fact of comparison) is stored."""
     import asyncio
 
-    from case_service.db.models import CaseSessionParticipantModel
+    from velaris_shared.db.models import CaseSessionParticipantModel
 
     name = "face_match"
     if not await tenant_kyc_biometrics_enabled(session, row.tenant_id):
@@ -447,8 +447,8 @@ async def run_kyc_job(session_id: uuid.UUID) -> None:
     import logging
 
     from case_service.api.routers.cases import _audit
-    from case_service.db.models import CaseSessionKycSignalsModel
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.models import CaseSessionKycSignalsModel
+    from velaris_shared.db.session import get_session_factory
     from case_service.meet import intelligence as meet_intel
 
     log = logging.getLogger(__name__)

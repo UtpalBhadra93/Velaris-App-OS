@@ -17,8 +17,8 @@ import uuid
 
 import pytest
 
-from case_service.core import error_codes
-from case_service.db.models import VariableNamespaceModel
+from velaris_shared.core import error_codes
+from velaris_shared.db.models import VariableNamespaceModel
 
 
 def _code(resp) -> str | None:

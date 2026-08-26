@@ -7,6 +7,9 @@ license = {text = "BSL-1.1"}
 dependencies = [
     "velaris-ir",
     "velaris-sdk",
+    # observability/events.py writes TelemetryEventModel; the model lives in the
+    # shared layer since 13b (it was reaching into case_service before, undeclared).
+    "velaris-shared",
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.34",
     "temporalio>=1.8,<2",

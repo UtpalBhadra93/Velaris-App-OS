@@ -68,7 +68,7 @@ async def _collect_security_events(
 ) -> dict:
     """Aggregated counts of security events in the period."""
     try:
-        from case_service.db.models import SecurityEventModel
+        from velaris_shared.db.models import SecurityEventModel
     except ImportError:
         return {"control": "Security event monitoring", "available": False}
 
@@ -102,7 +102,7 @@ async def _collect_security_events(
 async def _collect_access_review(session: AsyncSession) -> dict:
     """Snapshot of users + roles + active assignments — for access review."""
     try:
-        from case_service.db.models import UserDirectoryModel
+        from velaris_shared.db.models import UserDirectoryModel
     except ImportError:
         return {"control": "Access review", "available": False}
 
@@ -134,7 +134,7 @@ async def _collect_gdpr_log(
     session: AsyncSession, period_start: datetime, period_end: datetime,
 ) -> dict:
     try:
-        from case_service.db.models import GDPRRequestModel
+        from velaris_shared.db.models import GDPRRequestModel
     except ImportError:
         return {"control": "GDPR requests", "available": False}
 
@@ -156,7 +156,7 @@ async def _collect_gdpr_log(
 async def _collect_audit_summary(
     session: AsyncSession, period_start: datetime, period_end: datetime,
 ) -> dict:
-    from case_service.db.models import CaseAuditLogModel
+    from velaris_shared.db.models import CaseAuditLogModel
     q = select(
         CaseAuditLogModel.action, func.count().label("c"),
     ).where(

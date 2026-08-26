@@ -22,9 +22,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import ReplayRunModel
+from velaris_shared.db.models import ReplayRunModel
 from case_service.hxreplay import runner
-from case_service.process_mining import analyzer
+from velaris_shared.process_mining import analyzer
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from case_service.db.models import MarketplaceInstallModel
+from velaris_shared.db.models import MarketplaceInstallModel
 
 PKG = "velaris/hxstorefront"
 
@@ -85,7 +85,7 @@ async def test_public_dark_after_uninstall(session, client, storefront_installed
     assert ok.status_code == 200
     # Revoke the install.
     from sqlalchemy import update
-    from case_service.db.models import MarketplaceInstallModel as MI
+    from velaris_shared.db.models import MarketplaceInstallModel as MI
     from datetime import datetime, timezone
     await session.execute(update(MI).where(MI.package_id == PKG)
                           .values(revoked_at=datetime.now(timezone.utc)))

@@ -20,22 +20,22 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     StorefrontCategoryModel, StorefrontInventoryLogModel, StorefrontNavigationModel,
     StorefrontPageModel, StorefrontProductCategoryModel, StorefrontProductImageModel,
     StorefrontMediaModel, StorefrontProductModel, StorefrontProductVariantModel,
     StorefrontPromotionModel, StorefrontSeoOverrideModel, StorefrontStoreModel,
     StorefrontThemeModel, StorefrontVariantOptionModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.storefront import content as sf_content
 from case_service.storefront import service as sf_service
 from case_service.storefront.common import get_store_for_user, require_enabled_user
 
-from case_service.hxguard import service as hxguard
+from velaris_shared.hxguard import service as hxguard
 
 router = APIRouter(prefix="/storefront", tags=["storefront"])
 
@@ -1076,7 +1076,7 @@ async def upload_media(
     await require_enabled_user(session, user)
     store = await get_store_for_user(session, slug, user)
 
-    from case_service.middleware.file_security import safe_filename, validate_upload_filename
+    from velaris_shared.middleware.file_security import safe_filename, validate_upload_filename
     raw = file.filename or "unnamed"
     ok, reason = validate_upload_filename(raw, allowed_extensions=_MEDIA_EXTS)
     if not ok:

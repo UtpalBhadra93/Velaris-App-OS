@@ -377,7 +377,7 @@ class TestTheExportIsRunnable:
     def test_the_error_code_the_app_matches_still_exists(self):
         # Checked against the server's own constant rather than a copy of the
         # string, so renaming the code there fails here instead of in the field.
-        from case_service.core.error_codes import AUTH_SSO_REQUIRED_400
+        from velaris_shared.core.error_codes import AUTH_SSO_REQUIRED_400
         from case_service.codegen.generator import AppConfig, generate_app
         api = generate_app(AppConfig())["src/api/ApiContext.tsx"]
         assert f"'{AUTH_SSO_REQUIRED_400}'" in api

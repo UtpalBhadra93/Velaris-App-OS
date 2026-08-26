@@ -27,20 +27,20 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.db.models import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import (
     ConnectorRegistryModel, IntegrationCallModel, DeadLetterQueueModel,
     WebhookReceiverEventModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.hxbridge.encryption import encrypt_credentials, decrypt_credentials, mask_credentials
 from case_service.hxbridge.executor import execute_connector, form_lookup_connector, retry_dlq_item
 from case_service import hxvault
 from case_service.hxbridge.protocol import list_connector_types, get_connector
 import case_service.hxbridge.connectors  # noqa: F401 — triggers self-registration
-from case_service.core.error_codes import (
+from velaris_shared.core.error_codes import (
     CONN_DISABLED_400,
     CONN_NOTFOUND_404,
     CONN_ROLE_403,
@@ -97,7 +97,7 @@ async def _require_namespace_role(session: AsyncSession, user: AuthenticatedUser
     POST /variables/namespaces) — plain connector CRUD must not be a path to
     squatting a namespace name another integration expects to own.
     Decided by HxGuard (action: connector.namespace.register, fail-closed)."""
-    from case_service import hxguard
+    from velaris_shared import hxguard
     await hxguard.require(
         session, hxguard.subject_from_user(user), "connector.namespace.register",
     )
@@ -192,7 +192,7 @@ async def get_connector_detail(
 ):
     connector = await _get_or_404(session, connector_id)
     out = _connector_out(connector, include_config=True)
-    from case_service.db.models import VariableNamespaceModel
+    from velaris_shared.db.models import VariableNamespaceModel
     ns = (await session.execute(
         select(VariableNamespaceModel)
         .where(VariableNamespaceModel.owner_type.in_(("connector", "devconn")))
@@ -259,8 +259,12 @@ async def delete_connector(
     )
     await session.delete(connector)
     await session.commit()
-    from case_service import hxguard
+    from velaris_shared import hxguard
+    from velaris_shared.hxguard import generation as _hxguard_generation
     hxguard.invalidate_cache()
+    # The commit above already closed the transaction, so the bump gets its own.
+    await _hxguard_generation.bump(session, reason="devconn.delete")
+    await session.commit()
 
 
 # ── Test & sandbox ────────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.bots import credentials, service, tokens
-from case_service.db.models import (
+from velaris_shared.db.models import (
     BotCredentialLeaseModel,
     BotCredentialModel,
     BotDefinitionModel,
@@ -290,7 +290,7 @@ class TestOutputAuthority:
         """Status, assignment and permissions are decisions the workflow and the
         operator own. A container that could make them would be a
         privilege-escalation path dressed as an integration."""
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
         from tests.phase_hxsentinel._seed import seed_case
 
         bot = await _bot(session)
@@ -317,7 +317,7 @@ class TestOutputAuthority:
     async def test_an_attended_job_is_proposed_not_applied(self, session):
         """The human is the commit point — that is the whole difference between
         an attended bot and an unattended one."""
-        from case_service.db.models import CaseInstanceModel
+        from velaris_shared.db.models import CaseInstanceModel
         from tests.phase_hxsentinel._seed import seed_case
 
         bot = await _bot(session)

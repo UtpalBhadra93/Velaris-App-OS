@@ -19,10 +19,10 @@ from case_service.api.schemas.cases import (
     WorkQueueCreate,
     WorkQueueResponse,
 )
-from case_service.auth.dependencies import get_current_user
-from case_service.db import repository as repo
-from case_service.db.models import CaseAssignmentModel, CaseSLAInstanceModel
-from case_service.db.session import get_session
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.db import repository as repo
+from velaris_shared.db.models import CaseAssignmentModel, CaseSLAInstanceModel
+from velaris_shared.db.session import get_session
 
 router = APIRouter(prefix="/queues", tags=["queues"], dependencies=[Depends(get_current_user)])
 

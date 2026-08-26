@@ -15,7 +15,7 @@ from case_service.mail.threader import (
 )
 from case_service.mail.parser import parse_rfc822
 from case_service.mail.service import EmailService
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel, CaseInstanceModel,
     EmailAccountModel, EmailTemplateModel, EmailMessageModel,
 )

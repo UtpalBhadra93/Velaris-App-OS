@@ -258,9 +258,17 @@ def main():
 
         result = activate_key(key_input, key_id, mac, machine_id)
 
+        # Whether the server actually ACTIVATED the key, as opposed to whether
+        # this script finished. The cache below used to be written "active"
+        # regardless — including after "unreachable" and after a server error —
+        # so an install whose activation never landed still believed it was
+        # activated, and said so at every startup while the dashboard showed it
+        # pending. Two live installs sat like that until 2026-08-24.
+        activated = False
+
         if "error" in result and result["error"] == "unreachable":
             print(yellow("  ⚠  Registration server unreachable. Proceeding offline."))
-            print(yellow("     Your key will be verified on first startup."))
+            print(yellow("     Activate once it is reachable:  ./activate-velaris.sh"))
         elif result.get("status") == "revoked":
             print(red("  ✗ This key has been revoked. Contact support."))
             sys.exit(1)
@@ -270,15 +278,23 @@ def main():
             sys.exit(1)
         elif result.get("status") in ("activated", "active"):
             print(green("  ✓ Key activated and bound to this machine."))
+            activated = True
         elif "error" in result:
             print(yellow(f"  ⚠  Activation server error: {result['error']}. Continuing."))
+            print(yellow("     Activate later with:  ./activate-velaris.sh"))
         else:
-            print(green("  ✓ Key verified."))
+            # An unrecognised reply is not a success. Saying so here is the
+            # difference between an operator running one command now and a
+            # dashboard that reads "pending" for months.
+            print(yellow(f"  ⚠  Unrecognised activation reply: {result}."))
+            print(yellow("     Activate later with:  ./activate-velaris.sh"))
 
         # ── Write key cache ───────────────────────────────────────────
         cache = {
             "key_id":        key_id,
-            "status":        "active",
+            # Only what the server confirmed. "pending" makes the next startup
+            # check say so out loud instead of agreeing with itself.
+            "status":        "active" if activated else "pending",
             "mac":           mac,
             "last_verified": datetime.now(timezone.utc).isoformat(),
             "grace_days":    int(os.environ.get("KEY_GRACE_DAYS", "7")),

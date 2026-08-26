@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel, DocumentModel, DocumentVersionModel,
 )
 from case_service.storage import get_storage_backend

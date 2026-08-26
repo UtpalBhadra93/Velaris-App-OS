@@ -79,7 +79,7 @@ async def _get_rules(session) -> list[Any]:
     if now - _cache_loaded_at < _CACHE_TTL and _rule_cache:
         return _rule_cache
     from sqlalchemy import select
-    from case_service.db.models import SecurityRuleModel
+    from velaris_shared.db.models import SecurityRuleModel
     result = await session.execute(
         select(SecurityRuleModel).where(SecurityRuleModel.enabled == True)
     )
@@ -258,7 +258,7 @@ async def _persist_incident(
     score: float,
     patterns_matched: list[str],
 ) -> uuid.UUID:
-    from case_service.db.models import SecurityIncidentModel
+    from velaris_shared.db.models import SecurityIncidentModel
     incident = SecurityIncidentModel(
         rule_id=rule.id,
         pattern_type=rule.pattern_type,
@@ -285,7 +285,7 @@ async def _persist_shield_event(
     score: float,
     patterns_matched: list[str],
 ) -> None:
-    from case_service.db.models import ShieldEventModel
+    from velaris_shared.db.models import ShieldEventModel
     ev = ShieldEventModel(
         event_type=event_type,
         actor_id=actor_id,
@@ -309,7 +309,7 @@ async def _emit_hxstream(
     incident_id: uuid.UUID | None,
 ) -> None:
     try:
-        from case_service.hxstream.emitter import emit_trace
+        from velaris_shared.hxstream.emitter import emit_trace
         await emit_trace(
             "security_event",
             {

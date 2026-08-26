@@ -23,7 +23,7 @@ import uuid
 
 import pytest
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseTypeModel,
     CaseTypeStageModel,
     RuleDefinitionModel,

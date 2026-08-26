@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from case_service.compliance import retention
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseEventLogModel,
     CaseInstanceModel,
     RetentionPolicyModel,
@@ -324,7 +324,7 @@ class TestAnonymize:
 async def _tenant(session, slug):
     """A real tenant row — retention resolves a policy's tenant token through
     `tenancy.identity`, because policies store a slug and cases store a GUID."""
-    from case_service.db.models import TenantModel
+    from velaris_shared.db.models import TenantModel
     from case_service.tenancy import identity
 
     identity.clear_cache()
@@ -547,7 +547,7 @@ class TestSchedulerDefaults:
     """Two switches, both off. A convenience that deletes data is not one."""
 
     async def test_both_flags_default_off(self):
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
 
         s = get_settings()
         assert s.retention_scheduler_enabled is False

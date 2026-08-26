@@ -1,0 +1,21 @@
+[Unit]
+Description=Velaris internal certificate rotation (roadmap #18)
+Documentation=file://__VELARIS_DIR__/deploy/tls/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__VELARIS_USER__
+WorkingDirectory=__VELARIS_DIR__
+EnvironmentFile=__VELARIS_DIR__/.env
+Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The script restarts units and the gateway container when it renews, which a
+# plain user cannot do — that is why this needs root and the script does not.
+ExecStart=__VELARIS_DIR__/deploy/tls/rotate-internal-certs.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=velaris-cert-rotate
+
+[Install]
+WantedBy=multi-user.target

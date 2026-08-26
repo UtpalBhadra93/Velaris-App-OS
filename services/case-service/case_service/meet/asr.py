@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from case_service.config import get_settings
+from velaris_shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 

@@ -40,7 +40,7 @@ class AssignmentAIResolver:
     ) -> tuple[Any, float] | tuple[Any, float, dict[str, Any]]:
         import hashlib
 
-        from case_service.hxnexus.factory import active_model, generate_json
+        from velaris_shared.llm.factory import active_model, generate_json
 
         rule = context.get("rule") or {}
         case_ctx = context.get("context") or {}
@@ -79,7 +79,7 @@ class AssignmentAIResolver:
         # bounded by per-case-type opt-in + the audited policy_alternative.
         if assignee_type == "user":
             from sqlalchemy import select
-            from case_service.db.models import UserDirectoryModel
+            from velaris_shared.db.models import UserDirectoryModel
             exists = (await session.execute(
                 select(UserDirectoryModel.id)
                 .where(UserDirectoryModel.user_id == assignee_id).limit(1)

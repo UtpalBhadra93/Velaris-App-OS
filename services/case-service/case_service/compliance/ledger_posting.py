@@ -85,7 +85,7 @@ async def post_capture(session: AsyncSession, pr) -> Any | None:
     Returns the transaction, or None if posting was skipped or failed. Never
     raises: see the module docstring.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     if not get_settings().ledger_posting_enabled:
         return None
@@ -130,7 +130,7 @@ async def post_refund(session: AsyncSession, pr) -> Any | None:
     The mirror of the capture, but recorded as its own event rather than as a
     reversal of it — both really happened, and the history should say so.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     if not get_settings().ledger_posting_enabled:
         return None
@@ -181,7 +181,7 @@ async def post_disbursement(session: AsyncSession, disb) -> Any | None:
     out of `reconcile_payments()` — that compares captured payments against
     cash received, and money going the other way is not a discrepancy in it.
     """
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
 
     if not get_settings().ledger_posting_enabled:
         return None

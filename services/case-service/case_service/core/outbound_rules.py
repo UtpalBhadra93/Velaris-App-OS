@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import OutboundConnectorRuleModel, ConnectorRegistryModel
+from velaris_shared.db.models import OutboundConnectorRuleModel, ConnectorRegistryModel
 from case_service.hxbridge.executor import execute_connector
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ async def _fire_rule(
     case_id: uuid.UUID,
 ) -> None:
     """Execute one rule's connector in a separate session to avoid contaminating the caller's session."""
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
     try:
         async with get_session_factory()() as session:
             await execute_connector(

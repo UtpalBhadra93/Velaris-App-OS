@@ -19,7 +19,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CheckoutOrderModel, CheckoutServiceTokenModel, CheckoutWebhookEventModel,
     CheckoutWebhookIntegrationModel, StorefrontStoreModel,
     TestResultModel, TestRunModel, TestSuiteModel,

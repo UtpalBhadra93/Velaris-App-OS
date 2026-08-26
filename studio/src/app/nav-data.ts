@@ -230,7 +230,21 @@ export const NAV_DATA: NavEntry[] = [
     label: "Bots",
     description: "RPA bot registry and job queue | Approval by a second admin | Attended jobs propose, the operator commits",
     section: "DevOps",
-    roles: ["admin", "developer"],
+    roles: ["devops", "admin", "developer"],
+  },
+  {
+    path: "/calendar",
+    label: "Calendar",
+    description: "Who is away and who covers | Assignment and escalation skip people on leave | Business calendars for SLA hours | A colleague sees busy, never why",
+    section: "Operations",
+    roles: ["admin", "manager", "case_worker", "developer"],
+  },
+  {
+    path: "/scheduler",
+    label: "Scheduler",
+    description: "Timed actions | Nightly email, bot runs, reports, warehouse sync | Approval by a second person | Every firing on the record",
+    section: "DevOps",
+    roles: ["devops", "admin", "developer", "manager"],
   },
   {
     path: "/risk-review",

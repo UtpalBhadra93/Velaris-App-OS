@@ -30,9 +30,9 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.introspection import get_introspector
-from case_service.db.models import CaseInstanceModel, HxDBMigrateRowLinkModel
+from velaris_shared.db import repository as repo
+from velaris_shared.db.introspection import get_introspector
+from velaris_shared.db.models import CaseInstanceModel, HxDBMigrateRowLinkModel
 from case_service.hxdbmigrate import report as _report
 from case_service.hxdbmigrate.migrate import _exclusions
 

@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import CaseInstanceVariableModel, DataLineageEventModel
+from velaris_shared.db.models import CaseInstanceVariableModel, DataLineageEventModel
 
 
 def variable_value(v: CaseInstanceVariableModel) -> Any:
@@ -158,7 +158,7 @@ async def rules_visible_sensitivities(session: AsyncSession, case_type_id,
     to rules — replay must feed the same constant for parity."""
     if not keys or case_type_id is None:
         return {}
-    from case_service.db.models import CaseTypeVariableModel, VariableNamespaceModel
+    from velaris_shared.db.models import CaseTypeVariableModel, VariableNamespaceModel
 
     ns_names = {k.split(".", 1)[0] for k in keys if "." in k}
     ns_rows = (await session.execute(

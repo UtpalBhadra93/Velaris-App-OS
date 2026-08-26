@@ -23,13 +23,13 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-import case_service.db.session as _db_session
-from case_service.db.models import Base
-from case_service.db.session import get_session
+import velaris_shared.db.session as _db_session
+from velaris_shared.db.models import Base
+from velaris_shared.db.session import get_session
 from case_service.main import app
 
 # Disable rate limiting in tests
-from case_service.middleware.rate_limit import RateLimitMiddleware
+from velaris_shared.middleware.rate_limit import RateLimitMiddleware
 app.middleware_stack = None  # force rebuild
 app.user_middleware = [m for m in app.user_middleware if m.cls is not RateLimitMiddleware]
 
@@ -76,7 +76,7 @@ if EXTERNAL_MODE:
         # get_settings().database_backend (PG nextval vs MySQL counter row). Align the
         # cached settings singleton with the engine's dialect, else it would call the
         # PG backend against MySQL and silently no-op (best-effort try/except).
-        from case_service.config import get_settings
+        from velaris_shared.config import get_settings
         get_settings().database_backend = "mysql"
 else:
     # A FILE-backed SQLite DB with NullPool — every session gets its OWN
@@ -165,8 +165,8 @@ if EXTERNAL_MODE:
 # so require_role()/require_admin() pass. Tests needing the anonymous case use
 # the `anon_client` fixture instead.
 def _mint_admin_token() -> str:
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
 
     s = get_settings()
     return create_dev_token(
@@ -331,7 +331,7 @@ def _isolate_dependency_overrides():
 
 @_pytest.fixture(autouse=True)
 def _isolate_settings():
-    from case_service.config import get_settings
+    from velaris_shared.config import get_settings
     s = get_settings()
     saved = dict(s.__dict__)
     yield

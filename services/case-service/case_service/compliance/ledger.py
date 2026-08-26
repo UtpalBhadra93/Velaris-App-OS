@@ -35,7 +35,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import (
+from velaris_shared.db.models import (
     LedgerAccountModel,
     LedgerEntryModel,
     LedgerTransactionModel,
@@ -315,7 +315,7 @@ async def reconcile_payments(
       account**, where the movement actually is.
     """
     from case_service.compliance.ledger_posting import CASH_CODE
-    from case_service.db.models import PaymentRequestModel
+    from velaris_shared.db.models import PaymentRequestModel
 
     pq = select(
         func.coalesce(func.sum(PaymentRequestModel.amount_cents), 0)

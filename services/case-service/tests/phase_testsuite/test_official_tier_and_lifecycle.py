@@ -15,7 +15,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from case_service.api.routers import marketplace as mkt
-from case_service.db.models import (
+from velaris_shared.db.models import (
     MarketplaceInstallModel, TestSuiteModel, TestRunModel, TestResultModel,
 )
 from case_service.marketplace.official_registry import official_package_ids

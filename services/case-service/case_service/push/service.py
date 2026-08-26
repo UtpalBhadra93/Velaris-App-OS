@@ -43,7 +43,7 @@ async def resolve_channels(
     case_type_id: uuid.UUID | None = None,
 ) -> list[str]:
     """Return ordered list of enabled channel names for this user+event+case_type."""
-    from case_service.db.models import NotificationPreferenceModel, CaseTypeNotificationOverrideModel
+    from velaris_shared.db.models import NotificationPreferenceModel, CaseTypeNotificationOverrideModel
 
     # Case-type override
     if case_type_id:
@@ -81,7 +81,7 @@ async def send_to_user(
     case_type_id: uuid.UUID | None = None,
 ) -> list[DeliveryResult]:
     """Deliver a notification to all active devices of a user, respecting preferences."""
-    from case_service.db.models import DeviceTokenModel, NotificationLogModel
+    from velaris_shared.db.models import DeviceTokenModel, NotificationLogModel
 
     channels = await resolve_channels(session, user_id, event_type, case_type_id)
     if not channels:

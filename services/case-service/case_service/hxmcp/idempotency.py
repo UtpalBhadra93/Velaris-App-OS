@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from case_service.db.models import MCPIdempotencyKeyModel
+from velaris_shared.db.models import MCPIdempotencyKeyModel
 
 
 class IdempotencyConflict(Exception):
@@ -50,7 +50,7 @@ async def claim(user_id: str, key: str, tool_name: str, req_hash: str) -> Replay
     """Reserve the key. Returns a Replay if already completed, else None
     (caller proceeds to execute). Raises IdempotencyConflict on mismatch or
     an in-flight duplicate."""
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     async with get_session_factory()() as s:
         row = MCPIdempotencyKeyModel(
@@ -81,7 +81,7 @@ async def claim(user_id: str, key: str, tool_name: str, req_hash: str) -> Replay
 
 
 async def complete(user_id: str, key: str, response: dict, is_error: bool) -> None:
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     async with get_session_factory()() as s:
         existing = (await s.execute(
@@ -99,7 +99,7 @@ async def complete(user_id: str, key: str, response: dict, is_error: bool) -> No
 
 async def release(user_id: str, key: str) -> None:
     """Delete a claim whose write did not commit, so a retry can re-run."""
-    from case_service.db.session import get_session_factory
+    from velaris_shared.db.session import get_session_factory
 
     async with get_session_factory()() as s:
         existing = (await s.execute(

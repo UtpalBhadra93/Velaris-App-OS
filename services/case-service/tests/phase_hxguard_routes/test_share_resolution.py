@@ -23,7 +23,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _seed_user(session, *, display_name: str | None = None):
-    from case_service.db.models import HelixUserModel
+    from velaris_shared.db.models import HelixUserModel
     username = f"share_{uuid.uuid4().hex[:8]}"
     row = HelixUserModel(
         username=username, email=f"{username}@test.local",

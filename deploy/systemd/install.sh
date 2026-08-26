@@ -46,7 +46,7 @@ echo "uv=$UV  npm=$NPM"
 echo "database=$(grep -E '^\s+database:' "$VELARIS_DIR/velaris.yaml" | head -1 | sed -E 's/.*database:[[:space:]]*//')"
 echo
 
-for unit in velaris-engine velaris-case-service velaris-studio; do
+for unit in velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio; do
   sed -e "s|__VELARIS_USER__|$VELARIS_USER|g" \
       -e "s|__VELARIS_DIR__|$VELARIS_DIR|g" \
       -e "s|__VELARIS_HOME__|$VELARIS_HOME|g" \
@@ -68,11 +68,11 @@ if ! systemctl is-enabled --quiet docker 2>/dev/null; then
 fi
 
 systemctl daemon-reload
-systemctl enable velaris-engine velaris-case-service velaris-studio
+systemctl enable velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio
 echo
 echo "Installed and enabled (start on boot). Now:"
 echo "  ./stop-velaris.sh                                   # clear the nohup'd processes first"
-echo "  sudo systemctl start velaris-engine velaris-case-service velaris-studio"
+echo "  sudo systemctl start velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio"
 echo "  systemctl status velaris-studio"
 echo "  journalctl -u velaris-studio -f"
 echo

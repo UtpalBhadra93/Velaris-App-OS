@@ -14,6 +14,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=__VELARIS_USER__
 WorkingDirectory=__VELARIS_DIR__
+# Historical default; .env below overrides it when the install sets a port.
+Environment=VELARIS_CASE_PORT=8201
 EnvironmentFile=__VELARIS_DIR__/.env
 Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -28,7 +30,7 @@ Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr
 # retrying. On timeout this fails the unit on purpose; Restart=always below
 # turns that into a retry loop that recovers by itself.
 ExecStartPre=__WAITDEPS__ __VELARIS_DIR__
-ExecStart=__EXEC__ __VELARIS_DIR__ __UV__ run uvicorn case_service.main:app --host 127.0.0.1 --port 8201 --app-dir services/case-service
+ExecStart=__EXEC__ __VELARIS_DIR__ __UV__ run uvicorn case_service.main:app --host 127.0.0.1 --port ${VELARIS_CASE_PORT} --app-dir services/case-service --proxy-headers
 
 Restart=always
 RestartSec=5

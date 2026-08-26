@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from case_service.core import error_codes
+from velaris_shared.core import error_codes
 
 _REPO = Path(__file__).resolve().parents[3]
 _MARKDOWN = _REPO / "docs" / "Future" / "error-catalog.md"

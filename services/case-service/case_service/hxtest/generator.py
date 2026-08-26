@@ -36,7 +36,7 @@ _SCENARIO_SYSTEM = (
 async def generate_scenarios(definition_json: dict, *, case_type_name: str = "") -> list[dict]:
     """Generate scenario tests via HxNexus. Returns [] when AI is unavailable
     (advisory layer — never an error) or for any test that fails DSL validation."""
-    from case_service.hxnexus.factory import generate_json
+    from velaris_shared.llm.factory import generate_json
 
     prompt = f"Case type '{case_type_name}' definition:\n{json.dumps(definition_json)}"
     result = await generate_json(prompt, system=_SCENARIO_SYSTEM)

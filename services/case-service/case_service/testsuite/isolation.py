@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db.models import TenantModel, CaseInstanceModel, CaseTypeModel
+from velaris_shared.db.models import TenantModel, CaseInstanceModel, CaseTypeModel
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,8 @@ EPHEMERAL_PREFIX = "hxtest-"
 
 def mint_token(roles: list[str], tenant_id: uuid.UUID | None = None) -> str:
     """Mint a short-lived token for a test identity (decision D5)."""
-    from case_service.auth.jwt_handler import create_dev_token
-    from case_service.config import get_settings
+    from velaris_shared.auth.jwt_handler import create_dev_token
+    from velaris_shared.config import get_settings
     s = get_settings()
     return create_dev_token(
         user_id=str(uuid.uuid4()),

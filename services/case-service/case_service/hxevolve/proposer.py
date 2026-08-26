@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.hxnexus.factory import generate_json as _ai_generate_json
+from velaris_shared.llm.factory import generate_json as _ai_generate_json
 from case_service.hxevolve import gates
 from case_service.nlp import routing_builder, rule_builder, sla_builder
 

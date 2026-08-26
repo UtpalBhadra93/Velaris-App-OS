@@ -12,7 +12,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from case_service.checkout.tokens import generate_token
-from case_service.db.models import (
+from velaris_shared.db.models import (
     CaseInstanceModel, CheckoutNotificationLogModel, CheckoutOrderModel,
     MarketplaceInstallModel,
 )

@@ -14,14 +14,14 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser, ActiveAccessGroup
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser, ActiveAccessGroup
 from case_service.hxglobal import regions as _  # noqa: F401
 from case_service.hxglobal.protocol import get_region_adapter, _REGISTRY
 from case_service.hxglobal.sovereignty import resolve_region
 from case_service.hxglobal.migration import migrate_tenant
 from case_service.hxglobal.health import poll_region_health
-from case_service.db.models import RegionModel
+from velaris_shared.db.models import RegionModel
 from case_service.main import app
 
 
@@ -121,7 +121,7 @@ class TestSovereigntyResolver:
         session.add_all([primary, specific])
         await session.commit()
 
-        from case_service.db.models import SovereigntyRuleModel
+        from velaris_shared.db.models import SovereigntyRuleModel
         rule = SovereigntyRuleModel(tenant_id="tenant-eu", region_id=specific.id, regulation="GDPR")
         session.add(rule)
         await session.commit()

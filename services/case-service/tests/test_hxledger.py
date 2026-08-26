@@ -92,7 +92,7 @@ class TestBalanceIsEnforcedAtWrite:
     async def test_nothing_is_stored_when_a_posting_is_refused(self, session):
         from sqlalchemy import func, select
 
-        from case_service.db.models import LedgerEntryModel
+        from velaris_shared.db.models import LedgerEntryModel
 
         cash, revenue = await _accounts(session)
         before = (await session.execute(
@@ -137,7 +137,7 @@ class TestAppendOnlyCorrections:
     async def test_reversal_mirrors_the_original(self, session):
         from sqlalchemy import select
 
-        from case_service.db.models import LedgerEntryModel
+        from velaris_shared.db.models import LedgerEntryModel
 
         cash, revenue = await _accounts(session)
         txn = await L.post(session, lines=_lines(cash, revenue), description="sale")
@@ -214,7 +214,7 @@ class TestReconciliation:
 
     async def test_unposted_payment_shows_as_a_difference(self, session):
         """Money moved without a book entry — what a ledger exists to catch."""
-        from case_service.db.models import (
+        from velaris_shared.db.models import (
             CaseInstanceModel, CaseTypeModel, PaymentRequestModel,
         )
 

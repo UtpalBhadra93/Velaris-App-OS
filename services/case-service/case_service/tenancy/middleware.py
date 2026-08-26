@@ -42,7 +42,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         slug = request.headers.get("X-Tenant-Slug", "default")
 
         # Resolve tenant
-        from case_service.db.session import get_session_factory
+        from velaris_shared.db.session import get_session_factory
         from case_service.tenancy import repository as tenant_repo
 
         factory = get_session_factory()

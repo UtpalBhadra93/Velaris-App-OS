@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from case_service.config import get_settings
-from case_service.db.models import (
+from velaris_shared.config import get_settings
+from velaris_shared.db.models import (
     CaseSessionIntelligenceModel,
     CaseSessionModel,
     TenantModel,
@@ -188,7 +188,7 @@ class TestP4aIntelligence:
         with patch("case_service.meet.intelligence._unseal_recording",
                    new=AsyncMock(return_value=b"fake-mp4-bytes")), \
              patch("case_service.meet.intelligence._transcribe", return_value=fake_transcribe), \
-             patch("case_service.hxnexus.factory.check_ai_available",
+             patch("velaris_shared.llm.factory.check_ai_available",
                    new=AsyncMock(return_value=False)):
             await _intel.run_intelligence_job(row.id)
         body = (await client.get(f"{MEET}/sessions/{row.id}/intelligence")).json()

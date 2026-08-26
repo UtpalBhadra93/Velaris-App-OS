@@ -20,7 +20,7 @@ import uuid
 import pytest
 
 from case_service.api.routers.auth_real import _hash_password
-from case_service.db.models import HelixUserModel
+from velaris_shared.db.models import HelixUserModel
 from tests.conftest import ADMIN_HEADERS
 
 _PASSWORD = "Sm0ke-Test-Pw!"

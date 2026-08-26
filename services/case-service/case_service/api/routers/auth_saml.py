@@ -34,26 +34,26 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
-from case_service import hxguard
-from case_service.auth.dependencies import get_current_user
-from case_service.auth.models import AuthenticatedUser
-from case_service.core.error_codes import (
+from velaris_shared import hxguard
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.core.error_codes import (
     AUTH_DISABLED_403,
     AUTH_SAML_ASSERTION_400,
     AUTH_SAML_PROVISION_403,
     AUTH_SSO_UNCONFIGURED_404,
     coded,
 )
-from case_service.db.models import (
+from velaris_shared.db.models import (
     AuthOtpModel,
     HelixUserModel,
     SamlAssertionReplayModel,
     SamlAuthnRequestModel,
     SsoProviderModel,
 )
-from case_service.db.session import get_session
+from velaris_shared.db.session import get_session
 from case_service.identity import provisioning, saml
-from case_service.middleware.endpoint_rate_limit import rate_limit
+from velaris_shared.middleware.endpoint_rate_limit import rate_limit
 from case_service.tenancy.identity import resolve_tenant
 
 log = logging.getLogger(__name__)
@@ -202,7 +202,7 @@ async def saml_sp_key(
     imports. Generating is `identity.sso.configure` rather than `.read` because
     it writes key material and, with `regenerate`, invalidates the old one.
     """
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     from case_service.identity import saml_keys
 
     row, _cfg, _t = await _provider_for(session, tenant)
@@ -342,7 +342,7 @@ async def saml_acs(
       5. provision through the P0 spine
       6. mint a single-use handoff code, redirect
     """
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
 
     row, cfg, tenant_token = await _provider_for(session, tenant)
     if not _acs_matches_route(cfg, tenant):
@@ -552,7 +552,7 @@ async def _revoke_sessions(session: AsyncSession, user: HelixUserModel, *, by: s
     """
     from sqlalchemy import update
 
-    from case_service.db.models import AuthDeviceModel, RefreshTokenModel
+    from velaris_shared.db.models import AuthDeviceModel, RefreshTokenModel
 
     now = datetime.now(timezone.utc)
     uid = str(user.id)
@@ -589,7 +589,7 @@ async def saml_slo(
     from a success would tell an unauthenticated caller whether a given NameID
     exists here.
     """
-    from case_service.enterprise.security_events import log_security_event
+    from velaris_shared.db.security_events import log_security_event
     from case_service.identity import saml_keys
 
     row, cfg, _tenant = await _provider_for(session, tenant)
@@ -727,7 +727,7 @@ async def saml_exchange(
     IdP's redirect rather than from the user's own client.
     """
     from case_service.api.routers.auth_real import _make_tokens, _user_dict
-    from case_service.auth.devices import get_or_create_device
+    from velaris_shared.auth.devices import get_or_create_device
 
     digest = hashlib.sha256(body.code.encode()).hexdigest()
     now = datetime.now(timezone.utc)

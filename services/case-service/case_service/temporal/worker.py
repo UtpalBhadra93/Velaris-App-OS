@@ -58,6 +58,28 @@ CASE_ACTIVITIES = [
 ]
 
 
+#: The process-wide client, set by `main.py` at startup beside
+#: `app.state.temporal_client`. Background loops (the scheduler, for one) have no
+#: request and therefore no `app.state`, and a case opened by a cron line needs
+#: its lifecycle workflow exactly as much as one opened by a person does.
+_client: "Client | None" = None
+
+
+def set_client(client) -> None:
+    global _client
+    _client = client
+
+
+def get_client():
+    """The Temporal client, or None when Temporal is unavailable.
+
+    None is a normal answer, not an error: this deployment may not run Temporal,
+    and every caller treats a missing client as "no durable timers", never as a
+    failed operation.
+    """
+    return _client
+
+
 async def connect_temporal(
     host: str | None = None,
     namespace: str | None = None,

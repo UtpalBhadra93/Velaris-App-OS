@@ -1,0 +1,15 @@
+dependencies:
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 18.8.13
+- name: mysql
+  repository: https://charts.bitnami.com/bitnami
+  version: 14.0.3
+- name: mariadb
+  repository: https://charts.bitnami.com/bitnami
+  version: 27.0.7
+- name: valkey
+  repository: https://charts.bitnami.com/bitnami
+  version: 6.2.12
+digest: sha256:1c212f622d01fc9f47492807bc114912f8ab7a6cdce184ffdb8f3689918cc9d1
+generated: "2026-08-26T20:27:01.82168374+02:00"

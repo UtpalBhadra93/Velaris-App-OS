@@ -21,8 +21,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from case_service.db import repository as repo
-from case_service.db.introspection import get_introspector
+from velaris_shared.db import repository as repo
+from velaris_shared.db.introspection import get_introspector
 from case_service.hxdbmigrate import compliance, report as _report, semantic
 
 MAX_LIMIT = 1000    # hard cap on rows migrated per run (bounded — no unbounded load)
@@ -94,7 +94,7 @@ async def migrate_table(
     already_linked: set[str] = set()
     if pk is not None and rows and not dry_run:
         from sqlalchemy import select
-        from case_service.db.models import HxDBMigrateRowLinkModel
+        from velaris_shared.db.models import HxDBMigrateRowLinkModel
         already_linked = {l for (l,) in (await target_session.execute(
             select(HxDBMigrateRowLinkModel.source_pk).where(
                 HxDBMigrateRowLinkModel.source_id == source_id,
@@ -125,7 +125,7 @@ async def migrate_table(
         })
         if pk is not None:
             from case_service.hxdbmigrate import sync as sync_mod
-            from case_service.db.models import HxDBMigrateRowLinkModel
+            from velaris_shared.db.models import HxDBMigrateRowLinkModel
             target_session.add(HxDBMigrateRowLinkModel(
                 source_id=source_id, tenant_id=tenant_id, table_name=table,
                 source_pk=str(r[pk]), case_id=case.id, case_type_id=case_type_id,

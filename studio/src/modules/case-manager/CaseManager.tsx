@@ -1329,7 +1329,10 @@ function SessionsTab({ caseId }: { caseId: string }) {
   const invite = async (sessionId: string) => {
     try {
       const inv = await inviteMeetGuest(sessionId, { email: inviteEmail.trim() });
-      setInviteLink(`${window.location.origin}${inv.join_path}`);
+      // The server's absolute link wins when the deployment has been told where
+      // Studio lives: a host copying this out of the browser may be on an
+      // internal address the guest cannot reach.
+      setInviteLink(inv.join_url || `${window.location.origin}${inv.join_path}`);
       setInviteEmail("");
     } catch (e: any) { setMsg(e?.message || "Could not create the invite"); }
   };
