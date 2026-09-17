@@ -10,6 +10,7 @@ import DRPanel from "./DRPanel";
 import LedgerPanel from "./LedgerPanel";
 import PrivacyPanel from "./PrivacyPanel";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const TABS = [
   { id: "audit",   label: "Audit & Evidence" },
@@ -133,24 +134,17 @@ export default function ComplianceDashboard() {
   }
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      <nav style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid #e3e3e8", flexWrap: "wrap" }}>
-        {TABS.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            style={{
-              padding: "8px 14px", fontSize: 13, cursor: "pointer",
-              border: "none", background: "none",
-              borderBottom: tab === t.id ? "2px solid #4a6cf7" : "2px solid transparent",
-              color: tab === t.id ? "#4a6cf7" : "#666",
-              fontWeight: tab === t.id ? 600 : 400,
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Compliance"
+        tabs={TABS.map(t => ({ key: t.id, label: t.label }))}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "consent" && <ConsentPanel />}
       {tab === "privacy" && <PrivacyPanel />}
@@ -158,7 +152,7 @@ export default function ComplianceDashboard() {
       {tab === "dr" && <DRPanel />}
 
       {tab === "audit" && <>
-      {err && <div style={{ color: "#c33", marginBottom: 12 }}>⚠ {err}</div>}
+      {err && <div style={{ color: "var(--status-failed)", marginBottom: 12 }}>⚠ {err}</div>}
 
       {/* Audit chain status */}
       <section style={card}>
@@ -168,7 +162,7 @@ export default function ComplianceDashboard() {
             <button onClick={seal} disabled={!!busy} style={btn()}>
               {busy === "seal" ? "Sealing…" : "Seal new entries"}
             </button>
-            <button onClick={runVerify} disabled={!!busy} style={{ ...btn(), background: "#4a6cf7", color: "white" }}>
+            <button onClick={runVerify} disabled={!!busy} style={{ ...btn(), background: "var(--accent)", color: "white" }}>
               {busy === "verify" ? "Verifying…" : "Verify chain"}
             </button>
           </div>
@@ -185,8 +179,8 @@ export default function ComplianceDashboard() {
 
         {verify && (
           <div style={{ marginTop: 14, padding: 10, borderRadius: 4,
-                        background: verify.verified ? "#e8f5e9" : "#fdecea",
-                        color: verify.verified ? "#1b5e20" : "#b71c1c", fontSize: 13 }}>
+                        background: verify.verified ? "rgba(13,148,136,0.15)" : "rgba(220,38,38,0.15)",
+                        color: verify.verified ? "var(--status-completed)" : "var(--status-failed)", fontSize: 13 }}>
             {verify.verified
               ? `✓ Chain verified — ${verify.chain_length} sealed rows, no tampering.`
               : `✗ ${verify.breaks.length} breaks detected over ${verify.chain_length} rows.`}
@@ -198,18 +192,18 @@ export default function ComplianceDashboard() {
       <section style={card}>
         <h2 style={h2}>Generate Evidence Pack</h2>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12, color: "#666" }}>Framework</label>
+          <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>Framework</label>
           <select value={framework} onChange={e => setFramework(e.target.value)} style={inp}>
             <option value="soc2">SOC 2 Type II</option>
             <option value="iso27001">ISO/IEC 27001:2022</option>
           </select>
-          <label style={{ fontSize: 12, color: "#666", marginLeft: 8 }}>Last</label>
+          <label style={{ fontSize: 12, color: "var(--text-secondary)", marginLeft: 8 }}>Last</label>
           <input type="number" min={1} max={365} value={periodDays}
             onChange={e => setPeriodDays(Number(e.target.value) || 30)}
             style={{ ...inp, width: 80 }} />
-          <span style={{ fontSize: 12, color: "#666" }}>days</span>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>days</span>
           <button onClick={generate} disabled={!!busy}
-            style={{ ...btn(), background: "#4a6cf7", color: "white", marginLeft: "auto" }}>
+            style={{ ...btn(), background: "var(--accent)", color: "white", marginLeft: "auto" }}>
             {busy === "gen" ? "Generating…" : "Generate"}
           </button>
         </div>
@@ -233,8 +227,8 @@ export default function ComplianceDashboard() {
                 <td style={td}>{r.period_start.slice(0, 10)} → {r.period_end.slice(0, 10)}</td>
                 <td style={td}>{new Date(r.generated_at).toLocaleString()}</td>
                 <td style={td}>{r.chain_verified
-                  ? <span style={{ color: "#2a7" }}>✓</span>
-                  : <span style={{ color: "#c33" }}>✗</span>}</td>
+                  ? <span style={{ color: "var(--status-completed)" }}>✓</span>
+                  : <span style={{ color: "var(--status-failed)" }}>✗</span>}</td>
                 <td style={td}>{r.cadence}</td>
                 <td style={td}>
                   <a href={`/api/v1/compliance/reports/${r.id}/download?fmt=json`} style={btn()}>JSON</a>
@@ -243,7 +237,7 @@ export default function ComplianceDashboard() {
                 </td>
               </tr>
             ))}
-            {reports.length === 0 && <tr><td colSpan={6} style={{ ...td, color: "#888" }}>No reports yet.</td></tr>}
+            {reports.length === 0 && <tr><td colSpan={6} style={{ ...td, color: "var(--text-muted)" }}>No reports yet.</td></tr>}
           </tbody>
         </table>
       </section>
@@ -260,7 +254,7 @@ export default function ComplianceDashboard() {
           </button>
         </div>
         {lineage && (
-          <div style={{ marginTop: 12, maxHeight: 320, overflow: "auto", border: "1px solid #eee", borderRadius: 4 }}>
+          <div style={{ marginTop: 12, maxHeight: 320, overflow: "auto", border: "1px solid var(--border-subtle)", borderRadius: 4 }}>
             <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -272,7 +266,7 @@ export default function ComplianceDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {lineage.length === 0 && <tr><td colSpan={5} style={{ ...td, color: "#888" }}>No events.</td></tr>}
+                {lineage.length === 0 && <tr><td colSpan={5} style={{ ...td, color: "var(--text-muted)" }}>No events.</td></tr>}
                 {lineage.map((e: any, i: number) => (
                   <tr key={i}>
                     <td style={td}>{e.at ? new Date(e.at).toLocaleString() : "—"}</td>
@@ -289,23 +283,24 @@ export default function ComplianceDashboard() {
       </section>
       </>}
     </div>
+    </div>
   );
 }
 
 function Kpi({ label, value, warn = false }: { label: string; value: React.ReactNode; warn?: boolean }) {
   return (
-    <div style={{ padding: "10px 12px", border: `1px solid ${warn ? "#f0b0b0" : "#e3e3e8"}`, borderRadius: 6, background: "#fafbfc" }}>
-      <div style={{ fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600, color: warn ? "#c33" : "#222", marginTop: 2 }}>{value}</div>
+    <div style={{ padding: "10px 12px", border: `1px solid ${warn ? "var(--status-failed)" : "var(--border-default)"}`, borderRadius: 6, background: "var(--bg-elevated)" }}>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: warn ? "var(--status-failed)" : "var(--text-primary)", marginTop: 2 }}>{value}</div>
     </div>
   );
 }
 
-const card: React.CSSProperties = { background: "#fff", border: "1px solid #e3e3e8", borderRadius: 8, padding: 16, marginBottom: 18 };
-const h2: React.CSSProperties = { margin: "0 0 10px", fontSize: 15, color: "#333" };
-const th: React.CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #eee", color: "#666", fontWeight: 500, fontSize: 11 };
-const td: React.CSSProperties = { padding: "6px 8px", borderBottom: "1px solid #f5f5f5", fontSize: 12 };
-const inp: React.CSSProperties = { padding: "5px 8px", fontSize: 13, border: "1px solid #ccc", borderRadius: 3 };
+const card: React.CSSProperties = { background: "var(--bg-card)", border: "1px solid var(--border-default)", borderRadius: 8, padding: 16, marginBottom: 18 };
+const h2: React.CSSProperties = { margin: "0 0 10px", fontSize: 15, color: "var(--text-primary)" };
+const th: React.CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", fontWeight: 500, fontSize: 11 };
+const td: React.CSSProperties = { padding: "6px 8px", borderBottom: "1px solid var(--border-subtle)", fontSize: 12 };
+const inp: React.CSSProperties = { padding: "5px 8px", fontSize: 13, border: "1px solid var(--border-default)", borderRadius: 3, background: "var(--bg-input)", color: "var(--text-primary)" };
 function btn(): React.CSSProperties {
-  return { padding: "5px 10px", border: "1px solid #ccc", borderRadius: 3, background: "#fafafa", fontSize: 12, cursor: "pointer", textDecoration: "none", color: "#333", display: "inline-block" };
+  return { padding: "5px 10px", border: "1px solid var(--border-default)", borderRadius: 3, background: "var(--bg-elevated)", fontSize: 12, cursor: "pointer", textDecoration: "none", color: "var(--text-primary)", display: "inline-block" };
 }

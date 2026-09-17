@@ -22,6 +22,7 @@ from velaris_shared.core.error_codes import (
     DOC_NOTFOUND_404,
     DOC_PREVIEW_415,
     DOC_STORAGE_503,
+    DOC_TENANT_403,
     coded,
 )
 from velaris_shared.db.models import CaseInstanceModel
@@ -140,6 +141,48 @@ def _ver_to_response(v) -> DocumentVersionResponse:
     )
 
 
+async def _upload_attribution(
+    session: AsyncSession, user: AuthenticatedUser, case_id, tenant_id: str | None,
+) -> tuple[str, str | None]:
+    """Who uploaded this, and into which tenant — decided here, not by the form.
+
+    Both fields arrived as `Form(...)` and were stored verbatim, so a caller
+    named whoever it liked as the uploader and stamped whatever tenant string it
+    liked on the row. No first-party client sends either (Studio's document
+    manager and the form renderer both post `case_id` and `file` and nothing
+    else), and the internal callers that legitimately set `uploaded_by` —
+    HxMeet, the portal — reach `service.upload` directly and never come through
+    this route.
+
+    So the fields stay accepted, exactly as an install may already be sending
+    them, and stop being believed:
+
+    * **uploaded_by is the authenticated caller.** A value that disagreed with
+      the token was a forged signature on somebody else's upload.
+    * **tenant_id may only be the caller's own**, which is the rule
+      `caller_tenant_or_refuse` already applies to every other create body. When
+      it is absent the document inherits the CASE's tenant rather than staying
+      NULL — nothing decides on this column today, and a document whose tenant
+      is unknowable is one a later reader has to guess about.
+    """
+    from velaris_shared.db.models import CaseInstanceModel
+    from case_service.tenancy.identity import caller_tenant_or_refuse, tenant_slug
+
+    who = (getattr(user, "username", None) or getattr(user, "email", None)
+           or getattr(user, "user_id", None) or "unknown")
+
+    if tenant_id:
+        try:
+            resolved = await caller_tenant_or_refuse(session, user, tenant_id)
+        except PermissionError as exc:
+            raise coded(403, DOC_TENANT_403, str(exc))
+        return str(who), resolved
+
+    case = await session.get(CaseInstanceModel, case_id)
+    inherited = getattr(case, "tenant_id", None) if case is not None else None
+    return str(who), (await tenant_slug(session, inherited)) if inherited else None
+
+
 @router.post("/upload", status_code=201, response_model=DocumentResponse)
 async def upload_document(
     case_id: uuid.UUID = Form(...),
@@ -150,6 +193,8 @@ async def upload_document(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     await _hxguard.require_case(session, user, "case.update", case_id)
+    uploaded_by, tenant_id = await _upload_attribution(
+        session, user, case_id, tenant_id)
     from velaris_shared.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
     raw_name = file.filename or "unnamed"
     ok, reason = validate_upload_filename(raw_name, allowed_extensions=ALLOWED_DOCUMENT_EXTENSIONS)
@@ -255,6 +300,15 @@ async def delete_document(
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
 
+    # The case boundary FIRST. `docs.files.delete` is a PLATFORM privilege and
+    # the check below asks only "admin, or the case's creator?" — so an admin in
+    # one tenant could delete a document on another tenant's case, and did:
+    # proven on 2026-09-06 on the sibling route below. `require_case` carries
+    # the tenant clause since the same day and answers 404, so a document in a
+    # tenant this caller cannot reach is not confirmed to exist either.
+    if doc.case_id is not None:
+        await _hxguard.require_case(session, user, "case.update", doc.case_id)
+
     case = await session.get(CaseInstanceModel, doc.case_id)
     is_admin = _hxguard.user_allows(user, "docs.files.delete")
     is_case_owner = case is not None and case.created_by == user.user_id
@@ -282,6 +336,10 @@ async def upload_new_version(
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
     if _doc.case_id is not None:
         await _hxguard.require_case(session, user, "case.update", _doc.case_id)
+    # Same rule as the first upload: the version is signed by the caller, not by
+    # whatever name the form carried.
+    uploaded_by = (getattr(user, "username", None) or getattr(user, "email", None)
+                   or getattr(user, "user_id", None) or "unknown")
     data = await file.read()
     try:
         ver = await service.upload_version(
@@ -305,6 +363,15 @@ async def delete_document_version(
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
+
+    # The case boundary FIRST. `docs.files.delete` is a PLATFORM privilege and
+    # the check below asks only "admin, or the case's creator?" — so an admin in
+    # one tenant could delete a document on another tenant's case, and did:
+    # proven on 2026-09-06 on the sibling route below. `require_case` carries
+    # the tenant clause since the same day and answers 404, so a document in a
+    # tenant this caller cannot reach is not confirmed to exist either.
+    if doc.case_id is not None:
+        await _hxguard.require_case(session, user, "case.update", doc.case_id)
 
     case = await session.get(CaseInstanceModel, doc.case_id)
     is_admin = _hxguard.user_allows(user, "docs.files.delete")
@@ -362,11 +429,21 @@ async def set_portal_visibility(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Staff toggle — share or un-share a document with the customer portal."""
+    """Staff toggle — share or un-share a document with the customer portal.
+
+    This route had **no authorization at all** beyond a valid token: it loaded a
+    document by id and published it to a customer portal. Proven on 2026-09-06
+    — a caller in tenant `dev` made a document on tenant `default`'s case
+    portal-visible, which is the one flag on the row that decides whether
+    somebody outside the platform can fetch it. It is a case change and is now
+    gated as one.
+    """
     from velaris_shared.db.models import DocumentModel
     doc = await session.get(DocumentModel, document_id)
     if doc is None or doc.is_deleted:
         raise coded(404, DOC_NOTFOUND_404, "Document not found")
+    if doc.case_id is not None:
+        await _hxguard.require_case(session, user, "case.update", doc.case_id)
     doc.portal_visible = body.portal_visible
     if body.portal_visible and not doc.portal_source:
         doc.portal_source = "staff"

@@ -7,6 +7,7 @@ import React, { useState, useMemo, useCallback } from "react";
 import { useAuth } from "@/auth";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
+import { Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -333,11 +334,6 @@ function PkgIcon({ pkg, size = 56 }: { pkg: MktPackage; size?: number }) {
 
 const S: Record<string, React.CSSProperties> = {
   page:      { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-root)" },
-  tabBar:    { display: "flex", gap: 2, borderBottom: "1px solid var(--border-subtle)", padding: "0 var(--space-2xl)", flexShrink: 0 },
-  tab:       { padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
-                textTransform: "uppercase" as const, letterSpacing: "0.04em", border: "none", cursor: "pointer",
-                color: "var(--text-muted)", background: "transparent", borderBottom: "2px solid transparent", marginBottom: -1 },
-  tabA:      { color: "var(--accent)", borderBottomColor: "var(--accent)" },
   body:      { flex: 1, overflow: "auto", display: "flex" },
   main:      { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)" },
   searchRow: { display: "flex", gap: 10, marginBottom: "var(--space-md)", alignItems: "center" },
@@ -2516,19 +2512,14 @@ export default function Marketplace() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {tabs.map(t => {
-          if (t.adminOnly && !isAdmin) return null;
-          if (t.key === "workspaces" && isManager) return null;
-          return (
-            <button key={t.key}
-              style={{ ...S.tab, ...(tab === t.key ? S.tabA : {}) }}
-              onClick={() => setTab(t.key)}>
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs
+        ariaLabel="Marketplace"
+        tabs={tabs.filter(t => !(t.adminOnly && !isAdmin))
+                  .filter(t => !(t.key === "workspaces" && isManager))
+                  .map(t => ({ key: t.key, label: t.label }))}
+        value={tab}
+        onChange={setTab}
+      />
 
       {tab === "browse"     && <BrowseTab canInstall={canInstall} isManager={isManager} />}
       {tab === "installed"  && <InstalledTab isAdmin={isAdmin} />}

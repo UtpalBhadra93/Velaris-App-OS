@@ -1,6 +1,7 @@
 // HELIX P27 — Push Notifications Admin
 import React, { useEffect, useState } from "react";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 type Device = {
   id: string;
@@ -119,23 +120,21 @@ export default function PushAdmin() {
   }
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      {/* Tabs — Work Center style */}
-      <div style={{ display: "flex", marginBottom: "var(--space-xl)" }}>
-        <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {(["devices", "logs", "test"] as Tab[]).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding: "8px 18px", fontSize: 12, fontWeight: 500,
-              fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em",
-              border: "none", cursor: "pointer", borderRadius: "var(--radius-sm)",
-              color: tab === t ? "var(--accent)" : "var(--text-muted)",
-              background: tab === t ? "var(--accent-dim)" : "transparent",
-            }}>
-              {t === "test" ? "Test Send" : t}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Push notifications"
+        tabs={[
+          { key: "devices" as Tab, label: "Devices" },
+          { key: "logs"    as Tab, label: "Logs" },
+          { key: "test"    as Tab, label: "Test send" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {/* ── Devices tab ── */}
       {tab === "devices" && (
@@ -315,6 +314,7 @@ export default function PushAdmin() {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }

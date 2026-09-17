@@ -369,3 +369,57 @@ async def test_30_api_list_messages_filters(client: AsyncClient, session, case):
     assert r.status_code == 200
     rows = r.json()
     assert any(row["id"] == str(m.id) for row in rows)
+
+
+# ── 2026-09-17: threading stays inside the receiving mailbox's tenant ──────────
+
+
+@pytest_asyncio.fixture
+async def two_tenants(session):
+    from velaris_shared.db.models import TenantModel
+    from case_service.tenancy import identity as _identity
+
+    _identity.clear_cache()
+    a = TenantModel(id=uuid.uuid4(), slug="mail-a", name="Mail A")
+    b = TenantModel(id=uuid.uuid4(), slug="mail-b", name="Mail B")
+    session.add_all([a, b])
+    await session.commit()
+    yield a, b
+    _identity.clear_cache()
+
+
+async def test_a_subject_tag_cannot_reach_another_tenants_case(session, ct, two_tenants):
+    a, b = two_tenants
+    theirs = CaseInstanceModel(case_type_id=ct.id, case_type_version="1.0.0",
+                               status="new", priority="medium", data={}, tenant_id=b.id)
+    session.add(theirs); await session.commit()
+    subject = f"Re: hello {build_subject_tag(theirs.id)}"
+    assert await resolve_case_id_from_message(
+        session, in_reply_to=None, references=[], subject=subject, tenant_id="mail-a") is None
+    assert await resolve_case_id_from_message(
+        session, in_reply_to=None, references=[], subject=subject,
+        tenant_id="mail-b") == theirs.id
+
+
+async def test_a_reply_header_cannot_reach_another_tenants_case(session, ct, two_tenants):
+    a, b = two_tenants
+    theirs = CaseInstanceModel(case_type_id=ct.id, case_type_version="1.0.0",
+                               status="new", priority="medium", data={}, tenant_id=b.id)
+    session.add(theirs); await session.flush()
+    session.add(EmailMessageModel(id=uuid.uuid4(), case_id=theirs.id, direction="outbound",
+                                  message_id="<b-thread@x>", subject="s", tenant_id="mail-b"))
+    await session.commit()
+    assert await resolve_case_id_from_message(
+        session, in_reply_to="<b-thread@x>", references=[], subject="Re: s",
+        tenant_id="mail-a") is None
+
+
+async def test_the_same_message_reaches_both_tenants_mailboxes(session, two_tenants):
+    """Idempotency is per tenant: one tenant's copy must not swallow the other's."""
+    raw = (b"From: x@y.test\r\nTo: a@a.test\r\nSubject: hi\r\n"
+           b"Message-ID: <shared-1@y.test>\r\n\r\nbody")
+    svc = EmailService()
+    one = await svc.ingest_raw(session, raw, tenant_id="mail-a")
+    two = await svc.ingest_raw(session, raw, tenant_id="mail-b")
+    await session.commit()
+    assert one.id != two.id

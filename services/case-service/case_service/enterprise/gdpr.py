@@ -18,13 +18,67 @@ logger = logging.getLogger(__name__)
 
 
 async def export_user_data(
-    session: AsyncSession, user_id: str,
+    session: AsyncSession, user_id: str, tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    """Compile all data about a user for GDPR export (Article 15)."""
+    """Compile all data about a user for GDPR export (Article 15).
+
+    `tenant_id` is the CALLER's tenant, and it is only used by the HxArbiter
+    PEP below. It defaults to None — which resolves to the platform-default
+    tenant exactly as this function behaved before the parameter existed — so
+    no existing caller changes behaviour by not passing it.
+    """
     from velaris_shared.db.models import (
         CaseInstanceModel, CaseAuditLogModel, CaseAssignmentModel,
         TenantMembershipModel, SecurityEventModel,
     )
+
+    # ── HxArbiter PEP (ARB-C) ────────────────────────────────────────────────
+    # A DSAR export is data leaving the platform, which is exactly what the
+    # `export` namespace governs. There is no legacy control here to mirror —
+    # the route's hxguard gate is the only thing that stands in front of it —
+    # so `legacy_allowed=True` records "the platform allows this today" and the
+    # engine's answer is compared against it. Inert until `export` is promoted.
+    #
+    # It also declares the two obligations it can honour ITSELF (§4.5):
+    # `watermark_export` and `pseudonymize` act on the payload this function is
+    # about to build, and no central handler can reach that payload. Everything
+    # else the policy attaches is discharged inside `pep`, and an obligation
+    # neither side can honour DENIES — an allow qualified by a condition nobody
+    # carried out is not the allow the author wrote.
+    _obligations: list = []
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+
+        _allowed, _obligations = await _arb_pep.check_with_obligations(
+            session,
+            caller_handles=("watermark_export", "pseudonymize"),
+            # The CALLER's tenant, passed in. It used to read
+            # `session.tenant_id`, which does not exist on an AsyncSession and
+            # never has — so every tenant's DSAR was evaluated and logged
+            # against the platform-default tenant. Proven on the live box: a
+            # `dev`-tenant admin's export was recorded under `default`.
+            #
+            # Two consequences, and the second is the one that bites after a
+            # promotion: the tenant's OWN `export.*` policy was never
+            # consulted, and the parity evidence for every other tenant was
+            # empty while `default`'s decision log accumulated their exports.
+            tenant_id=str(tenant_id or "default"),
+            action=_arb_pep.ACTION_EXPORT_CASE,
+            subject_id=str(user_id),
+            subject_kind=_arb_pep.SubjectKind.USER,
+            resource_kind="data_subject",
+            resource_id=str(user_id),
+            context={"purpose": "dsar_article_15", "destination_region": "external"},
+            legacy_allowed=True,
+            claimed_by="enterprise.gdpr",
+        )
+        if not _allowed:
+            raise PermissionError(
+                "VEL-ARB-EXPORT-DENIED-403: policy refuses this export.")
+    except PermissionError:
+        raise
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning("gdpr export: HxArbiter PEP unavailable: %s", exc)
 
     export = {
         "subject_id": user_id,
@@ -121,7 +175,69 @@ async def export_user_data(
     except Exception:
         pass
 
+    # ── obligations this call site said it would honour (§4.5) ───────────────
+    # Applied to the finished payload, which is the only place they mean
+    # anything. `pep` has already discharged everything else and denied above
+    # if any obligation could not be honoured at all, so reaching here means
+    # these are the ones left for us — and not applying them would be the one
+    # way to defeat the fail-closed rule.
+    for _ob in _obligations:
+        kind = str(getattr(_ob, "kind", ""))
+        params = getattr(_ob, "params", {}) or {}
+        if kind == "pseudonymize":
+            export = _pseudonymize_export(export, params)
+        elif kind == "watermark_export":
+            export["watermark"] = {
+                "applied": True,
+                "label": str(params.get("label") or "CONFIDENTIAL — subject access response"),
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+                "subject_id": user_id,
+            }
+    if _obligations:
+        export["policy_obligations"] = [str(getattr(o, "kind", "")) for o in _obligations]
+
     return export
+
+
+#: Fields a pseudonymised export replaces rather than removes. Removing them
+#: would change the SHAPE of the response, and a caller that branches on a
+#: missing key behaves differently for a pseudonymised subject — which is how a
+#: privacy control becomes an oracle.
+_PSEUDONYMISABLE = ("email", "username", "display_name", "full_name",
+                    "phone", "portal_submitter_email", "portal_submitter_name")
+
+
+def _pseudonymize_export(export: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    """Replace direct identifiers with a stable, salted token.
+
+    Stable so the same person reads as the same token across a report — an
+    export where every occurrence differs is unusable for the purpose a DSAR
+    exists to serve. Salted per subject so tokens cannot be compared between
+    exports.
+
+    It is pseudonymisation, not anonymisation, and the difference is legal as
+    well as technical: the subject id remains, so this narrows exposure rather
+    than taking the data out of scope.
+    """
+    import hashlib
+
+    salt = str(params.get("salt") or export.get("subject_id") or "")
+
+    def token(value: Any) -> str:
+        digest = hashlib.sha256(f"{salt}|{value}".encode()).hexdigest()[:16]
+        return f"pseudo:{digest}"
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: (token(v) if k in _PSEUDONYMISABLE and v else walk(v))
+                    for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    out = walk(export)
+    out["pseudonymized"] = True
+    return out
 
 
 async def anonymize_user_data(
@@ -141,6 +257,23 @@ async def anonymize_user_data(
     anon_id = "anon-" + hashlib.sha256(user_id.encode()).hexdigest()[:12]
 
     counts = {}
+
+    # The HxArbiter decision log. It was unreachable by any erasure path until
+    # 2026-08-29 — retention purges by age and nothing here had heard of the
+    # table — so every policy decision about a person kept their subject,
+    # resource and context payloads indefinitely, in a log designed never to be
+    # editable. `erase_subject` scrubs exactly the fields the chain hash does
+    # NOT cover, so the seal still verifies afterwards.
+    try:
+        from case_service.hxarbiter import chain as _arb_chain
+
+        counts.update(await _arb_chain.erase_subject(session, user_id))
+    except Exception as exc:                                    # noqa: BLE001
+        # Loud, and not fatal: an erasure that half-completes and then raises
+        # leaves the caller unable to tell what was done.
+        logger.error("gdpr: could not erase HxArbiter decisions for %s: %s",
+                     user_id, exc)
+        counts["arbiter_decisions"] = -1
 
     # Anonymize cases.created_by
     stmt = update(CaseInstanceModel).where(

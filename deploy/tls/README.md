@@ -134,3 +134,82 @@ larger one.
 mTLS is what upgrades that to a key the caller must hold and cannot read out of
 a config file. Turn it on when a service leaves this host, and not because a
 checklist asked for it.
+
+
+## The rotation unit runs as root (corrected 2026-08-27)
+
+`velaris-cert-rotate.service` used to carry `User=<velaris user>`, contradicting
+its own comment. Renewal works as any user; **the restart half does not** —
+`systemctl restart velaris-case-service` needs privilege, and a rotation that
+renews certificates and cannot restart the services leaves four processes
+serving the OLD, now-expired key material. Silently, on the one day the timer
+finally has something to do.
+
+Proven rather than reasoned: running the script as an ordinary user renews all
+five leaves and then prints
+
+```
+✗ Renewed 5 certificate(s) but could not restart: velaris-case-service …
+```
+
+Running as root means the renewed files land root-owned, so the script now hands
+them back to whoever owns the certificate directory. Without that the services —
+which do not run as root — could not read the `0600` key they were just given.
+
+**If you installed the timer before 2026-08-27, re-run the installer:**
+
+```
+sudo deploy/tls/install-rotation-timer.sh
+```
+
+It rewrites the unit and reloads systemd. Nothing else changes, and the
+certificates are not touched.
+
+### What happens if the machine is off across an expiry
+
+The certificates are renewed, not abandoned: days-to-expiry goes **negative**,
+which is still "inside 21 days", so the expired leaf is replaced on the next run.
+`Persistent=true` means the timer fires after boot for the run it missed.
+
+The gap is real but bounded: services start at boot holding expired certificates,
+so with internal TLS on every handshake fails until rotation runs — up to the
+timer's 30-minute jitter after boot. Then it renews and restarts everything. With
+the old `User=` unit it would renew and **fail** to restart, and the platform
+would have stayed down until somebody did it by hand.
+
+
+## Self-healing at start (2026-08-27)
+
+The timer renews **before** expiry, while everything is up. It cannot help the
+one case it is not running for: a machine that was off across an expiry and boots
+holding lapsed certificates. Until the timer's first firing — up to its
+30-minute jitter after boot — every handshake fails and the platform is down.
+
+`_velaris_tls_args` now closes that gap. Before a service starts, if internal TLS
+is on and that service's certificate has **already expired**, it renews under a
+lock and then hands back the flags. Start time is the easiest place to do this:
+nothing is running yet, so there is no restart to perform and no privilege needed
+for one.
+
+Three deliberate bounds:
+
+- **Expired only, never merely due.** Renewing at 20 days left would mint a new
+  key on every ordinary restart during the window — churn with no benefit. The
+  timer owns the pre-emptive case.
+- **Under `flock`.** systemd starts four services at once; without the lock all
+  four would see the same expired certificates and renew together, racing on the
+  shared CA serial file and on each other's key/cert pairs. The first renews
+  every leaf, the other three find them fresh and skip.
+- **`--no-reload`.** The rotation script's restart half is wrong here: there is
+  nothing to restart, and restarting the other three mid-boot would fight systemd
+  for control of a starting unit.
+
+A renewal that fails does not block the boot — the service starts as it would
+have, loudly. **With TLS off, none of this runs and the command line is byte-for
+-byte what it was.**
+
+Verified 2026-08-27 against certificates minted to expire 9 days in the past:
+the service renews all five leaves and comes up with valid flags; the other three
+services skip; an ordinary restart inside the window leaves the key untouched;
+four parallel starts produce **one** renewal with all five key/cert pairs
+consistent; and with TLS off the helper prints nothing at all.

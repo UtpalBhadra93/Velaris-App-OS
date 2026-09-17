@@ -59,6 +59,18 @@ _RESCAN_INTERVAL = timedelta(hours=1)
 _SETTLE = timedelta(seconds=5)
 _HISTORY_SOFT_LIMIT = 2000
 
+#: Fallback only. Which statuses END a case is DATA since migration 198
+#: (`case_statuses.is_terminal`), and a tenant may define its own terminal
+#: status — so a tuple here can only ever be a stale copy.
+#:
+#: A workflow cannot look it up: workflow code must be deterministic on replay,
+#: so it may not touch the database. The resolution is that the SIGNAL carries
+#: the answer — the dispatcher already resolved the status and knows whether it
+#: is terminal, so it says so in the payload. This tuple is what remains for a
+#: signal that arrives WITHOUT that flag: an in-flight signal sent by the
+#: previous release, or a caller that has not been updated. It names the three
+#: statuses that were terminal before 198, so an old signal behaves exactly as
+#: it did.
 _TERMINAL_STATUSES = ("resolved", "closed", "cancelled")
 
 
@@ -103,10 +115,19 @@ class CaseLifecycleWorkflow:
 
     @workflow.signal(name="status_changed")
     async def status_changed(self, data: dict[str, Any]) -> None:
-        """Case status changed — SLAs may be paused/resumed/cancelled."""
+        """Case status changed — SLAs may be paused/resumed/cancelled.
+
+        `terminal` in the payload is authoritative when present, because the
+        sender resolved the status set and this workflow cannot. Absent, the
+        pre-198 tuple decides, so an in-flight signal from the previous release
+        behaves exactly as it did.
+        """
         self._rescan = True
         self._wake_children = True
-        if data.get("status") in _TERMINAL_STATUSES:
+        flag = data.get("terminal")
+        if flag is None:
+            flag = data.get("status") in _TERMINAL_STATUSES
+        if flag:
             self._terminal = True
 
     @workflow.signal(name="cancel_case")

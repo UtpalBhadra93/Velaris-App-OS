@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect } from "react";
 import { useTheme } from "@/theme/ThemeContext";
-import { VoiceInput, appendTranscript } from "@shared/components";
+import { Tabs, VoiceInput, appendTranscript } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/graph";
@@ -113,7 +113,11 @@ function buildVizHtml(
 <svg id="canvas"></svg>
 <div id="tip"></div>
 <div id="no-results">No matching nodes found</div>
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="/api/v1/graph/vendor/d3.js" onerror="document.getElementById('d3-missing').style.display='block'"></script>
+<div id="d3-missing" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);
+     background:${tipBg};border:1px solid ${tipBorder};border-radius:8px;padding:10px 16px;font-size:12px;z-index:30;color:${textColor}">
+  The graph library did not load from this platform. The visualizer needs it; nothing else on this page is affected.
+</div>
 <script>
 const RAW=${dataJson};
 const NC={
@@ -325,40 +329,33 @@ export default function HxGraph() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
 
-      {/* Tab bar + sync controls */}
-      <div style={{
-        display: "flex", alignItems: "center",
-        padding: "0 24px", background: "var(--bg-surface)",
-        borderBottom: "1px solid var(--border)", flexShrink: 0, gap: 8,
-      }}>
-        <div style={{ display: "flex", gap: 2, flex: 1 }}>
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id as any)} style={{
-              padding: "9px 16px", border: "none",
-              borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-              background: "none", fontSize: 13, fontWeight: tab === t.id ? 700 : 400,
-              color: tab === t.id ? "var(--accent)" : "var(--text-secondary)",
-              cursor: "pointer",
-            }}>{t.label}</button>
-          ))}
-        </div>
-
-        {/* Right side: stats + sync */}
-        {syncErr && <span style={{ fontSize: 11, color: "#ef4444" }}>{syncErr}</span>}
-        {syncStats && (
-          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            {syncStats.nodes}n · {syncStats.edges}e · {syncStats.communities}c
-          </span>
-        )}
-        <button onClick={handleSync} disabled={syncing} style={{
-          padding: "5px 14px", fontSize: 12, fontWeight: 700,
-          background: "var(--accent)", color: "#fff", border: "none",
-          borderRadius: 6, cursor: syncing ? "not-allowed" : "pointer",
-          opacity: syncing ? 0.6 : 1, flexShrink: 0,
-        }}>
-          {syncing ? "Syncing…" : "⟳ Sync"}
-        </button>
-      </div>
+      {/* The sync controls ride in the bar's `right` slot rather than in a row
+          wrapped around it — a wrapper is how the geometry drifted in the first
+          place. Same shape as HxNexus's online/offline pill. */}
+      <Tabs
+        ariaLabel="HxGraph"
+        tabs={TABS.map(t => ({ key: t.id as string, label: t.label }))}
+        value={tab as string}
+        onChange={(k) => setTab(k as any)}
+        right={
+          <>
+            {syncErr && <span style={{ fontSize: 11, color: "#ef4444" }}>{syncErr}</span>}
+            {syncStats && (
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {syncStats.nodes}n · {syncStats.edges}e · {syncStats.communities}c
+              </span>
+            )}
+            <button onClick={handleSync} disabled={syncing} style={{
+              padding: "5px 14px", fontSize: 12, fontWeight: 700,
+              background: "var(--accent)", color: "#fff", border: "none",
+              borderRadius: 6, cursor: syncing ? "not-allowed" : "pointer",
+              opacity: syncing ? 0.6 : 1, flexShrink: 0,
+            }}>
+              {syncing ? "Syncing…" : "⟳ Sync"}
+            </button>
+          </>
+        }
+      />
 
       {/* Content */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>

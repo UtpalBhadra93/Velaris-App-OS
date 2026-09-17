@@ -1,9 +1,10 @@
 /**
  * P59 — HxShield: Case Fraud & Abuse Detection
- * Tabs: Rules · Incidents · Events · Stats
+ * Tabs: Rules · Incidents · Responses · Events · Stats
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/shield";
 function _authHdr(): Record<string, string> {
@@ -36,6 +37,20 @@ type ShieldEvent = {
   recorded_at: string;
 };
 
+type ShieldResponse = {
+  id: string; incident_id: string | null; response_type: string;
+  target_kind: string; target_id: string | null; state: string;
+  destructive: boolean; reason: string | null; score: number | null;
+  approved_by: string | null; approved_at: string | null;
+  declined_by: string | null; executed_at: string | null;
+  result: Record<string, unknown> | null; created_at: string | null;
+};
+
+type ResponseCatalogueEntry = {
+  name: string; label: string; target_kind: string; destructive: boolean;
+  summary: string; reversible_by: string | null; needs_approval: boolean;
+};
+
 type Stats = {
   open_incidents: number; total_incidents: number; flagged_events: number;
   by_severity: Record<string, number>;
@@ -60,14 +75,16 @@ const STATUS_COLOR: Record<string, string> = {
   open: "#ef4444", resolved: "#22c55e", dismissed: "#94a3b8",
 };
 
+const RESPONSE_STATE_COLOR: Record<string, string> = {
+  proposed: "#f59e0b", approved: "#0d9488", executed: "#22c55e",
+  failed: "#ef4444", declined: "#94a3b8", shadowed: "#64748b",
+};
+
 const S: Record<string, React.CSSProperties> = {
   page:      { display: "flex", flexDirection: "column", height: "100%", background: "var(--bg-main)", color: "var(--text-primary)", fontFamily: "system-ui, sans-serif" },
   header:    { padding: "18px 24px 0", flexShrink: 0 },
   title:     { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:       { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabBar:    { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:       { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive: { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:      { flex: 1, overflow: "auto", padding: "20px 28px" },
   card:      { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px 20px", marginBottom: 12 },
   btn:       { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 },
@@ -451,29 +468,204 @@ function StatsTab() {
 }
 
 
+// ── Responses Tab ─────────────────────────────────────────────────────────────
+//
+// The queue where the platform says what it would DO about an incident. Two
+// things decide how this screen is written:
+//
+//  * **its buttons act.** Approving a `suspend_user` stops a person working, so
+//    a destructive proposal asks a second time and names what it will do —
+//    nothing here is a one-click list operation; and
+//  * **`shadowed` is not a backlog.** With responses switched off the platform
+//    still records what it would have done, and a screen full of those rows
+//    must read as "working as configured", not as work nobody did. The banner
+//    is on every load for exactly that reason.
+
+function ResponsesTab() {
+  const [items, setItems] = useState<ShieldResponse[]>([]);
+  const [catalogue, setCatalogue] = useState<ResponseCatalogueEntry[]>([]);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [state, setState] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    const q = state ? `?state=${encodeURIComponent(state)}` : "";
+    const r = await authFetch(`${API}/responses${q}`);
+    if (r.ok) {
+      const data = await r.json();
+      setItems(data.items || []);
+      setCatalogue(data.catalogue || []);
+      setEnabled(!!data.responses_enabled);
+    }
+    setLoaded(true);
+  }, [state]);
+  useEffect(() => { load(); }, [load]);
+
+  const act = async (row: ShieldResponse, what: "approve" | "decline") => {
+    if (what === "approve" && row.destructive) {
+      const entry = catalogue.find(c => c.name === row.response_type);
+      const undo = entry?.reversible_by ? `\n\nReversible by: ${entry.reversible_by}` : "";
+      if (!window.confirm(
+        `${entry?.label || row.response_type} on ${row.target_kind} ${row.target_id || "—"}.` +
+        `\n\n${entry?.summary || "This acts immediately."}${undo}\n\nGo ahead?`)) return;
+    }
+    let reason: string | null = null;
+    if (what === "decline") {
+      // A declined proposal is evidence about the DETECTOR — a rule declined
+      // every time is a rule that should change — so the reason is asked for
+      // here rather than left to whoever reads the row in six months.
+      reason = window.prompt("Why is this being declined? (optional, but it is what makes the queue useful later)") || null;
+    }
+    setBusy(row.id); setError(null);
+    const r = await authFetch(`${API}/responses/${row.id}/${what}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(what === "decline" ? { reason } : {}),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      // Only ever a string. A coded error puts a string in `detail` and the code
+      // under `error`, but an unexpected object here would be handed straight to
+      // React, which refuses to render one — an error about the error.
+      setError(typeof body.detail === "string"
+        ? body.detail : `${what} failed (${r.status})`);
+    }
+    setBusy(null);
+    await load();
+  };
+
+  return (
+    <div>
+      {enabled === false && (
+        <div style={{ ...S.card, borderColor: "#f59e0b", background: "#f59e0b11" }}>
+          <strong>Shadow mode.</strong> HxShield is recording what it would do and
+          doing none of it. These rows are not a backlog — nothing here has been
+          left undone. Switch responses on only when the proposals below look
+          right.
+        </div>
+      )}
+      {error && (
+        <div style={{ ...S.card, borderColor: "#ef4444", color: "#ef4444" }}>{error}</div>
+      )}
+
+      <div style={{ ...S.row, alignItems: "center" }}>
+        <select style={{ ...S.select, width: 200 }} value={state}
+                onChange={e => setState(e.target.value)}>
+          <option value="">All states</option>
+          {["proposed", "approved", "executed", "failed", "declined", "shadowed"]
+            .map(x => <option key={x} value={x}>{x}</option>)}
+        </select>
+        <button style={{ ...S.btn, ...S.btnS }} onClick={load}>Refresh</button>
+      </div>
+
+      <div style={S.card}>
+        <table style={S.tbl}>
+          <thead>
+            <tr>
+              <th style={S.th}>Proposed</th>
+              <th style={S.th}>Response</th>
+              <th style={S.th}>Target</th>
+              <th style={S.th}>Why</th>
+              <th style={S.th}>State</th>
+              <th style={S.th}>Decided by</th>
+              <th style={S.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(row => {
+              const entry = catalogue.find(c => c.name === row.response_type);
+              return (
+                <tr key={row.id}>
+                  <td style={S.td}>{fmtDate(row.created_at)}</td>
+                  <td style={S.td}>
+                    <div style={{ fontWeight: 600 }}>{entry?.label || row.response_type}</div>
+                    {row.destructive && <Badge label="destructive" color="#ef4444" />}
+                  </td>
+                  <td style={S.td}>
+                    <div style={{ color: "var(--text-secondary)" }}>{row.target_kind}</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 11 }}>{row.target_id || "—"}</div>
+                  </td>
+                  <td style={{ ...S.td, maxWidth: 280 }}>{row.reason || "—"}</td>
+                  <td style={S.td}>
+                    <Badge label={row.state} color={RESPONSE_STATE_COLOR[row.state] || "#94a3b8"} />
+                  </td>
+                  <td style={S.td}>{row.approved_by || row.declined_by || "—"}</td>
+                  <td style={{ ...S.td, textAlign: "right" as const, whiteSpace: "nowrap" as const }}>
+                    {row.state === "proposed" ? (
+                      <>
+                        <button style={{ ...S.btn, ...S.btnG, marginRight: 6 }}
+                                disabled={busy === row.id}
+                                onClick={() => act(row, "approve")}>Approve</button>
+                        <button style={{ ...S.btn, ...S.btnD }}
+                                disabled={busy === row.id}
+                                onClick={() => act(row, "decline")}>Decline</button>
+                      </>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+            {loaded && items.length === 0 && (
+              <tr><td style={{ ...S.td, color: "var(--text-secondary)" }} colSpan={7}>
+                Nothing proposed. HxShield writes a row here when a rule fires and
+                a response is configured for it — an empty queue means neither has
+                happened, not that a row was missed.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {catalogue.length > 0 && (
+        <div style={S.card}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>What HxShield can propose</div>
+          <table style={S.tbl}>
+            <thead>
+              <tr>
+                <th style={S.th}>Response</th>
+                <th style={S.th}>Acts on</th>
+                <th style={S.th}>What it does</th>
+                <th style={S.th}>Undone by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {catalogue.map(c => (
+                <tr key={c.name}>
+                  <td style={S.td}>
+                    <span style={{ fontWeight: 600, marginRight: 6 }}>{c.label}</span>
+                    {c.destructive && <Badge label="needs approval" color="#ef4444" />}
+                  </td>
+                  <td style={S.td}>{c.target_kind}</td>
+                  <td style={S.td}>{c.summary}</td>
+                  <td style={S.td}>{c.reversible_by || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-const TABS = ["Rules", "Incidents", "Events", "Stats"] as const;
+const TABS = ["Rules", "Incidents", "Responses", "Events", "Stats"] as const;
 
 export default function HxShield() {
   const [tab, setTab] = useState<typeof TABS[number]>("Rules");
 
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {TABS.map(t => (
-          <button
-            key={t}
-            style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxShield"
+            tabs={TABS.map(t => ({ key: t, label: t }))} value={tab} onChange={setTab} />
       <div style={S.body}>
         {tab === "Rules"     && <RulesTab />}
         {tab === "Incidents" && <IncidentsTab />}
+        {tab === "Responses" && <ResponsesTab />}
         {tab === "Events"    && <EventsTab />}
         {tab === "Stats"     && <StatsTab />}
       </div>

@@ -53,14 +53,7 @@ function deployAuthHdr(): Record<string, string> {
   const t = getAccessToken();
   return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
 }
-import {
-  Card,
-  Button,
-  Spinner,
-  EmptyState,
-  TimeAgo,
-  Stat,
-} from "@shared/components";
+import { Button, Card, EmptyState, Spinner, Stat, Tabs, TimeAgo } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 import FormRenderer from "../form-builder/FormRenderer";
 import type { CaseAssignment, WorkQueueSummary, QueueStats } from "@shared/types";
@@ -75,22 +68,23 @@ export default function WorkCenter() {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-xl)" }}>
-        {/* View toggle */}
-        <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {(["cases", "my-work", "queues"] as const).map((v) => (
-            <button key={v} onClick={() => { setView(v); setSelectedQueueId(null); setSelectedCaseId(null); }} style={{
-              padding: "8px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
-              textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-              color: view === v ? "var(--accent)" : "var(--text-muted)",
-              background: view === v ? "var(--accent-dim)" : "transparent",
-              borderRadius: "var(--radius-sm)",
-            }}>{v === "my-work" ? "My Assignments" : v === "cases" ? "Open Cases" : "Queues"}</button>
-          ))}
-        </div>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%",
+                  overflow: "hidden", boxSizing: "border-box" }}>
+      {/* The bar is flush under the app header, like /help: it was inside a
+          padded header row, which pushed it down and stopped the underline
+          reaching either edge. */}
+      <Tabs
+        ariaLabel="Work centre"
+        tabs={[
+          { key: "cases"   as const, label: "Open Cases" },
+          { key: "my-work" as const, label: "My Assignments" },
+          { key: "queues"  as const, label: "Queues" },
+        ]}
+        value={view}
+        onChange={(v) => { setView(v); setSelectedQueueId(null); setSelectedCaseId(null); }}
+      />
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-lg) var(--space-2xl)",
+                    boxSizing: "border-box" }}>
 
       {/* Content */}
       {view === "cases" && <OpenCasesView selectedCaseId={selectedCaseId} onSelectCase={setSelectedCaseId} />}
@@ -99,6 +93,7 @@ export default function WorkCenter() {
       {view === "queues" && selectedQueueId && (
         <QueueDetailView queueId={selectedQueueId} onBack={() => setSelectedQueueId(null)} />
       )}
+      </div>
     </div>
   );
 }
@@ -1033,17 +1028,15 @@ function WorkCenterCaseDetail({ caseId, onClose, onUpdate }: { caseId: string; o
         )}
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)" }}>
-        {(["action", "data"] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            flex: 1, padding: "8px 0", fontSize: 11, fontWeight: 500, fontFamily: "var(--font-mono)",
-            textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)", background: "transparent",
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-          }}>{t === "action" ? "Lifecycle" : "Data"}</button>
-        ))}
-      </div>
+      <Tabs
+        ariaLabel="Case panel"
+        tabs={[
+          { key: "action" as const, label: "Lifecycle" },
+          { key: "data"   as const, label: "Data" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
 
       <div style={{ flex: 1, overflow: "auto", padding: "var(--space-md)" }}>
         {err && <div style={{ color: "var(--status-failed)", fontSize: 12, marginBottom: 10 }}>{err}</div>}

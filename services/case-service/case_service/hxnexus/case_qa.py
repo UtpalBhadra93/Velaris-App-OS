@@ -144,7 +144,7 @@ async def _gather_sources(
         .order_by(DocumentModel.created_at.desc()).limit(_MAX_DOCS * 2)
     )).scalars().all()
     from case_service.documents.service import DocumentService
-    from .text_extractor import extract_text
+    from .text_extractor import extract_text_async
     fed = 0
     for d in docs:
         if fed >= _MAX_DOCS:
@@ -153,7 +153,7 @@ async def _gather_sources(
             continue  # sealed artifacts are handled via their own gates below
         try:
             data, _name, ct = await DocumentService().download(session, d.id)
-            text = extract_text(data, ct or d.content_type)
+            text = await extract_text_async(data, ct or d.content_type)
         except Exception:
             continue
         if text and text.strip():
@@ -210,6 +210,7 @@ async def _gather_sources(
 async def resolve_backend(
     session: AsyncSession, tenant_slug: str | None, *,
     feature_label: str = "Case Q&A", backend=None,
+    agent_slug: str = "hxnexus.case_qa",
 ):
     """Apply the tenant's AI sovereignty choice and hand back a ready backend.
 
@@ -224,6 +225,70 @@ async def resolve_backend(
 
     egress = (ai_cfg.get("egress") or "local_only").lower()
     external_consented = egress == "external_allowed"
+
+    # ── HxArbiter PEP (ARB-B) ────────────────────────────────────────────────
+    # The line above is, and stays, the control. This asks the policy engine the
+    # same question and records both answers so parity can be measured; while
+    # the `ai` namespace sits at `shadow` — which is where every namespace ships
+    # — `check()` hands `external_consented` straight back and nothing about
+    # this function's behaviour changes. Only an operator promoting the
+    # namespace, after a parity report says it is safe, makes the engine's
+    # answer the one that counts.
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+        from hxarbiter_core import SubjectKind as _SubjectKind
+        from case_service.agents import attribution as _attr
+
+        # F-00: the subject is the AGENT, not the feature.
+        #
+        # `subject_id` used to be `feature_label` — a display string, which the
+        # comment below already flags as an assertion rather than a principal.
+        # An `ai.external_call` decision naming "Case Q&A" cannot be joined to
+        # anything, and every feature built on this log has to be able to say
+        # *which agent* made the call. The legacy answer beside it is unchanged,
+        # so parity is measured against exactly what it was before.
+        _agent_id = await _attr.internal_agent_id(
+            tenant_slug or "default", agent_slug)
+
+        external_consented = await _arb_pep.check(
+            session,
+            tenant_id=tenant_slug or "default",
+            action="ai.external_call",
+            subject_id=_agent_id,
+            subject_kind=_SubjectKind.AGENT,
+            # No `model_id` here, and that is not an omission: this decision is
+            # taken BEFORE a backend is chosen, so the only model available
+            # would be the configured one — which is the thing `active_model()`
+            # exists to stop us reporting. The model that actually answered is
+            # stamped on the post-call decision in `ask_case`.
+            subject_attrs=_attr.subject_attrs("internal"),
+            resource_kind="case_content",
+            # `provider_class` is fixed to "external" because that is the
+            # question being asked — the action is `ai.external_call`, and the
+            # legacy answer beside it is "may this tenant use an external
+            # provider".
+            #
+            # It previously derived `provider_class` from `external_consented`,
+            # which conflated **what we are about to do** with **what is
+            # permitted**: a local_only tenant asked "may I make a LOCAL call"
+            # and was compared against a legacy answer about EXTERNAL calls, so
+            # every request logged a false disagreement. The parity report then
+            # showed the engine as `engine_weaker` — a hole — for a tenant where
+            # both sides in fact agreed. A bad oracle is worse than no oracle:
+            # it would have blocked promotion forever while pointing at the
+            # wrong thing.
+            context={"provider_class": "external", "purpose": feature_label},
+            legacy_allowed=external_consented,
+            # Who ASSERTED this subject. `subject_id` is a feature label, not a
+            # principal, which makes it an assertion — and an assertion nobody
+            # signed for cannot be attributed. Every in-process PEP left this
+            # None, so the one column that exists to answer "who asked?" was
+            # empty on exactly the rows a reader would ask it about.
+            claimed_by="hxnexus.case_qa",
+        )
+    except Exception as exc:                                    # noqa: BLE001
+        # Never let the observer break the observed. The legacy answer stands.
+        log.warning("case_qa: HxArbiter PEP unavailable: %s", exc)
 
     if backend is None:
         if external_consented:
@@ -248,6 +313,20 @@ async def resolve_backend(
     if not available:
         raise RuntimeError("No AI backend is available")
     return backend, external_consented
+
+
+async def _ledger_tenant(session: AsyncSession, token):
+    """`case.tenant_id` is a slug on most rows and a UUID on some.
+
+    The ledger is keyed on the tenant UUID because it cascades with the tenant
+    row — a crypto-shred has to be able to reach it.
+    """
+    from case_service.tenancy.identity import resolve_tenant
+
+    resolved = await resolve_tenant(session, token)
+    if resolved is None:
+        raise ValueError(f"tenant {token!r} does not resolve")
+    return resolved[0]
 
 
 # ── the ask ──────────────────────────────────────────────────────────────────
@@ -301,6 +380,55 @@ async def ask_case(
     if pseudo is not None:
         answer = pseudo.restore(answer)
 
+    # ── F-00: the agent PEP, and the model that actually answered ────────────
+    #
+    # Placed AFTER the completion on purpose. `agent.propose` asks whether this
+    # agent may hand a human a drafted answer, and the one attribute that makes
+    # the decision worth keeping — which model produced it — does not exist
+    # until the call has happened. A pre-call check could only report the
+    # configured model, which is the exact lie `active_model()` was written to
+    # prevent (the egress ladder answers locally far more often than the config
+    # suggests).
+    #
+    # `agent` ships clamped to `shadow`, so this changes nothing today: the
+    # decision is recorded and `answer` is returned either way. When an operator
+    # promotes the namespace, a refusal withholds the draft rather than
+    # rewriting it — a policy that may deny must be able to deny visibly.
+    _model = "unknown/unknown"
+    _agent_id = "unregistered:hxnexus.case_qa"
+    try:
+        from case_service.agents import attribution as _attr
+
+        _model = _attr.model_id(backend)
+        _agent_id = await _attr.internal_agent_id(case.tenant_id, "hxnexus.case_qa")
+        _may_propose = await _attr.check_internal(
+            session,
+            tenant_id=case.tenant_id or "default",
+            slug="hxnexus.case_qa",
+            action=_attr.ACTION_PROPOSE,
+            legacy_allowed=True,          # nothing refused this before F-00
+            model=_model,
+            resource_kind="case",
+            resource_id=case.id,
+            context={"purpose": "case_qa"},
+            claimed_by="hxnexus.case_qa",
+        )
+        if not _may_propose:
+            raise _attr.AgentRefused(
+                "VEL-AGENT-PROPOSE-DENIED: policy refuses this agent a drafted "
+                "answer for this case",
+                action=_attr.ACTION_PROPOSE, agent_id=_agent_id)
+    except PermissionError:
+        # Includes AgentRefused, which subclasses it. Re-raised rather than
+        # swallowed by the guard below: a refusal is the PEP working, not the
+        # PEP being unavailable.
+        raise
+    except Exception as exc:                                    # noqa: BLE001
+        # Never let the observer break the observed, exactly as in
+        # resolve_backend: an answer already produced is not withheld because
+        # its attribution could not be written.
+        log.warning("case_qa: agent PEP unavailable: %s", exc)
+
     went_external = external_capable and getattr(backend, "last_route", "external") == "external"
     if went_external:
         from velaris_shared.llm.egress_audit import record_egress
@@ -315,6 +443,49 @@ async def ask_case(
             redactions=pseudo.replaced_count if pseudo else 0,
         )
 
+    # ── F-01: the ledger row ─────────────────────────────────────────────────
+    #
+    # The case audit record below says a question was asked; this says on what
+    # basis it was answered, in a form that is hash-chained and comparable with
+    # every other AI path on the box.
+    #
+    # The QUESTION is the input commitment, not the assembled prompt. The prompt
+    # contains the case sources, so hashing it would produce a commitment that
+    # changes whenever unrelated case data changes — two identical questions on
+    # the same case would look like different inputs, which makes the hash
+    # useless for the one thing it is for.
+    #
+    # Never fatal: an answer already produced is not withheld because its
+    # evidence copy could not be written.
+    try:
+        from case_service.ledger import records as _ledger
+
+        _record = await _ledger.record(
+            session,
+            tenant_id=(await _ledger_tenant(session, case.tenant_id)),
+            purpose="case_qa",
+            model_id=_model,
+            provider_class="external" if went_external else "local",
+            agent_id=_agent_id,
+            agent_slug="hxnexus.case_qa",
+            agent_kind="internal",
+            case_id=case.id,
+            input_text=question,
+            output_text=answer,
+        )
+
+        # F-02: priced from the token counts the CHOKEPOINT measured, which is
+        # the only correct source here — the ledger commits to the question
+        # while the model was sent the question plus every case source, so
+        # re-deriving tokens from what the ledger holds would understate the
+        # call by an order of magnitude.
+        from case_service.costing import decisions as _costing
+
+        await _costing.price_from_usage(
+            session, _record, getattr(backend, "last_usage", None))
+    except Exception:                                           # noqa: BLE001
+        log.warning("case_qa: ledger record not written", exc_info=True)
+
     # Case audit: who asked what, which sources fed the answer, where it ran.
     from case_service.api.routers.cases import _audit
     await _audit(session, case.id, "case_qa_asked", actor_id=user.user_id, details={
@@ -324,6 +495,12 @@ async def ask_case(
         "withheld": withheld,
         "external_ai": went_external,
         "provider": getattr(backend, "backend_name", "ollama"),
+        # F-00: which agent, which model. `provider` above says where it ran;
+        # these say who ran it and what answered. The audit record is where a
+        # case worker looks first, so the attribution has to be here and not
+        # only in the decision log.
+        "agent_id": _agent_id,
+        "model": _model,
     })
     await session.commit()
 

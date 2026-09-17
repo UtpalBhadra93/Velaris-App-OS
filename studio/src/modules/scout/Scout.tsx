@@ -37,9 +37,11 @@ export default function Scout() {
   const [selectedScan, setSelectedScan] = useState<string | null>(null);
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-xl)" }}>
-        <div />
+    <div style={{ padding: "var(--space-lg) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
+      {/* Right-aligned rather than space-between around an empty <div />, and a
+          smaller gap beneath: the placeholder plus a full space-xl was most of
+          the distance between the page header and the list. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: "var(--space-md)" }}>
         {view === "list" && <Button onClick={() => setView("new")}>+ New Scan</Button>}
         {view !== "list" && <Button variant="ghost" onClick={() => setView("list")}>← Back to Scans</Button>}
       </div>

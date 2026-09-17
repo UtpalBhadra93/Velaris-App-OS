@@ -11,15 +11,7 @@ import {
   completeUserTask,
   createProcessSchedule,
 } from "@shared/api/client";
-import {
-  Card,
-  Button,
-  StatusBadge,
-  Spinner,
-  EmptyState,
-  TimeAgo,
-  Stat,
-} from "@shared/components";
+import { Button, Card, EmptyState, Spinner, Stat, StatusBadge, Tabs, TimeAgo } from "@shared/components";
 
 /* ═══════════════════════════════════════════════════════════════════
    Monitor — Case instances (primary) + BPMN process instances (secondary)
@@ -43,25 +35,24 @@ function MonitorHome() {
   const [tab, setTab] = useState<"cases" | "processes">("cases");
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 4, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0 }}>
-        {(["cases", "processes"] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "8px 20px", border: "none", cursor: "pointer", fontSize: 13,
-            background: "none", fontFamily: "var(--font-body)",
-            color: tab === t ? "var(--accent)" : "var(--text-secondary)",
-            fontWeight: tab === t ? 600 : 400,
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1,
-          }}>
-            {t === "cases" ? "Cases" : "BPMN Processes"}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Monitor"
+        tabs={[
+          { key: "cases"     as const, label: "Cases" },
+          { key: "processes" as const, label: "BPMN Processes" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "cases" && <CasesView />}
       {tab === "processes" && <ProcessPicker />}
+    </div>
     </div>
   );
 }

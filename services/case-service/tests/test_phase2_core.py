@@ -242,7 +242,7 @@ class TestRelationshipManager:
             "target_case_id": child["id"], "relationship_type": "child",
             "propagate_priority": True,
         })
-        await client.post(f"/api/v1/cases/{child['id']}/priority", json={"priority": "critical"})
+        await client.post(f"/api/v1/cases/{child['id']}/actions/change_priority", json={"params": {"priority": "critical"}})
 
         resp = await client.get(f"/api/v1/cases/{parent['id']}")
         assert resp.json()["priority"] == "critical"
@@ -252,12 +252,12 @@ class TestRelationshipManager:
         parent = await create_case(client, ct["id"])
         child = await create_case(client, ct["id"])
 
-        await client.post(f"/api/v1/cases/{parent['id']}/status", json={"status": "pending_subcase"})
+        await client.post(f"/api/v1/cases/{parent['id']}/actions/change_status", json={"params": {"status": "pending_subcase"}})
         await client.post(f"/api/v1/cases/{parent['id']}/relationships", json={
             "target_case_id": child["id"], "relationship_type": "child",
             "propagate_status": True, "required": True,
         })
-        await client.post(f"/api/v1/cases/{child['id']}/resolve", json={})
+        await client.post(f"/api/v1/cases/{child['id']}/actions/resolve", json={"params": {}})
 
         resp = await client.get(f"/api/v1/cases/{parent['id']}")
         assert resp.json()["status"] == "open"
@@ -274,7 +274,7 @@ class TestLifecycleIntegration:
         case = await create_case(client, ct["id"], priority="low")
         initial = (await client.get(f"/api/v1/cases/{case['id']}")).json()["urgency_score"]
 
-        await client.post(f"/api/v1/cases/{case['id']}/priority", json={"priority": "blocker"})
+        await client.post(f"/api/v1/cases/{case['id']}/actions/change_priority", json={"params": {"priority": "blocker"}})
         updated = (await client.get(f"/api/v1/cases/{case['id']}")).json()["urgency_score"]
         assert updated > initial
 
@@ -283,9 +283,9 @@ class TestLifecycleIntegration:
         case = await create_case(client, ct["id"])
         assert case["status"] == "new"
 
-        r = await client.post(f"/api/v1/cases/{case['id']}/status", json={"status": "open"})
-        assert r.json()["status"] == "open"
-        r = await client.post(f"/api/v1/cases/{case['id']}/resolve", json={})
-        assert r.json()["status"] == "resolved"
-        r = await client.post(f"/api/v1/cases/{case['id']}/close", json={})
-        assert r.json()["status"] == "closed"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/change_status", json={"params": {"status": "open"}})
+        assert r.json()["case"]["status"] == "open"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/resolve", json={"params": {}})
+        assert r.json()["case"]["status"] == "resolved"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/close", json={"params": {}})
+        assert r.json()["case"]["status"] == "closed"

@@ -22,7 +22,12 @@ from case_service.calendar import service
 from tests.conftest import client, session  # type: ignore[attr-defined]
 
 # A Wednesday, 09:00–17:00 UTC is the default pattern.
-WED = datetime(2026, 9, 2, tzinfo=timezone.utc)
+# Computed, not pinned — see `tests/phase_calendar/__init__.py`. This was
+# `datetime(2026, 9, 2)` until that date passed and the scheduling routes
+# correctly began refusing it.
+from tests.phase_calendar import next_wednesday
+
+WED = next_wednesday()
 
 
 def _headers_for(roles: list[str], user_id: str | None = None,

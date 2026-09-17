@@ -24,6 +24,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -367,6 +368,18 @@ class CaseInstanceModel(Base):
     portal_tracking_token: Mapped[uuid.UUID | None] = mapped_column(GUID(), unique=True, nullable=True)
     portal_submitter_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     portal_submitter_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 199 — soft delete. The row and its history stay; the case disappears from
+    # every list and every read. A hard delete would break the hash-linked audit
+    # chain and would be a second, weaker erasure than the one this platform
+    # already implements (`anonymize`, which scrubs the subject and KEEPS the
+    # case). Deliberately NOT a status: a status says where a case is in its
+    # process, and modelling deletion as one would let a tenant delete a case by
+    # editing a dropdown.
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
     assignments: Mapped[list[CaseAssignmentModel]] = relationship(
@@ -1263,6 +1276,13 @@ class UserAbsenceModel(Base):
     #: manual | case | import — `case` means a Leave Request case type created it.
     source:    Mapped[str]       = mapped_column(String(20), nullable=False, default="manual")
     case_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The iCalendar UID an out-of-office event was imported from (mig 175).
+    #: NULL for everything created here, which is what stops an import adopting
+    #: a row somebody typed.
+    external_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Which subscription put it here (mig 176). NULL means an uploaded file or
+    #: something typed — a feed refresh never touches those.
+    subscription_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     #: Personal. The person, their manager and an admin — never a team view:
     #: "sick" is health data.
     note:      Mapped[str]       = mapped_column(Text, nullable=False, default="")
@@ -1325,10 +1345,65 @@ class CalendarEventModel(Base):
     visibility:  Mapped[str]       = mapped_column(String(20), nullable=False, default="team")
     #: scheduled | cancelled
     status:      Mapped[str]       = mapped_column(String(20), nullable=False, default="scheduled")
+    #: manual | import (mig 175) — the same vocabulary `user_absences` has used
+    #: since it was created, so both halves of the calendar answer "where did
+    #: this come from" the same way.
+    source:      Mapped[str]       = mapped_column(String(20), nullable=False, default="manual")
+    #: The iCalendar UID this row was imported from. What makes a second import
+    #: of the same feed an update rather than a duplicate.
+    external_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Which subscription put it here (mig 176). Two feeds may legitimately
+    #: carry the same UID — a meeting a person and their team are both invited
+    #: to — so the UID alone cannot identify a row.
+    subscription_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     created_by:  Mapped[str]       = mapped_column(String(255), nullable=False)
     created_at:  Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
     updated_at:  Mapped[datetime]  = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CalendarSubscriptionModel(Base):
+    """A calendar somewhere else, re-read on a timetable (mig 176).
+
+    **Read-only, deliberately** — which is exactly what Google and Outlook offer
+    when you add a calendar by URL, and why that feature is cheap: with no
+    write-back there is no question of who wins when both sides change.
+
+    `url` is not a secret but it is usually a **capability**: a Google or
+    Outlook private address embeds a token, so whoever holds the link can read
+    the calendar. It is shown back only to the owner, their manager and an admin.
+    """
+
+    __tablename__ = "calendar_subscriptions"
+    __table_args__ = (
+        Index("ix_calendar_subscriptions_user", "tenant_id", "user_id"),
+        Index("ix_calendar_subscriptions_due", "tenant_id", "enabled", "last_fetched_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[str]       = mapped_column(String(255), nullable=False)
+    user_id:   Mapped[str]       = mapped_column(String(255), nullable=False)
+    name:      Mapped[str]       = mapped_column(String(255), nullable=False)
+    url:       Mapped[str]       = mapped_column(Text, nullable=False)
+    enabled:   Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    #: The polite half of polling: an unchanged feed answers 304 and costs both
+    #: sides nothing, which is what makes a short interval reasonable.
+    etag:          Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_modified: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: ok | unchanged | error | never. A sync that silently stops is worse than
+    #: one that never started — the calendar still looks full.
+    last_status: Mapped[str]  = mapped_column(String(20), nullable=False, default="never")
+    last_error:  Mapped[str]  = mapped_column(Text, nullable=False, default="")
+    last_event_count:   Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[str]      = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
 
 
 # <<< P70 Calendar
@@ -1372,9 +1447,15 @@ class AuditAnchorModel(Base):
     __tablename__ = "audit_anchors"
     __table_args__ = (
         Index("idx_audit_anchors_tip_seq", "tip_sequence"),
+        Index("idx_audit_anchors_chain_time", "chain", "anchored_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: Which chain this receipt covers — `audit` (the case audit chain) or
+    #: `arbiter` (the policy decision chain). Defaults to `audit` because every
+    #: row that existed before mig 180 is one, and describing history as
+    #: anything else would be a lie in the evidence table.
+    chain: Mapped[str] = mapped_column(String(32), nullable=False, default="audit")
     tip_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     tip_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     tsa_url: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -1634,6 +1715,58 @@ class DocumentChunkModel(Base):
     embedding: Mapped[list] = mapped_column(PortableJSON(), default=list)  # list[float]
     tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class DocumentIndexJobModel(Base):
+    """A document waiting to be indexed, off the request (mig 203).
+
+    **Why the queue exists.** `index_document` is awaited inside the request and
+    the case-wide route loops every document, so with OCR on, one slow scan is
+    multiplied by the number of scans rather than paid once.
+
+    **The synchronous path is still the default.** A row appears here only when
+    a caller asks for `background: true`, and it is drained only by a
+    `document_index` schedule an operator created. An install that changes
+    nothing behaves exactly as it did.
+
+    **`active_key` is the portable partial index.** It holds the document id
+    while the job is pending or running and is NULL once it is not, so the
+    unique index over it constrains exactly the active rows on all three
+    engines — MySQL has no partial index, and NULL <> NULL everywhere.
+    """
+
+    __tablename__ = "document_index_jobs"
+    __table_args__ = (
+        Index("ux_document_index_jobs_active", "active_key", unique=True),
+        Index("idx_document_index_jobs_status", "status", "created_at"),
+        Index("idx_document_index_jobs_case", "case_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: The CASE's tenant, captured at enqueue: the runner has no caller to ask,
+    #: so the boundary travels on the row.
+    tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    case_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    active_key: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: A document that cannot be read does not become readable by being retried,
+    #: and every attempt costs an OCR timeout.
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    reindex: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    chunks_indexed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Who asked. The runner acts on their behalf, so "why was this document
+    #: read" has an answer on the row that caused it.
+    requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
 
 
 class CopilotConversationModel(Base):
@@ -3160,6 +3293,16 @@ class DeploymentRunModel(Base):
     deployed_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at:       Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
     completed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ── F-04 simulation gate (mig 186) ──────────────────────────────────────
+    # All four nullable, and null on every run written before the gate existed —
+    # which is what those runs are: never gated.
+    simulation_id:        Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: An override is a signed, reasoned, audited act. The reason is mandatory
+    #: at the call site, not by a NOT NULL here, because a run that was never
+    #: overridden has no reason to give.
+    gate_override_reason: Mapped[str | None]       = mapped_column(Text, nullable=True)
+    gate_overridden_by:   Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    gate_overridden_at:   Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DeploymentWindowModel(Base):
@@ -4975,6 +5118,11 @@ class AIActionProposalModel(Base):
     error:         Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
     decided_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: F-01 (mig 183): the ledger row this proposal is the ai_action half of.
+    #: Nullable, and null on every proposal written before the ledger existed —
+    #: which is what those proposals are. Nothing reads it unless the ledger
+    #: wrote it.
+    ledger_record_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     created_at:    Mapped[datetime]  = mapped_column(MicroDateTime(), default=_utcnow)
 
 
@@ -5287,11 +5435,29 @@ class VariableNamespaceModel(Base):
     Namespaces are rows, not strings: a write to an unregistered namespace is
     rejected, and the namespace a caller writes to is derived from its
     authenticated identity (owner_type + owner_ref), never from a parameter.
+
+    **Tenant-scoped since migration 202.** `name` used to be globally unique
+    with no tenant column, so on a box with more than one tenant the first to
+    register `crm` owned that name for everybody — and `namespace_grants`, which
+    hangs off this row, could not be tenant-scoped either. A NULL `tenant_id`
+    now means a PLATFORM namespace, which every tenant resolves when it has none
+    of its own; that is what every pre-202 row became, so nothing that resolved
+    before stopped resolving.
     """
     __tablename__ = "variable_namespaces"
+    __table_args__ = (
+        Index("ux_variable_namespaces_tenant_name", "tenant_key", "name", unique=True),
+        Index("idx_variable_namespaces_lookup", "name", "tenant_key"),
+    )
 
     id:          Mapped[uuid.UUID]     = mapped_column(GUID(), primary_key=True, default=_new_uuid)
-    name:        Mapped[str]           = mapped_column(String(100), unique=True, nullable=False)
+    #: The unique rule is (tenant_key, name), not name — see the class docstring.
+    name:        Mapped[str]           = mapped_column(String(100), nullable=False)
+    #: NULL = a platform namespace, inherited by every tenant without its own.
+    tenant_id:   Mapped[str|None]      = mapped_column(String(255), nullable=True)
+    #: `tenant_id` or the literal 'platform'. Written by the application on both
+    #: dialects, because NULL <> NULL would leave the platform rows unconstrained.
+    tenant_key:  Mapped[str]           = mapped_column(String(255), nullable=False, default="platform")
     owner_type:  Mapped[str]           = mapped_column(String(20), nullable=False)
     owner_ref:   Mapped[uuid.UUID|None] = mapped_column(GUID(), nullable=True)
     sensitivity: Mapped[str]           = mapped_column(String(10), default="internal", nullable=False)
@@ -6571,8 +6737,582 @@ class MCPTokenGrantModel(Base):
     created_at: Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
 
 
+class AgentModel(Base):
+    """F-00: an agent principal — a first-class identity for AI actors.
+
+    Before this, an AI action was attributed to whichever human's request
+    happened to trigger it, and a marketplace container acted as the synthetic
+    string `app-<row id>` invented at the call site. Both are useless as
+    evidence, which is the whole point of the ledger built on top of this.
+
+    `tenant_id` is mandatory and there is deliberately no platform scope: an
+    agent with no tenant would be a principal able to act across every tenant
+    on the box. A worker serving several tenants gets one row per tenant.
+    """
+    __tablename__ = "agents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="uq_agents_tenant_slug"),
+        Index("ix_agents_tenant_status", "tenant_id", "status"),
+        Index("ix_agents_package", "package_id"),
+    )
+
+    id:            Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID]      = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    kind:          Mapped[str]            = mapped_column(String(20), nullable=False)   # internal|marketplace|external
+    slug:          Mapped[str]            = mapped_column(String(128), nullable=False)
+    display_name:  Mapped[str]            = mapped_column(String(255), nullable=False, default="")
+    #: The model this agent is DECLARED to run. Attribution uses what actually
+    #: answered the call, stamped per call — an agent's binding can change
+    #: between two calls and the ledger must record the truth, not the config.
+    model_binding: Mapped[str | None]     = mapped_column(String(255), nullable=True)
+    package_id:    Mapped[str | None]     = mapped_column(String(255), nullable=True)
+    status:        Mapped[str]            = mapped_column(String(20), nullable=False, default="active")
+    created_by:    Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:    Mapped[datetime]       = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+
+
+class AgentCapabilityModel(Base):
+    """F-00: one capability an agent may ever be granted a token for.
+
+    The ceiling, in the same shape as the manifest permission ceiling of mig
+    174 and for the same reason: a ceiling validated once and then discarded is
+    not a ceiling. Append-only — a revoked grant keeps its row, because "what
+    could this agent do in March" is a question a DELETE cannot answer. Live
+    capabilities are the rows with `revoked_at IS NULL`.
+    """
+    __tablename__ = "agent_capabilities"
+    __table_args__ = (
+        Index("ix_agent_caps_agent", "agent_id", "revoked_at"),
+    )
+
+    id:         Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    agent_id:   Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    capability: Mapped[str]              = mapped_column(String(128), nullable=False)
+    granted_by: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    granted_at: Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    revoked_at: Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+
+class AgentTokenGrantModel(Base):
+    """F-00: the server-side anchor for a short-lived agent JWT.
+
+    Modelled on `MCPTokenGrantModel`, which got this right: the JWT is
+    stateless, this row is the truth, and it is re-read on EVERY call so
+    revocation is instant. Time-validity is not revocation.
+
+    `capabilities` is frozen at mint and intersected with the LIVE ceiling on
+    every call, so revoking a capability narrows every outstanding token at
+    once instead of waiting for expiry.
+    """
+    __tablename__ = "agent_token_grants"
+    __table_args__ = (
+        Index("ix_agent_grants_agent", "agent_id", "revoked"),
+        Index("ix_agent_grants_expires", "expires_at"),
+    )
+
+    id:               Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)  # = JWT jti
+    agent_id:         Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:        Mapped[uuid.UUID]        = mapped_column(GUID(), nullable=False)
+    capabilities:     Mapped[list]             = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: Case-scoped grant (the F-09 handoff shape, usable now): valid for this
+    #: case and no other. NULL means agent-scoped. No FK on purpose — a deleted
+    #: case must not take the grant's audit trail with it.
+    audience_case_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    label:            Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    issued_by:        Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    expires_at:       Mapped[datetime]         = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked:          Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    revoked_at:       Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by:       Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:       Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class AgentStatusHistoryModel(Base):
+    """F-00: append-only record of an agent's status changes.
+
+    `agents.status` says what is true now; this says when it became true and
+    who decided. Suspending an agent is a security event, and the row it
+    mutates would otherwise carry no trace of having ever been active.
+    """
+    __tablename__ = "agent_status_history"
+    __table_args__ = (
+        Index("ix_agent_status_agent", "agent_id", "changed_at"),
+    )
+
+    id:          Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    agent_id:    Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    from_status: Mapped[str | None]       = mapped_column(String(20), nullable=True)   # None = creation
+    to_status:   Mapped[str]              = mapped_column(String(20), nullable=False)
+    reason:      Mapped[str]              = mapped_column(Text, nullable=False, default="")
+    changed_by:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    changed_at:  Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class AIDecisionRecordModel(Base):
+    """F-01: one AI decision, recorded as evidence.
+
+    **Immutable.** Every column is written once; `chain_sequence` is the single
+    exception and is excluded from the batch hash for exactly that reason.
+
+    The human verdict is deliberately not here — it arrives minutes or days
+    later, and a mutable field inside a hashed row would make the seal fail the
+    moment somebody reviewed something, reporting an ordinary human action as
+    tampering. See `AIDecisionVerdictModel`.
+    """
+    __tablename__ = "ai_decision_records"
+    __table_args__ = (
+        Index("ix_aidr_tenant_time", "tenant_id", "recorded_at"),
+        Index("ix_aidr_case", "case_id", "recorded_at"),
+        Index("ix_aidr_agent", "agent_id", "recorded_at"),
+        Index("ix_aidr_model", "model_id"),
+        Index("ix_aidr_unsealed", "chain_sequence", "recorded_at"),
+    )
+
+    id:                  Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:           Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: No FK: the ledger outlives the agent. A retired agent must still be
+    #: nameable in an older record, and any ON DELETE rule would either forbid
+    #: the deletion or quietly rewrite history. Slug and kind are snapshots.
+    agent_id:            Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    agent_slug:          Mapped[str | None]       = mapped_column(String(128), nullable=True)
+    agent_kind:          Mapped[str | None]       = mapped_column(String(20), nullable=True)
+    model_id:            Mapped[str]              = mapped_column(String(255), nullable=False)
+    provider_class:      Mapped[str]              = mapped_column(String(16), nullable=False, default="local")
+    purpose:             Mapped[str]              = mapped_column(String(64), nullable=False)
+    case_id:             Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    step_id:             Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    #: The input COMMITMENT, not the input.
+    input_sha256:        Mapped[str]              = mapped_column(String(64), nullable=False)
+    input_data_classes:  Mapped[list]             = mapped_column(PortableJSON(), nullable=False, default=list)
+    output_sha256:       Mapped[str | None]       = mapped_column(String(64), nullable=True)
+    #: Written ONLY when a policy attaches the `record_prompt` obligation.
+    prompt_sealed:       Mapped[str | None]       = mapped_column(Text, nullable=True)
+    output_sealed:       Mapped[str | None]       = mapped_column(Text, nullable=True)
+    confidence:          Mapped[float | None]     = mapped_column(Numeric(5, 4), nullable=True)
+    latency_ms:          Mapped[float | None]     = mapped_column(Numeric(10, 2), nullable=True)
+    #: The HxArbiter decision that gated this call, when there was one.
+    arbiter_decision_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    chain_sequence:      Mapped[int | None]       = mapped_column(BigInteger, nullable=True)
+    recorded_at:         Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class AIDecisionVerdictModel(Base):
+    """F-01: what a human did about one AI decision. Append-only.
+
+    A second review inserts a second row; the current verdict is the newest and
+    the earlier one stays visible. "Accepted, then reversed three days later" is
+    exactly the sequence an override-rate report exists to show, and an UPDATE
+    would erase it.
+
+    There is no `unreviewed` value: an absent row IS unreviewed. Storing it
+    would make "nobody has looked at this" indistinguishable from "somebody
+    looked and recorded nothing".
+    """
+    __tablename__ = "ai_decision_verdicts"
+    __table_args__ = (
+        Index("ix_aidv_record", "record_id", "decided_at"),
+        Index("ix_aidv_unsealed", "chain_sequence", "decided_at"),
+    )
+
+    id:             Mapped[uuid.UUID]  = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    record_id:      Mapped[uuid.UUID]  = mapped_column(GUID(), ForeignKey("ai_decision_records.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:      Mapped[uuid.UUID]  = mapped_column(GUID(), nullable=False)
+    verdict:        Mapped[str]        = mapped_column(String(20), nullable=False)   # accepted|edited|rejected
+    diff_sha256:    Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diff_sealed:    Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason:         Mapped[str]        = mapped_column(Text, nullable=False, default="")
+    decided_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:     Mapped[datetime]   = mapped_column(MicroDateTime(), default=_utcnow)
+    chain_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class AILedgerChainModel(Base):
+    """F-01: one sealed window over the ledger.
+
+    Same shape as `ArbiterDecisionChainModel`, including the tombstone pair —
+    carried here from the start rather than learned again, because migration
+    180 shipped a retention horizon that destroyed the arbiter chain the first
+    time it ran.
+
+    One chain covers BOTH the records and the verdicts. A verdict is part of the
+    evidence, not a footnote to it, and sealing them separately would let one be
+    rewritten while the other still verified.
+    """
+    __tablename__ = "ai_ledger_chain"
+    __table_args__ = (
+        Index("ix_ailc_pruned", "pruned_at"),
+    )
+
+    id:            Mapped[uuid.UUID]       = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    sequence:      Mapped[int]             = mapped_column(BigInteger, nullable=False, unique=True)
+    window_start:  Mapped[datetime]        = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end:    Mapped[datetime]        = mapped_column(DateTime(timezone=True), nullable=False)
+    record_count:  Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    verdict_count: Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    prev_hash:     Mapped[str]             = mapped_column(String(64), nullable=False)
+    content_hash:  Mapped[str]             = mapped_column(String(64), nullable=False)
+    sealed_at:     Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
+    pruned_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pruned_count:  Mapped[int | None]      = mapped_column(Integer, nullable=True)
+
+
+class ModelRateCardModel(Base):
+    """F-02: what a model's tokens cost, per million, for one tenant.
+
+    `tenant_id IS NULL` is the PLATFORM default, inherited by any tenant with no
+    row of its own. `tenant_key` collapses that NULL to the literal 'platform'
+    so one ordinary UNIQUE constrains both scopes — `UNIQUE (tenant_id,
+    model_id)` would not, because NULL <> NULL, and unlimited duplicate platform
+    rates is the worst case since every tenant inherits them. The same fix as
+    `arbiter_policies.tenant_key` (mig 177), carried over rather than
+    rediscovered.
+
+    Distinct from `llmops.MODEL_RATES`, which is a hardcoded platform dict
+    pricing the `llm_calls` metric. A tenant on a negotiated contract cannot be
+    priced from a constant in the source.
+    """
+    __tablename__ = "model_rate_cards"
+    __table_args__ = (
+        UniqueConstraint("tenant_key", "model_id", name="ux_model_rate_scope_model"),
+        Index("ix_model_rate_model", "model_id"),
+    )
+
+    id:              Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    tenant_key:      Mapped[str]              = mapped_column(String(36), nullable=False)
+    model_id:        Mapped[str]              = mapped_column(String(255), nullable=False)
+    input_per_mtok:  Mapped[float]            = mapped_column(Numeric(14, 6), nullable=False, default=0)
+    output_per_mtok: Mapped[float]            = mapped_column(Numeric(14, 6), nullable=False, default=0)
+    currency:        Mapped[str]              = mapped_column(String(8), nullable=False, default="USD")
+    created_by:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:      Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:      Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+
+
+class DecisionCostModel(Base):
+    """F-02: one LINE ITEM of what a decision cost.
+
+    A line, not a decision — an AI call priced at separate input and output
+    rates produces two. That is the feature: "explainable" means an operator
+    asking why a case cost what it did gets `quantity × unit_rate = amount`
+    rather than an assertion.
+
+    Written once and never updated. Re-pricing after a rate change appends new
+    lines, or last month's invoice silently changes when this month's contract
+    does.
+    """
+    __tablename__ = "decision_costs"
+    __table_args__ = (
+        Index("ix_dcost_case", "case_id", "priced_at"),
+        Index("ix_dcost_record", "record_id"),
+        Index("ix_dcost_tenant", "tenant_id", "priced_at"),
+    )
+
+    id:          Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    record_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("ai_decision_records.id", ondelete="CASCADE"), nullable=True)
+    case_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    step_id:     Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    kind:        Mapped[str]              = mapped_column(String(16), nullable=False)   # ai | labour
+    model_id:    Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    quantity:    Mapped[float]            = mapped_column(Numeric(18, 6), nullable=False, default=0)
+    unit:        Mapped[str]              = mapped_column(String(16), nullable=False)   # mtok_in|mtok_out|hour
+    unit_rate:   Mapped[float]            = mapped_column(Numeric(14, 6), nullable=False, default=0)
+    amount:      Mapped[float]            = mapped_column(Numeric(18, 6), nullable=False, default=0)
+    currency:    Mapped[str]              = mapped_column(String(8), nullable=False, default="USD")
+    #: tenant | platform | unpriced. An unpriced line is zero AND SAYS SO —
+    #: reporting "we have no rate for this model" as "this was free" is how a
+    #: cost report becomes a lie an operator acts on.
+    rate_source: Mapped[str]              = mapped_column(String(16), nullable=False, default="unpriced")
+    estimated:   Mapped[bool]             = mapped_column(Boolean, nullable=False, default=True)
+    priced_at:   Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ComplianceProofModel(Base):
+    """F-03: a counterfactual compliance proof.
+
+    HxArbiter's what-if already answers "what would this draft change" for a
+    person about to press a button — capped, windowed, kept on the draft and
+    never re-derivable. An auditor asks something else: prove what WOULD have
+    happened across the entire caseload, and let me re-derive it myself.
+
+    So a proof covers the whole cohort, is content-addressed by
+    `content_sha256`, and links to the proof before it — removing or back-dating
+    one breaks every proof after it.
+
+    A REFUSED proof is stored rather than discarded. "We could not prove this,
+    and here is exactly why" is an answer worth keeping, and silently returning
+    nothing invites the question being asked again until it accidentally
+    succeeds.
+    """
+    __tablename__ = "compliance_proofs"
+    __table_args__ = (
+        UniqueConstraint("sequence", name="ux_proof_sequence"),
+        Index("ix_proof_tenant", "tenant_id", "created_at"),
+        Index("ix_proof_policy", "policy_id", "policy_version"),
+        Index("ix_proof_content", "content_sha256"),
+    )
+
+    id:             Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: NULL = a PLATFORM-scope proof: superadmin-only and aggregate-only, since
+    #: a cohort definition can leak which cases exist.
+    tenant_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    subject_kind:   Mapped[str]              = mapped_column(String(32), nullable=False, default="policy_version")
+    policy_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    policy_version: Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    namespace:      Mapped[str]              = mapped_column(String(64), nullable=False)
+    status:         Mapped[str]              = mapped_column(String(20), nullable=False, default="complete")
+    refusal_reason: Mapped[str | None]       = mapped_column(Text, nullable=True)
+    cohort:         Mapped[dict]             = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: Covers the ordered decision ids AND the attributes each was replayed
+    #: against, so a later edit to any of them is detectable.
+    inputs_sha256:  Mapped[str]              = mapped_column(String(64), nullable=False)
+    rules_sha256:   Mapped[str]              = mapped_column(String(64), nullable=False)
+    result:         Mapped[dict]             = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: Filtered per VIEWER at read time, not at write time: the count is the
+    #: proof's finding and must not depend on who is looking, while the list is
+    #: case data and must.
+    divergent:      Mapped[list]             = mapped_column(PortableJSON(), nullable=False, default=list)
+    aggregate_only: Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    prev_hash:      Mapped[str]              = mapped_column(String(64), nullable=False)
+    content_sha256: Mapped[str]              = mapped_column(String(64), nullable=False)
+    sequence:       Mapped[int]              = mapped_column(BigInteger, nullable=False)
+    generated_by:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:     Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class SimulationGateModel(Base):
+    """F-04: the thresholds a promotion must clear, per tenant.
+
+    `enabled` defaults to FALSE, and an ABSENT row means the same thing. That
+    pair is the whole upgrade story: an install taking this update finds no row,
+    and no row means deployments approve exactly as they did yesterday.
+
+    Thresholds are NULL when unchecked rather than zero — zero is the strictest
+    possible setting and must never be what an operator gets from a blank field.
+    """
+    __tablename__ = "simulation_gates"
+    __table_args__ = (
+        UniqueConstraint("tenant_key", name="ux_simgate_scope"),
+    )
+
+    id:                    Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:             Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    tenant_key:            Mapped[str]              = mapped_column(String(36), nullable=False)
+    enabled:               Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    max_divergent_pct:     Mapped[float | None]     = mapped_column(Numeric(6, 3), nullable=True)
+    max_cost_increase_pct: Mapped[float | None]     = mapped_column(Numeric(6, 3), nullable=True)
+    min_cohort:            Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    require_proof:         Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    #: F-04 second slice (mig 190) — the twin thresholds. NULL means NOT
+    #: CHECKED, never zero: an install that already holds a gate row keeps
+    #: approving exactly what it approved yesterday, because three unchecked
+    #: thresholds cannot fail.
+    min_twin_cases:        Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    max_twin_failure_pct:  Mapped[float | None]     = mapped_column(Numeric(6, 3), nullable=True)
+    max_twin_p95_ms:       Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    created_by:            Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:            Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:            Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+
+
+class SimulationRunModel(Base):
+    """F-04: one rehearsal of one promotion.
+
+    Append-only: a re-simulation writes a new row and the deployment run points
+    at the newest. "It failed twice and then passed" is exactly what somebody
+    reviewing a promotion afterwards needs to see.
+
+    `status` distinguishes **failed** (thresholds exceeded) from **refused**
+    (the simulation could not be run honestly at all). Letting the second read
+    as the first would block promotions for a reason nobody can act on.
+    """
+    __tablename__ = "simulation_runs"
+    __table_args__ = (
+        Index("ix_simrun_deploy", "deployment_run_id", "created_at"),
+        Index("ix_simrun_tenant", "tenant_id", "created_at"),
+    )
+
+    id:                Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:         Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    deployment_run_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("deployment_runs.id", ondelete="CASCADE"), nullable=True)
+    #: Pinned: a simulation of a different package is not evidence about this
+    #: promotion, and the checksum is how the gate refuses to accept it as one.
+    package_checksum:  Mapped[str | None]       = mapped_column(String(64), nullable=True)
+    status:            Mapped[str]              = mapped_column(String(20), nullable=False)
+    findings:          Mapped[dict]             = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: The thresholds AS THEY WERE. Reading them live at review time would let a
+    #: later edit change what a past simulation appears to have been judged by.
+    thresholds:        Mapped[dict]             = mapped_column(PortableJSON(), nullable=False, default=dict)
+    replay_run_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    proof_id:          Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The F-00 agent the twin work is attributed to; its capability ceiling is
+    #: empty by construction.
+    twin_agent_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: F-04 second slice (mig 190): the twin execution that informed this
+    #: verdict. NULL means the rehearsal was a replay only — which is what
+    #: every run said before the twin existed, and what every run says on an
+    #: install with no twin configured.
+    twin_run_id:       Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_by:        Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:        Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    completed_at:      Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TwinRunModel(Base):
+    """F-04 second slice: one execution of a candidate against the twin.
+
+    The twin is not a mode of this process. It is a SECOND case-service
+    Temporal worker the operator runs, with its own task queue and its own
+    database — and nothing in Velaris starts it. No twin configured means no
+    twin run, and the simulation reports exactly what it reported before this
+    existed.
+
+    `isolation_verified` is recorded rather than assumed. "The twin was
+    actually production" is the one failure of this feature that would be both
+    catastrophic and silent, and it is checked on (host, port, database) and
+    the queue name — never on the whole connection string, because two DSNs
+    differing only by password point at the same database.
+    """
+    __tablename__ = "twin_runs"
+    __table_args__ = (
+        Index("ix_twinrun_tenant", "tenant_id", "created_at"),
+        Index("ix_twinrun_deploy", "deployment_run_id", "created_at"),
+    )
+
+    id:                Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:         Mapped[uuid.UUID]        = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    deployment_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("deployment_runs.id", ondelete="CASCADE"), nullable=True)
+    package_checksum:  Mapped[str | None]       = mapped_column(String(64), nullable=True)
+    task_queue:        Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    #: A HASH of the twin DSN, never the DSN — a connection string carries a
+    #: password and this row is readable by anybody who may read a simulation.
+    database_fingerprint: Mapped[str | None]    = mapped_column(String(64), nullable=True)
+    isolation_verified: Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False)
+    isolation_detail:  Mapped[Any | None]       = mapped_column(PortableJSON(), nullable=True)
+    #: What the candidate bundle put there, through the SAME import path a real
+    #: promotion uses. A twin that provisioned itself some other way would be
+    #: rehearsing a different deployment from the one being approved.
+    provisioned:       Mapped[Any | None]       = mapped_column(PortableJSON(), nullable=True)
+    #: `batch` today. The column exists so that the day a ramped profile is
+    #: built, an old row still says which question it answered.
+    load_profile:      Mapped[str]              = mapped_column(String(20), nullable=False, default="batch")
+    requested_cases:   Mapped[int]              = mapped_column(Integer, nullable=False, default=0)
+    started_cases:     Mapped[int]              = mapped_column(Integer, nullable=False, default=0)
+    terminal_cases:    Mapped[int]              = mapped_column(Integer, nullable=False, default=0)
+    failed_cases:      Mapped[int]              = mapped_column(Integer, nullable=False, default=0)
+    #: Started, did not fail, did not finish. A candidate that STRANDS cases is
+    #: the failure this feature exists to catch, and it is invisible if
+    #: terminal and failed are the only two counters.
+    stuck_cases:       Mapped[int]              = mapped_column(Integer, nullable=False, default=0)
+    p50_ms:            Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    p95_ms:            Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    max_ms:            Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    stage_profile:     Mapped[Any | None]       = mapped_column(PortableJSON(), nullable=True)
+    failures:          Mapped[Any | None]       = mapped_column(PortableJSON(), nullable=True)
+    #: pending | running | complete | refused | failed. `refused` is not
+    #: `failed`, exactly as in the gate.
+    status:            Mapped[str]              = mapped_column(String(20), nullable=False, default="pending")
+    refusal_reason:    Mapped[str | None]       = mapped_column(String(64), nullable=True)
+    error:             Mapped[str | None]       = mapped_column(Text, nullable=True)
+    torn_down_at:      Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+    torn_down_rows:    Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    #: Set when teardown could not finish. Deliberately NOT an error on the run:
+    #: the verdict is still valid, and somebody has to be told the twin needs
+    #: sweeping.
+    teardown_error:    Mapped[str | None]       = mapped_column(Text, nullable=True)
+    created_by:        Mapped[str | None]       = mapped_column(String(255), nullable=True)
+    created_at:        Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    completed_at:      Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentWorkforceModel(Base):
+    """F-05: an agent that is allowed to hold work.
+
+    An F-00 agent WITHOUT one of these is not a worker — it can be attributed
+    and can hold a token, and it is simply not in the roster. HxNexus's case-Q&A
+    agent should never be handed a case step, and that separation is what stops
+    it.
+
+    `escalation_queue` is NOT NULL on purpose: every agent must have a human
+    queue its work can fall to, and one whose target is unreachable is
+    auto-benched. Fail-closed staffing, because the alternative is work stuck on
+    something that cannot ask for help.
+    """
+    __tablename__ = "agent_workforce"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="ux_workforce_agent"),
+        Index("ix_workforce_tenant", "tenant_id", "benched"),
+    )
+
+    id:                    Mapped[uuid.UUID]        = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    agent_id:              Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:             Mapped[uuid.UUID]        = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: The SAME taxonomy humans use (`user_directory.skills`). A skill meaning
+    #: one thing for a person and another for an agent makes a mixed roster
+    #: unreadable.
+    skills:                Mapped[list]             = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: NULL means uncapped, written that way so "no cap" reads as a decision.
+    max_concurrent:        Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    #: The cap humans have no equivalent of — what stops a looping agent
+    #: spending a month's budget in an afternoon.
+    token_budget_per_hour: Mapped[int | None]       = mapped_column(BigInteger, nullable=True)
+    escalation_queue:      Mapped[str]              = mapped_column(String(255), nullable=False)
+    #: Changed through a PROPOSAL a supervisor approves, never by the scorecard
+    #: directly: a system that adjusts its own routing from its own performance
+    #: data is a feedback loop nobody is steering.
+    routing_weight:        Mapped[float]            = mapped_column(Numeric(5, 3), nullable=False, default=1)
+    benched:               Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
+    bench_reason:          Mapped[str | None]       = mapped_column(Text, nullable=True)
+    benched_at:            Mapped[datetime | None]  = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by:            Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:            Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:            Mapped[datetime]         = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+
+
+class AgentScorecardModel(Base):
+    """F-05: an agent's performance over a window, and the weight change it
+    supports.
+
+    Every number is DERIVED from F-01 and F-02 and could be recomputed. It is
+    stored so a routing-weight proposal can name the evidence it rests on, and
+    so a supervisor reviewing that proposal three days later sees what the
+    proposer saw rather than what is true now.
+    """
+    __tablename__ = "agent_scorecards"
+    __table_args__ = (
+        Index("ix_scorecard_agent", "agent_id", "created_at"),
+        Index("ix_scorecard_open", "tenant_id", "proposal_status"),
+    )
+
+    id:                Mapped[uuid.UUID]       = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    agent_id:          Mapped[uuid.UUID]       = mapped_column(GUID(), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:         Mapped[uuid.UUID]       = mapped_column(GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    window_start:      Mapped[datetime]        = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end:        Mapped[datetime]        = mapped_column(DateTime(timezone=True), nullable=False)
+    decisions:         Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    reviewed:          Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    accepted:          Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    overridden:        Mapped[int]             = mapped_column(Integer, nullable=False, default=0)
+    #: NULL, never 0.0, on an empty denominator — the F-01 rule, same reason.
+    override_rate:     Mapped[float | None]    = mapped_column(Numeric(6, 4), nullable=True)
+    cost_total:        Mapped[float]           = mapped_column(Numeric(18, 6), nullable=False, default=0)
+    cost_per_decision: Mapped[float | None]    = mapped_column(Numeric(18, 6), nullable=True)
+    currency:          Mapped[str | None]      = mapped_column(String(8), nullable=True)
+    proposed_weight:   Mapped[float | None]    = mapped_column(Numeric(5, 3), nullable=True)
+    proposal_status:   Mapped[str | None]      = mapped_column(String(20), nullable=True)
+    proposal_reason:   Mapped[str | None]      = mapped_column(Text, nullable=True)
+    decided_by:        Mapped[str | None]      = mapped_column(String(255), nullable=True)
+    decided_at:        Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:        Mapped[datetime]        = mapped_column(MicroDateTime(), default=_utcnow)
+
+
 class CaseSessionModel(Base):
-    """HxMeet P1: a real-time session (meeting) attached to a case.
+    """HxMeet P1: a real-time session (meeting) attached to a case."
 
     One provider-agnostic abstraction, two drivers: `off_platform` (P1 —
     Teams/Zoom/Meet/generic connector creates the meeting, recording stays
@@ -7109,3 +7849,1665 @@ class RolePrivilegeModel(Base):
     updated_by: Mapped[str]      = mapped_column(String(255), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+# ─── HxArbiter — sovereignty & security policy engine (migrations 177–178) ────
+#
+# Everything ships clamped to `shadow`: the engine computes and logs and changes
+# no answer anybody receives until an operator raises a namespace ceiling. An
+# install taking this update sees no behaviour change at all.
+
+
+class ArbiterNamespaceModel(Base):
+    """A registered action namespace, its default effect, and its global clamp.
+
+    Deliberately NOT tenant-scoped. A tenant varies a default by writing a
+    *policy*; the registry is the ceiling, and a ceiling a tenant could raise
+    would not be one. Recorded so this is not mistaken for the oversight that
+    left `variable_namespaces` globally unique.
+    """
+
+    __tablename__ = "arbiter_namespaces"
+
+    namespace:      Mapped[str] = mapped_column(String(64), primary_key=True)
+    default_effect: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: Every namespace ships at 'shadow'. Raising one is an operator's decision.
+    max_mode:       Mapped[str] = mapped_column(String(20), nullable=False, default="shadow")
+    #: How long decisions in this namespace are kept. **NULL means forever**,
+    #: which is what every install did before mig 180 — purging evidence has
+    #: legal weight and is an operator's decision, never an update's.
+    decision_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description:    Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Decision-log volume control. Every deny, every obligation-bearing allow
+    #: and every legacy disagreement is kept regardless of these.
+    sample_allow_rate:   Mapped[float] = mapped_column(Numeric(4, 3), nullable=False, default=1.0)
+    sample_default_rate: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False, default=1.0)
+    #: When this namespace left shadow — an auditable fact about the platform.
+    promoted_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    updated_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+
+
+class ArbiterPolicyModel(Base):
+    """A policy's logical identity. Its rules live in versions.
+
+    `tenant_id` NULL means platform-level, which is what `same_tenant()` already
+    treats as platform-shared. Platform and tenant policies are evaluated
+    together under deny-overrides, so a tenant tightens the baseline and can
+    never loosen it.
+    """
+
+    __tablename__ = "arbiter_policies"
+    __table_args__ = (
+        # `tenant_key` and not `tenant_id`: NULL <> NULL in SQL, so a UNIQUE
+        # over a nullable tenant column does not constrain PLATFORM policy names
+        # at all — proven against a live PostgreSQL, which accepted three
+        # identical ones. This column collapses NULL to 'platform'.
+        UniqueConstraint("tenant_key", "name", name="ux_arbiter_policies_scope_name"),
+        Index("ix_arbiter_policies_lookup", "namespace", "status", "tenant_id"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:  Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    #: Maintained by the writer, guarded by a CHECK in the migration. A plain
+    #: column rather than GENERATED because MariaDB 11.8 refuses COALESCE in a
+    #: GENERATED ALWAYS AS clause where MySQL 8.4 accepts it.
+    tenant_key: Mapped[str] = mapped_column(String(36), nullable=False)
+    name:        Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    namespace:   Mapped[str] = mapped_column(String(64), nullable=False)
+    status:      Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: `legacy_bridge` marks a policy mirroring an existing control. It retires
+    #: when that control does, not when somebody decides it looks redundant.
+    origin:     Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+    #: When retirement began. A retired policy keeps evaluating in shadow for a
+    #: soak period, because removing enforcement is not the mirror of adding it.
+    retired_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+
+
+class ArbiterPolicyVersionModel(Base):
+    """An immutable version. An edit creates the next one; none is ever rewritten."""
+
+    __tablename__ = "arbiter_policy_versions"
+    __table_args__ = (
+        Index("ix_arbiter_versions_active_window",
+              "policy_id", "activated_at", "deactivated_at"),
+    )
+
+    policy_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("arbiter_policies.id", ondelete="CASCADE"), primary_key=True)
+    version:   Mapped[int] = mapped_column(Integer, primary_key=True)
+    rules:     Mapped[list] = mapped_column(PortableJSON(), nullable=False, default=list)
+    mode:      Mapped[str] = mapped_column(String(20), nullable=False, default="shadow")
+    nl_source:   Mapped[str | None] = mapped_column(Text, nullable=True)
+    nl_readback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Nullable: a legacy-bridge version is generated by the platform and has no
+    #: human author. A sentinel would put a fictional name on a policy an
+    #: auditor reads.
+    created_by:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: Four-eyes on a single-admin install is a cooling-off delay, which is
+    #: unimplementable without knowing when approval happened.
+    approved_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    #: SHA-256 over canonical JSON — hex, exactly 64 characters.
+    signature: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    #: The activation interval. "Prove this rule was active on 3 March" has no
+    #: answer from a current-version pointer alone, and cannot be recovered from
+    #: the decision log because allow-and-default rows are sampled once a
+    #: namespace enforces.
+    activated_at:   Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    deactivated_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+
+
+class ArbiterDecisionModel(Base):
+    """One evaluated decision. The evidence the product is sold on."""
+
+    __tablename__ = "arbiter_decisions"
+    __table_args__ = (
+        Index("ix_arb_dec_tenant_ns_time", "tenant_id", "namespace", "evaluated_at"),
+        Index("ix_arb_dec_subject", "tenant_id", "subject_id", "evaluated_at"),
+        Index("ix_arb_dec_disagreement",
+              "legacy_effect", "tenant_id", "namespace", "evaluated_at"),
+        Index("ix_arb_dec_unsealed", "chain_sequence", "evaluated_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: Always the resolved tenant UUID, never the slug a token happened to
+    #: carry. A log holding both forms cannot be filtered.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    namespace: Mapped[str] = mapped_column(String(64), nullable=False)
+    action:    Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Denormalised out of `subject` and indexed: "every decision about this
+    #: principal" is a core audit query, and from JSON it would need a different
+    #: expression per backend and an index on none.
+    subject_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    subject_id:   Mapped[str] = mapped_column(String(255), nullable=False)
+    subject:  Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    resource: Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: Redacted per HxPrivacy before it is written. A decision log that
+    #: faithfully records the personal data it was asked about becomes a second
+    #: copy of that data, governed by nothing.
+    context:  Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    effect:   Mapped[str] = mapped_column(String(10), nullable=False)
+    #: `enforced` alone collapses shadow and dry_run, which the product treats
+    #: differently: dry_run surfaces "would have been denied" in Studio, shadow
+    #: does not appear there at all.
+    mode:     Mapped[str] = mapped_column(String(20), nullable=False)
+    enforced:        Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    default_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    matched:     Mapped[list] = mapped_column(PortableJSON(), nullable=False, default=list)
+    obligations: Mapped[list] = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: What the control being replaced said. A disagreement is the whole output
+    #: of a parity report, and is never sampled away.
+    legacy_effect: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    #: Digest over the active version signatures. Needed because a
+    #: default_applied row names no policy at all, and "nothing matched" is the
+    #: answer most worth questioning later.
+    policy_set_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Why the evaluator could not answer, when it could not — `pip_timeout` and
+    #: friends. Without it a fail-closed deny is indistinguishable from a policy
+    #: deny on screen.
+    error:      Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Who asserted `subject`. A PEP legitimately asks on behalf of somebody
+    #: else, which makes `subject` an assertion rather than an identity — and an
+    #: assertion nobody signed for is unattributable. Stamped by the router from
+    #: the authenticated caller, never read from the body.
+    claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    simulated:  Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    latency_us: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: NULL means "not yet sealed", never "unsealable".
+    chain_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ArbiterDecisionChainModel(Base):
+    """One sealed batch of decisions — what makes the log evidence, not rows.
+
+    `content_hash = sha256(prev_hash || canonical(batch))`, the same shape as
+    `case_audit_log_chain`, so the existing `audit_anchors` RFC-3161 receipts
+    over a chain tip apply unchanged. Batched rather than per-decision because
+    chaining each one would serialise the hot path behind a single sequence.
+
+    A gap in the sealed windows is itself evidence: it says rows were removed.
+    """
+
+    __tablename__ = "arbiter_decision_chain"
+    __table_args__ = (
+        Index("ix_arb_chain_window", "window_start", "window_end"),
+        Index("idx_arb_chain_pruned", "pruned_at"),
+    )
+
+    id:       Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    window_start: Mapped[datetime] = mapped_column(MicroDateTime(), nullable=False)
+    window_end:   Mapped[datetime] = mapped_column(MicroDateTime(), nullable=False)
+    decision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prev_hash:    Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    sealed_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    #: Set when retention deleted the decisions this batch covered (mig 181).
+    #: The batch keeps its `content_hash`, so the chain still links and still
+    #: proves nothing was edited; what is lost is the ability to re-derive this
+    #: batch's content, which is inherent to deleting it. NULL means never
+    #: pruned, which is every batch until an operator sets a horizon.
+    pruned_at:    Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    pruned_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ArbiterDraftModel(Base):
+    """A natural-language policy draft and how it came to be proposed (mig 179).
+
+    A draft is not a policy. It is the evidence trail behind one, and the
+    provenance columns are the point: "your compliance control was written by an
+    LLM" is the first question in the room, and `model_provider` / `model_name` /
+    `prompt_version` are what turn "we don't know" into an answer.
+
+    `readback` is what an approver actually signed, and it is generated WITHOUT
+    the intent in context — so it describes what the rules do rather than
+    agreeing with what the author meant.
+    """
+
+    __tablename__ = "arbiter_drafts"
+    __table_args__ = (
+        Index("ix_arbiter_drafts_tenant_state", "tenant_id", "state", "created_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: NULL ⇒ the draft proposes a NEW policy, not a version of an existing one.
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("arbiter_policies.id", ondelete="CASCADE"), nullable=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    namespace: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The operator's own words, verbatim — the readback is compared against it.
+    intent:          Mapped[str] = mapped_column(Text, nullable=False)
+    generated_rules: Mapped[list | None] = mapped_column(PortableJSON(), nullable=True)
+    compile_report:  Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    analysis_report: Mapped[list | None] = mapped_column(PortableJSON(), nullable=True)
+    readback:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    readback_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    test_seeds:      Mapped[list | None] = mapped_column(PortableJSON(), nullable=True)
+    whatif_report:   Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    model_provider:  Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name:      Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version:  Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: A draft that only compiled on the repair round is worth a closer read.
+    attempts:    Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: Which legal texts drove this (§19.6 regulatory change management).
+    corpus_refs: Mapped[list | None] = mapped_column(PortableJSON(), nullable=True)
+    state:       Mapped[str] = mapped_column(String(32), nullable=False, default="drafted")
+    created_by:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                  onupdate=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-06 — ambient case capture (mig 188)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class CaptureRunModel(Base):
+    """One extraction pass over one source — a transcript, an email, a note.
+
+    The run exists so a proposal can say what it came from. `source_sha256` is
+    the commitment: the hash of the exact text the model read, so a proposal
+    reviewed a week later can be checked against the source it claims to
+    summarise, and a re-run over changed text is visibly a different run rather
+    than an unexplained second opinion.
+
+    `refused` is not `failed`. Consent absent, capture switched off, or a source
+    with nothing in it are the gate working; recording them as faults would send
+    somebody hunting a bug that is not there.
+    """
+    __tablename__ = "capture_runs"
+    __table_args__ = (
+        Index("ix_capture_runs_case", "case_id", "created_at"),
+        Index("ix_capture_runs_source", "source_kind", "source_ref"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:      Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_id:        Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
+    source_kind:    Mapped[str]  = mapped_column(String(20), nullable=False)
+    source_ref:     Mapped[str]  = mapped_column(String(255), nullable=False)
+    source_sha256:  Mapped[str]  = mapped_column(String(64), nullable=False)
+    source_locator: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status:         Mapped[str]  = mapped_column(String(20), nullable=False, default="running")
+    refusal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error:          Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider:       Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model:          Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_sha256:  Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: A run that only parsed on the repair round is worth a closer read.
+    attempts:       Mapped[int]  = mapped_column(Integer, nullable=False, default=1)
+    #: A dropped proposal leaves no row by design — it is not a suggestion
+    #: anybody may accept — so this count is the only trace it existed.
+    proposed_count: Mapped[int]  = mapped_column(Integer, nullable=False, default=0)
+    dropped_count:  Mapped[int]  = mapped_column(Integer, nullable=False, default=0)
+    requested_by:   Mapped[str]  = mapped_column(String(255), nullable=False)
+    created_at:     Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    completed_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CaptureProposalModel(Base):
+    """One suggested change, awaiting a person.
+
+    Proposal-only, always: nothing here has any effect until somebody accepts
+    or edits it, and the row keeps both what was suggested and what was decided
+    — which is what makes the capture's real accuracy measurable later instead
+    of merely felt.
+
+    `kind` is closed **structurally**, not by asking the model nicely: a kind
+    this table does not accept cannot be stored, so it cannot be accepted. That
+    is the design's whitelist — capture reaches case content and nothing else,
+    and no injected instruction can widen it, because widening it would take a
+    migration.
+    """
+    __tablename__ = "capture_proposals"
+    __table_args__ = (
+        Index("ix_capture_prop_case", "case_id", "status"),
+        Index("ix_capture_prop_run", "run_id"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    run_id:         Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("capture_runs.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:      Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_id:        Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
+    kind:           Mapped[str] = mapped_column(String(20), nullable=False)
+    target:         Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: The before, captured when the proposal was made. Re-reading it at
+    #: decision time would show a value that may have moved since.
+    current_value:  Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    proposed_value: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: NULL when the model reported none — never 0, which reads as "confident it
+    #: is wrong" rather than "it did not say".
+    confidence:     Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    snippet:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    locator:        Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status:         Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    applied_value:  Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    decided_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: One F-01 record per PROPOSAL, not per run: the human answers each one
+    #: separately, and a ledger verdict covers one decision.
+    ledger_record_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:     Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-07 — sovereign model marketplace (mig 189)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class ModelPackageModel(Base):
+    """One artefact this install has published, or taken in.
+
+    Both directions live in one table because they are the same object seen
+    from two ends: "what left here" and "what did we take, and from whom" are
+    the same question with `direction` flipped.
+
+    Only two artefact kinds exist, and both are weights-only by construction —
+    the HxSentinel risk model (five coefficients, an intercept, five means,
+    five standard deviations, a threshold) and a signal pack (declarative safe
+    expressions). Neither format can carry code. That is a property of the
+    format, not a promise in a manifest.
+
+    `publisher_ref` is what the FILE claims; `tenant_id` is who holds the row.
+    They are separate columns because a claim and a fact must never be read off
+    the same one.
+    """
+    __tablename__ = "model_packages"
+    __table_args__ = (
+        Index("ix_model_pkg_tenant", "tenant_id", "direction", "status"),
+        Index("ix_model_pkg_content", "content_sha256"),
+        UniqueConstraint("tenant_id", "direction", "content_sha256",
+                         name="ux_model_pkg_tenant_content"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: published | imported
+    direction:     Mapped[str] = mapped_column(String(16), nullable=False)
+    #: risk_model | signal_pack — closed structurally, not by convention.
+    kind:          Mapped[str] = mapped_column(String(20), nullable=False)
+    package_id:    Mapped[str] = mapped_column(String(255), nullable=False)
+    version:       Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: SHA-256 over the canonical body. What the signature covers, and what an
+    #: importer recomputes before reading anything inside.
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The model card — class level only, never a value from a case.
+    manifest:      Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: The weights. Numbers and strings; the scanner refuses anything else
+    #: before this column is written.
+    payload:       Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    signature:     Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_key_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    publisher_ref:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publisher_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_ref:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    trained_on:    Mapped[int | None] = mapped_column(Integer, nullable=True)
+    declared_metrics: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    eval_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: pass | blocked | not_run. A membership-disclosure check, not a
+    #: formality: feature means and standard deviations ARE summary statistics
+    #: of the publisher's own cases, and over a small enough cohort a mean stops
+    #: being an aggregate.
+    canary_verdict: Mapped[str] = mapped_column(String(20), nullable=False, default="not_run")
+    canary_detail: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    data_classes:  Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: A special-category model is unpublishable. The column records the
+    #: refusal, so "why can we not share this" has an answer.
+    special_category: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    signed_off_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signed_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: draft | published | revoked | quarantined. None of them delete the row:
+    #: what a package contained is what somebody needs after it is withdrawn.
+    status:        Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                    onupdate=_utcnow)
+
+
+class ModelPackageEvalModel(Base):
+    """One sandbox evaluation of one package against one tenant's own holdout.
+
+    The gate. It is its own table rather than columns on the install because a
+    refusal leaves no install — and a refusal is exactly the record worth
+    keeping.
+
+    `measured` is allowed to be worse than `declared`: a model trained on
+    someone else's distribution may simply not transfer, and that is a fact
+    about the data, not a fault in the package. What is refused is a claim that
+    cannot be reproduced within tolerance.
+    """
+    __tablename__ = "model_package_evals"
+    __table_args__ = (
+        Index("ix_model_eval_pkg", "package_ref", "evaluated_at"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    package_ref:  Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("model_packages.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    holdout_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    positives:    Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    negatives:    Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    declared:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    measured:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    tolerance:    Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    #: pass | fail | insufficient_data. The third is NOT a failure — a tenant
+    #: with no labelled history cannot judge a stranger's model, and calling
+    #: that "failed" sends them hunting a fault in the package.
+    verdict:      Mapped[str] = mapped_column(String(20), nullable=False)
+    reason:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ModelPackageInstallModel(Base):
+    """An imported package placed into this tenant's runtime.
+
+    The link between a package and what it BECAME. Without it, an operator
+    looking at an active risk model has no way to learn it came from outside —
+    and "which of our models are ours" is the first question sovereignty asks.
+
+    `staged` is the resting state and the honest one: install writes a PENDING
+    row into `case_risk_models` and stops. Activation is HxSentinel's existing
+    human gate; this feature does not add a second one.
+    """
+    __tablename__ = "model_package_installs"
+    __table_args__ = (
+        Index("ix_model_install_tenant", "tenant_id", "status"),
+        UniqueConstraint("tenant_id", "package_ref", name="ux_model_install_pkg"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    package_ref:  Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("model_packages.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: The attribute HxArbiter policies read. A column rather than an
+    #: implication, so a policy asserts a fact instead of inferring one from
+    #: the presence of a row.
+    model_origin: Mapped[str] = mapped_column(String(20), nullable=False, default="marketplace")
+    target_kind:  Mapped[str] = mapped_column(String(20), nullable=False)
+    target_ref:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    eval_ref:     Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("model_package_evals.id", ondelete="SET NULL"), nullable=True)
+    #: staged | activated | uninstalled | shredded
+    status:       Mapped[str] = mapped_column(String(20), nullable=False, default="staged")
+    installed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    installed_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    activated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    uninstalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Uninstall-with-delete overwrites the payload and records that it did. The
+    #: row survives the weights: that a tenant once ran a stranger's model is
+    #: not something a delete button gets to erase.
+    shredded_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shred_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-08 — self-healing processes (mig 191)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class HealingEpisodeModel(Base):
+    """One healing attempt, whole.
+
+    HxEvolve mines deviations and proposes replay-proven changes, and then
+    stops. This closes that loop — as far as a loop may honestly be closed,
+    which is **one approval, not none**.
+
+    The row holds the entire story: the diagnosis that started it, the candidate
+    change, every rung of the validation ladder and where it stopped, the
+    human's answer, what was applied, what happened afterwards, and whether it
+    had to be undone. The roadmap asks for one chained evidence record that can
+    show an auditor *why the platform changed itself*, and a story split across
+    five tables is not that.
+
+    Three structural safeties:
+
+    · **The operator catalog is the boundary.** A healing change can only be one
+      of HxEvolve's five signed-off kinds. Auth config, HxArbiter policy,
+      egress, credentials and agent autonomy are not forbidden — they are
+      *inexpressible*, because no operator can name them.
+    · **Nothing applies without a person**, through HxBranch's existing audited
+      merge rather than a second way into config.
+    · **The rollback is pre-signed** at approval time, so undoing a change at
+      3 a.m. replays a snapshot a named human already approved.
+    """
+    __tablename__ = "healing_episodes"
+    __table_args__ = (
+        Index("ix_heal_tenant", "tenant_id", "status"),
+        Index("ix_heal_ct", "case_type_id", "created_at"),
+        Index("ix_heal_watch", "status", "watch_until"),
+        UniqueConstraint("sequence", name="ux_heal_sequence"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_type_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: An episode never invents a change: it takes one HxEvolve already proposed
+    #: and gate-validated, then asks harder questions of it.
+    insight_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The mining signal verbatim — an auditor needs the reason as it stood.
+    diagnosis:    Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    operator:     Mapped[str] = mapped_column(String(32), nullable=False)
+    proposal:     Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: Every rung, in order. The ladder STOPS at the first refusal: a change
+    #: that cannot be expressed safely should not then be replayed across the
+    #: whole caseload to learn whether it would also have been slow.
+    ladder:       Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    stopped_at:   Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stopped_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proof_id:      Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    simulation_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    twin_run_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    replay_run_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: pending | ready | refused | rejected | applied | watching | healed
+    #: | rolled_back | failed. `refused` is the ladder declining to put this in
+    #: front of anybody; `rejected` is a person saying no.
+    status:       Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    approved_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    branch_id:    Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    applied_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The artifact and the EXACT bytes to write back. A rollback re-applies
+    #: this through the same merge primitive the change used — one write path.
+    rollback_artifact_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rollback_artifact_id:   Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rollback_patch: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: A change is not healed because it deployed. It is healed because the
+    #: thing that was wrong stopped being wrong, and stayed that way.
+    watch_until:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    watch_metric: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    watch_baseline: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    watch_bound_pct: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
+    outcome:      Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    outcome_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rollback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Somebody has to look at a process that healed itself and got worse.
+    incident_case_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The chain, built like F-01's ledger and F-03's proofs: an episode's
+    #: address includes its predecessor, so a rewritten history breaks a hash
+    #: somebody else already holds.
+    sequence:     Mapped[int] = mapped_column(BigInteger, nullable=False)
+    prev_hash:    Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                   onupdate=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-09 — agent-to-agent case handoff (mig 192)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class HandoffCounterpartyModel(Base):
+    """An organisation that may ever be handed a case. Not a session.
+
+    Its identity is a public key an operator pinned OUT OF BAND — the way a SAML
+    SP pins an IdP certificate — because a key that arrives with the message it
+    authenticates proves only that the sender owns a key, which is not a fact
+    about who they are. There is no discovery, no self-registration and no trust
+    on first use: a handoff to a party nobody enrolled cannot be minted at all.
+    """
+    __tablename__ = "handoff_counterparties"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="ux_handoff_cp_slug"),
+        Index("ix_handoff_cp_key", "key_id"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    slug:         Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Raw Ed25519 public key, base64; `key_id` is its fingerprint and is what
+    #: an operator checks against what they were told by another channel.
+    public_key:   Mapped[str] = mapped_column(Text, nullable=False)
+    key_id:       Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Suspending is the fast path: it stops new orders AND refuses every action
+    #: on the ones outstanding, so an incident is not resolved order by order.
+    status:       Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    #: What this organisation may EVER be granted, decided once by whoever
+    #: enrolled them rather than repeatedly under time pressure.
+    max_ceiling:  Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    notes:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                   onupdate=_utcnow)
+
+
+class HandoffWorkOrderModel(Base):
+    """One case, one counterparty, one window. The order IS the authority.
+
+    Not a session and not a login: a case-scoped, expiring, instantly revocable
+    grant carried by an F-00 agent token, so revocation, the capability ceiling
+    and the deployment kill switch are the ones already built rather than a
+    second set that could disagree with them.
+
+    `returned` (they handed it back) and `revoked` (we took it away) are
+    different events, and a reader needs to know which happened.
+    """
+    __tablename__ = "handoff_work_orders"
+    __table_args__ = (
+        Index("ix_handoff_wo_case", "case_id", "created_at"),
+        Index("ix_handoff_wo_tenant", "tenant_id", "status"),
+    )
+
+    id:              Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_id:         Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), nullable=False)
+    counterparty_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("handoff_counterparties.id", ondelete="CASCADE"), nullable=False)
+    #: The F-00 agent principal, kind `external`. Every ledger row, policy
+    #: decision and attribution goes through it, so an external agent is
+    #: accounted for in exactly the places an internal one is.
+    agent_id:        Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: none | internal | personal. `special_category` is NOT a value — Article 9
+    #: data is never projected to an external party, and making that
+    #: inexpressible is stronger than making it refusable.
+    ceiling:         Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    allowed_actions: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    obligations:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    status:          Mapped[str] = mapped_column(String(16), nullable=False, default="issued")
+    expires_at:      Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Revoking this grant kills the order's authority instantly, everywhere,
+    #: without this table being consulted.
+    token_grant_id:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: Ours over the order, theirs over the acceptance. Together they are a
+    #: cross-organisation trail neither side can rewrite alone.
+    order_signature:      Mapped[str | None] = mapped_column(Text, nullable=True)
+    acceptance_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    returned_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    return_summary:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:      Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class HandoffActionModel(Base):
+    """Every action an external party took, or was refused. Append-only.
+
+    `projection` records WHAT WAS ACTUALLY DISCLOSED on a read — the field
+    names, never their values — because "what did they see" is the question a
+    data-protection incident turns on, and reconstructing it later from a
+    ceiling and a case that has since changed is guesswork.
+
+    A DENIAL is a row too: a counterparty repeatedly reaching for something it
+    may not have is a signal, and one that leaves no trace is a signal nobody
+    receives.
+    """
+    __tablename__ = "handoff_actions"
+    __table_args__ = (
+        Index("ix_handoff_act_order", "work_order_id", "created_at"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    work_order_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("handoff_work_orders.id", ondelete="CASCADE"), nullable=False)
+    #: accept | read | propose | return. Closed, and there is deliberately no
+    #: verb that writes to a case.
+    kind:          Mapped[str] = mapped_column(String(16), nullable=False)
+    decision:      Mapped[str] = mapped_column(String(10), nullable=False)
+    reason:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    projection:    Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    payload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    proposal_id:   Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    ledger_record_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-10 — offline-sovereign field operations, the HUB half (mig 193)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class FieldNodeModel(Base):
+    """A node that may hold work while it is out of contact.
+
+    **The threat model is device loss**, and three columns exist only because of
+    it. `charter` bounds what the node may EVER hold — a stolen node cannot
+    contain what was never dispatched to it, which is a stronger statement than
+    any amount of encryption on a device somebody else has. `ceiling` is F-09's
+    data-class projection: from the hub's point of view a field node is exactly
+    as untrusted as an external agent. `snapshot_max_age_hours` makes it fail
+    CLOSED when its policy snapshot goes stale, because the only safe direction
+    is deny when the thing that would tell you otherwise is unreachable.
+
+    `shred_ordered` is executed at next contact; a node that never returns is
+    handled by the staleness lockout instead. The two together are what makes a
+    lost device survivable.
+    """
+    __tablename__ = "field_nodes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="ux_field_node_slug"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    slug:         Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Pinned exactly as an F-09 counterparty's is: a key arriving with the sync
+    #: it authenticates proves only that the sender owns a key.
+    public_key:   Mapped[str] = mapped_column(Text, nullable=False)
+    key_id:       Mapped[str] = mapped_column(String(64), nullable=False)
+    #: active | suspended | shred_ordered | shredded
+    status:       Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    charter:      Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    ceiling:      Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    snapshot_max_age_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=72)
+    #: The sub-chain head the hub last verified. A node resuming from anything
+    #: else is either replaying or has lost work, and both need a person.
+    subchain_head: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_contact_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shred_ordered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shred_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shredded_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                   onupdate=_utcnow)
+
+
+class FieldDispatchModel(Base):
+    """What a node was handed, and what was deliberately withheld.
+
+    This is the record that answers "what was on that device" after it has gone
+    missing. It keeps the case ids and the FIELD NAMES disclosed — never the
+    values, which are on the cases themselves.
+
+    The policy snapshot is PINNED rather than fetched, because the entire point
+    is that the node cannot reach us; `stale_after` is when it must stop acting
+    on it.
+    """
+    __tablename__ = "field_dispatches"
+    __table_args__ = (
+        Index("ix_field_disp_node", "node_id", "issued_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    node_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("field_nodes.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_ids:  Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    projection: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    policy_snapshot: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    policy_snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The namespaces that must never run disconnected. The node applies these;
+    #: the hub records what it told it.
+    offline_deny: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: Everything the node records while away hashes back to this, so a stream
+    #: that does not start here is not this dispatch's.
+    subchain_genesis: Mapped[str] = mapped_column(String(64), nullable=False)
+    status:    Mapped[str] = mapped_column(String(16), nullable=False, default="issued")
+    issued_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    stale_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class FieldSyncEventModel(Base):
+    """One thing a node did while it was away.
+
+    Append-only on both sides. The node keeps a hash chain; the hub verifies it
+    on arrival, so tampering with a field log breaks a hash the hub already
+    holds.
+
+    `merge_state` is where "deterministic conflict outcomes" and "a human
+    reconciliation queue for the irreducible remainder" both live: `applied`
+    merged cleanly, `conflict` needs a person, `rejected` could not be accepted
+    at all — a broken chain, or a case outside the charter.
+    """
+    __tablename__ = "field_sync_events"
+    __table_args__ = (
+        Index("ix_field_ev_node", "node_id", "seq"),
+        Index("ix_field_ev_queue", "tenant_id", "merge_state"),
+        Index("ix_field_ev_case", "case_id", "received_at"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    node_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("field_nodes.id", ondelete="CASCADE"), nullable=False)
+    dispatch_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("field_dispatches.id", ondelete="SET NULL"), nullable=True)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_id:     Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    #: The node's own ordering. A gap is a lost stream, not a late one.
+    seq:         Mapped[int] = mapped_column(Integer, nullable=False)
+    #: variable_set | note | step_complete. Closed, and deliberately small: a
+    #: node may record what a worker did to a CASE, never what an administrator
+    #: did to the platform.
+    kind:        Mapped[str] = mapped_column(String(24), nullable=False)
+    target:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: When the NODE thinks it happened. Never trusted for ordering against hub
+    #: events — a disconnected clock is exactly what drifts — but kept, because
+    #: it is what a field worker will describe.
+    node_time:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    prev_hash:   Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    merge_state: Mapped[str] = mapped_column(String(16), nullable=False, default="applied")
+    conflict_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: keep_field | keep_hub. Nothing decides itself when a `personal` data
+    #: class is involved.
+    resolution:  Mapped[str | None] = mapped_column(String(16), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-11 — intent-based process execution (mig 194)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class ProcessFragmentModel(Base):
+    """A verified building block a plan may be composed from.
+
+    **The declarations are the planner's entire vocabulary.** It matches
+    `provides` to `requires` and has no opinion about what a fragment means —
+    only about what it declared. A fragment is composed on the strength of its
+    declaration, and the conformance gate is what makes the declaration and the
+    behaviour agree.
+
+    Only `verified` fragments compose. A `draft` is one somebody is still
+    writing; a `retired` one stays readable because plans that used it must
+    remain explainable.
+    """
+    __tablename__ = "process_fragments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="ux_fragment_slug"),
+        Index("ix_fragment_status", "tenant_id", "status"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    slug:         Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description:  Mapped[str] = mapped_column(Text, nullable=False, default="")
+    requires:     Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    provides:     Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: Class level only — never a field name.
+    data_classes: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: A capability absent here is one the fragment may not use, whatever its
+    #: steps look like.
+    capabilities: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    #: Ordinary `definition_json` stages — a composed process runs on the
+    #: existing interpreter unchanged, which is the point.
+    stages:       Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    step_count:   Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    signature:    Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status:       Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    #: Whether the declared capabilities and data classes actually cover what
+    #: the stages do.
+    conformance:  Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    verified_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                   onupdate=_utcnow)
+
+
+class IntentPlanModel(Base):
+    """One intent, planned — and the consent object for what it composed.
+
+    A person reads the step list and confirms it, and `confirmed_sha256` binds
+    that confirmation to the exact composed definition. Executing anything whose
+    hash differs is refused: without the binding, "the user approved a plan"
+    would mean only that they approved *a* plan.
+
+    `intent` and `goal_spec` are both kept. The goal spec is the only thing the
+    planner saw and the intent is the only thing the person said, and if the two
+    diverge somebody needs to be able to see that they did.
+    """
+    __tablename__ = "intent_plans"
+    __table_args__ = (
+        Index("ix_intent_tenant", "tenant_id", "status"),
+        Index("ix_intent_case", "case_id", "created_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    case_id:   Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="SET NULL"), nullable=True)
+    intent:    Mapped[str] = mapped_column(Text, nullable=False)
+    goal_spec: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: `model` or `human`. The planner does not care; a reviewer does.
+    spec_source: Mapped[str] = mapped_column(String(16), nullable=False, default="model")
+    fragment_slugs: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    definition: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: Computed unions, never asserted.
+    capabilities: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    data_classes: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plan_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ladder:    Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=list)
+    stopped_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stopped_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    twin_run_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    status:    Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    confirmed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Kept separately from `plan_sha256`: if the two ever differ the plan was
+    #: changed after a person agreed to it, and that is a fact worth being able
+    #: to state rather than infer.
+    confirmed_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F-12 — process-as-negotiation (mig 195)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class JointContractModel(Base):
+    """A shared workflow two organisations agreed, and both signed.
+
+    **No trust is required, only verification.** The matcher is deterministic
+    and runs locally on both sides from the same inputs, so each party can
+    independently confirm the joint composition is the one that was agreed —
+    no trusted third party, no shared database, only two local processes and a
+    message contract at the seam that F-09's handoff protocol carries.
+
+    **Deny-overrides survives negotiation by construction.**
+    `effective_ceiling` is stored as the MINIMUM of what was negotiated and what
+    this side's own boundary permits. A contract cannot grant what the platform
+    denies — not because a check runs at the right moment, but because the wider
+    number is never written down.
+
+    Renegotiation is a NEW row (`version`, `supersedes`), never an edit: what
+    both sides signed must stay exactly as it was signed.
+    """
+    __tablename__ = "joint_contracts"
+    __table_args__ = (
+        Index("ix_contract_tenant", "tenant_id", "status"),
+        Index("ix_contract_party", "counterparty_id", "version"),
+    )
+
+    id:              Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:       Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: From F-09's registry. A contract with somebody nobody enrolled cannot
+    #: exist: the pinned key is what both signatures are checked against.
+    counterparty_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("handoff_counterparties.id", ondelete="CASCADE"), nullable=False)
+    name:            Mapped[str] = mapped_column(String(255), nullable=False)
+    version:         Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    supersedes:      Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("joint_contracts.id", ondelete="SET NULL"), nullable=True)
+    our_offer:       Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    their_offer:     Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    our_requirements:   Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    their_requirements: Mapped[Any] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    composition:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: Every clause the matcher checked and how it resolved. Both sides compute
+    #: this independently from the same inputs and must get the same answer.
+    resolution:      Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    effective_ceiling: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: Over the composition and the resolved terms, not the row: a hash over the
+    #: row would still match if somebody edited the composition and left the
+    #: bookkeeping alone.
+    contract_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    our_signature:   Mapped[str | None] = mapped_column(Text, nullable=True)
+    their_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: draft | matched | unmatchable | approved | shadow | enforced | suspended
+    #: | withdrawn. `unmatchable` is not a failure of either side — the two sets
+    #: of requirements simply have no joint composition that satisfies both.
+    status:          Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    unmatched_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enforced_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Either side may suspend unilaterally. It fail-closes the seam to
+    #: proposals-queued rather than data-flowing, so it is safe to press at
+    #: 3 a.m. without knowing what is in flight.
+    suspended_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspended_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:      Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:      Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:      Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                      onupdate=_utcnow)
+
+
+class ContractAnchorModel(Base):
+    """One side's chain head, recorded by the other.
+
+    Each side periodically records the OTHER's head and hands over its own.
+    Neither can rewrite the joint history afterwards without breaking a hash the
+    other is holding — tamper-evidence over a shared story **without a shared
+    ledger and without a third party**.
+
+    Repudiation becomes symmetric: it is not that we can prove what they did, it
+    is that neither of us can deny it.
+    """
+    __tablename__ = "contract_anchors"
+    __table_args__ = (
+        Index("ix_anchor_contract", "contract_id", "direction", "seq"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    contract_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("joint_contracts.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: ours | theirs
+    direction:   Mapped[str] = mapped_column(String(8), nullable=False)
+    seq:         Mapped[int] = mapped_column(Integer, nullable=False)
+    chain_head:  Mapped[str] = mapped_column(String(64), nullable=False)
+    signature:   Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Set when a head we were handed does not extend the one we last held. A
+    #: rewritten history is what this exchange exists to detect, so the
+    #: detection is a row rather than a log line.
+    divergence:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    anchored_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Item 12 — Customer Engagement: the identity spine (mig 196)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class CustomerProfileModel(Base):
+    """A PARTY — a person, a household or an organisation.
+
+    Not a person, and that is decision 1 of four taken with the user on
+    2026-09-04: a human who is a contact on two businesses, or a household with
+    three members, works without a migration on the spine everything else hangs
+    off. `customer_relations` carries the edges.
+
+    **Nothing about the spine is ever external.** `source_of_truth` says who
+    masters the ATTRIBUTES — a name, an address — and it may be a CRM. Which
+    cases, threads and orders belong to one party is a Velaris fact, and no CRM
+    has an opinion about it.
+
+    A merge is a record, never a deletion: the loser stays readable and
+    redirects, so an audit can answer "why does this call show that person's
+    cases". `anonymized` is a GDPR erasure that keeps the row, because a deleted
+    profile would silently detach a call from the case it was about.
+    """
+    __tablename__ = "customer_profiles"
+    __table_args__ = (
+        Index("ix_cprofile_tenant", "tenant_id", "status"),
+        Index("ix_cprofile_merged", "merged_into_id"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    #: person | household | organisation
+    party_kind:    Mapped[str] = mapped_column(String(16), nullable=False, default="person")
+    display_name:  Mapped[str] = mapped_column(String(255), nullable=False)
+    #: active | merged | anonymized
+    status:        Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="SET NULL"), nullable=True)
+    #: velaris | crm_mastered | read_through — per PROFILE, because a contact
+    #: centre normally has both kinds.
+    source_of_truth: Mapped[str] = mapped_column(String(16), nullable=False, default="velaris")
+    external_system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Per-field provenance and fetch time. A rep reading a name is entitled to
+    #: know whether it came from the CRM or from the last conversation, and
+    #: **staleness is shown, never hidden**.
+    attribute_source: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    #: NULL on a Velaris-owned profile — and a NULL must never read as "fresh".
+    refreshed_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source:        Mapped[str] = mapped_column(String(16), nullable=False, default="agent")
+    notes:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow,
+                                                    onupdate=_utcnow)
+
+
+class CustomerIdentifierModel(Base):
+    """How the world names this party — and the index a screen-pop needs.
+
+    Today `channels/cti/pop` reads the last 200 conversations hunting for a
+    number. This is the row that replaces that scan with a lookup.
+
+    Normalisation is the whole value of the table: two reps typing the same
+    number differently must reach the same person. And **resolution is a
+    suggestion until a human or a challenge confirms it** — an identifier adopted
+    from an inbound number is `verified = False`, and no disclosure tier reads an
+    unverified identifier as proof.
+    """
+    __tablename__ = "customer_identifiers"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "kind", "value_normalised", name="ux_cident_value"),
+        Index("ix_cident_customer", "customer_id", "kind"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    customer_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    #: email | phone | portal_customer | external_crm | national_id_hash | account_no
+    kind:          Mapped[str] = mapped_column(String(24), nullable=False)
+    value_normalised: Mapped[str] = mapped_column(String(255), nullable=False)
+    value_display: Mapped[str] = mapped_column(String(255), nullable=False)
+    verified:      Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: otp | call | document | idp
+    verified_by:   Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_primary:    Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source:        Mapped[str] = mapped_column(String(16), nullable=False, default="agent")
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CustomerRelationModel(Base):
+    """Party ↔ party: a household's members, a business's contacts.
+
+    Directional, because "is a contact of" and "has as a contact" are different
+    statements and collapsing them loses which way the authority runs.
+    `may_act_for` is recorded rather than inferred from the relation name: a
+    household member is not automatically allowed to speak for the household.
+    """
+    __tablename__ = "customer_relations"
+    __table_args__ = (
+        UniqueConstraint("from_customer_id", "to_customer_id", "relation", name="ux_crel_edge"),
+        Index("ix_crel_to", "to_customer_id"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    from_customer_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    to_customer_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    #: member_of | contact_for | authorised_by | related_to
+    relation:    Mapped[str] = mapped_column(String(24), nullable=False)
+    may_act_for: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CustomerLinkModel(Base):
+    """The party's footprint, without touching the objects.
+
+    FK-free on the object side ON PURPOSE. A case, a conversation, an order and
+    a document live in different tables with different lifecycles; adding a
+    customer column to each would be five migrations on live tables plus five
+    places to keep in step.
+
+    `link_reason` matters: a link a machine guessed and a link a person made are
+    different evidence, and the 360 says which.
+    """
+    __tablename__ = "customer_links"
+    __table_args__ = (
+        UniqueConstraint("customer_id", "object_kind", "object_id", name="ux_clink_object"),
+        Index("ix_clink_lookup", "tenant_id", "object_kind", "object_id"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    #: case | conversation | order | document | session | interaction
+    object_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    object_id:   Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: resolved | manual | on_behalf
+    link_reason: Mapped[str] = mapped_column(String(16), nullable=False, default="resolved")
+    linked_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    linked_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CustomerMergeModel(Base):
+    """A merge, reversible. `moved` is what an undo puts back."""
+    __tablename__ = "customer_merges"
+    __table_args__ = (
+        Index("ix_cmerge_winner", "winner_id", "merged_at"),
+    )
+
+    id:        Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    winner_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    loser_id:  Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    moved:     Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    reason:    Mapped[str] = mapped_column(Text, nullable=False)
+    merged_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    merged_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    undone_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class CustomerInteractionModel(Base):
+    """What a call IS — the piece Velaris has never had.
+
+    Not a case and not a conversation: the contact itself. It makes handling
+    time, wrap-up codes, "what did we promise last time" and repeat-contact
+    analytics possible, and it is the row a screen-pop creates.
+
+    `customer_id` is NULLABLE and that is important: an unresolved call is still
+    an interaction. **Never auto-create a profile from an unverified inbound
+    number** — that manufactures a person out of a wrong number.
+
+    `verification_level` lives HERE, not on the profile: verification is
+    something that happened on a call, not a property somebody acquires
+    permanently. And a warm transfer carries the interaction, so the receiving
+    rep inherits the tier — being re-verified is the number one complaint about
+    every contact centre.
+    """
+    __tablename__ = "customer_interactions"
+    __table_args__ = (
+        Index("ix_cint_customer", "customer_id", "started_at"),
+        Index("ix_cint_tenant", "tenant_id", "status", "started_at"),
+        Index("ix_cint_agent", "agent_user_id", "started_at"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    customer_id:   Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="SET NULL"), nullable=True)
+    channel:       Mapped[str] = mapped_column(String(16), nullable=False)
+    direction:     Mapped[str] = mapped_column(String(8), nullable=False, default="inbound")
+    started_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    ended_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    agent_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ani:           Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dnis:          Mapped[str | None] = mapped_column(String(64), nullable=True)
+    queue:         Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transferred_from: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_interactions.id", ondelete="SET NULL"), nullable=True)
+    #: none | partial | full
+    verification_level: Mapped[str] = mapped_column(String(8), nullable=False, default="none")
+    verified_by:   Mapped[str | None] = mapped_column(String(16), nullable=True)
+    verified_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disposition_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wrap_up_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: open | wrapped | abandoned. An unclosed interaction AGES into `abandoned`;
+    #: a wrap-up that blocks the next call is a wrap-up that gets faked.
+    status:        Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    outcome:       Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CaseTenantTransferModel(Base):
+    """A case moving between tenants, and the source's tombstone of it (mig 205).
+
+    Requested by one source admin, approved by a different one, accepted by the
+    destination — nothing moves before all three. After completion this row is
+    all the source keeps. `active_key` is the portable partial unique index: the
+    case id while requested/pending, NULL after.
+    """
+    __tablename__ = "case_tenant_transfers"
+    __table_args__ = (
+        Index("ux_case_tenant_transfers_active", "active_key", unique=True),
+        Index("ix_case_tenant_transfers_source", "source_tenant_id", "state", "requested_at"),
+        Index("ix_case_tenant_transfers_destination", "destination_tenant_id", "state",
+              "requested_at"),
+        Index("ix_case_tenant_transfers_case", "case_id"),
+    )
+
+    id:                    Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    case_id:               Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    case_number:           Mapped[str | None] = mapped_column(String(30), nullable=True)
+    case_type_name:        Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_tenant_id:      Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    destination_tenant_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: requested | pending | completed | refused | cancelled
+    state:                 Mapped[str] = mapped_column(String(16), nullable=False, default="requested")
+    active_key:            Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reason:                Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by:          Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at:          Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    approved_by:           Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by:            Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_by:          Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manifest:              Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+    completed_at:          Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CustomerNextActionFeedbackModel(Base):
+    """What a rep decided about a suggested next action (mig 204, item 12 P6).
+
+    Appended, never updated — "accepted, then rejected on the next call" is the
+    sequence a rule-tuning report exists to show. `action_key` is the rule's
+    stable key; the rules are code, so the key is the join to what was said.
+    """
+    __tablename__ = "customer_next_action_feedback"
+    __table_args__ = (
+        Index("ix_cnaf_tenant_key", "tenant_id", "action_key", "decided_at"),
+        Index("ix_cnaf_customer", "customer_id", "decided_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:      Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    customer_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_interactions.id", ondelete="SET NULL"), nullable=True)
+    action_key:     Mapped[str] = mapped_column(String(64), nullable=False)
+    #: accepted | rejected
+    verdict:        Mapped[str] = mapped_column(String(16), nullable=False)
+    reason:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by:     Mapped[str] = mapped_column(String(255), nullable=False)
+    decided_at:     Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class CustomerDisclosureModel(Base):
+    """Every field a rep unmasked, and why.
+
+    **Reveal-on-reason**: one field at a time, each with a reason, each a row.
+    Bulk unmask does not exist — a "show everything" button is how a disclosure
+    tier becomes decoration.
+
+    `at_verification` is frozen. Reading the tier live later would show what the
+    caller eventually reached, not what they had reached when the field was
+    shown.
+    """
+    __tablename__ = "customer_disclosures"
+    __table_args__ = (
+        Index("ix_cdisc_customer", "customer_id", "revealed_at"),
+        Index("ix_cdisc_agent", "revealed_by", "revealed_at"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    customer_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_profiles.id", ondelete="CASCADE"), nullable=False)
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_interactions.id", ondelete="SET NULL"), nullable=True)
+    field_path:    Mapped[str] = mapped_column(String(128), nullable=False)
+    reason:        Mapped[str] = mapped_column(Text, nullable=False)
+    at_verification: Mapped[str] = mapped_column(String(8), nullable=False)
+    revealed_by:   Mapped[str] = mapped_column(String(255), nullable=False)
+    revealed_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+# >>> 198 — case statuses as data, case actions as one dispatcher
+#
+# Design: docs/Future/CASE-ACTIONS-STATUS-DESIGN.md
+#
+# The split these two tables encode: a STATUS is a label the customer's process
+# gives meaning to, so it lives in data and an operator may invent one. An
+# ACTION is behaviour — `escalate` fires a tree and notifies, which cannot be
+# inferred from the word — so the behaviour stays a closed registry in code and
+# only its presentation and reach are configured here.
+
+
+class CaseStatusModel(Base):
+    """One status in a resolved status set.
+
+    Resolution is most-specific-first: `(tenant, case_type)` → `(tenant, NULL)`
+    → `(NULL, NULL)`, the same precedence retention policies and portal display
+    config use. The platform-default set (both NULL) is what a single-tenant
+    install runs on.
+
+    `case_instances.status` deliberately holds a plain string rather than a
+    foreign key to this table: a per-tenant status set has to stay editable
+    after it has been used, and an FK would make renaming or removing a status
+    impossible on exactly the installs that need it most. Validation happens at
+    the write path instead, where it can name the legal transitions.
+    """
+    __tablename__ = "case_statuses"
+    __table_args__ = (
+        UniqueConstraint("scope_key", "name", name="ux_case_statuses_scope"),
+        Index("idx_case_statuses_lookup", "tenant_id", "case_type_id", "enabled"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    case_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("case_types.id", ondelete="CASCADE"), nullable=True)
+
+    #: `<tenant_id|platform>:<case_type_id|any>`, written by the application.
+    #: NULL <> NULL, so a plain UNIQUE over the two nullable ids would permit
+    #: unlimited duplicate platform rows for `closed` — and then "is closed
+    #: terminal" depends on which row was read first. Not GENERATED because
+    #: MariaDB 11.8 refuses COALESCE in that clause (error 1901) where MySQL 8.4
+    #: accepts it; migration 177 met this first.
+    scope_key:    Mapped[str] = mapped_column(String(80), nullable=False)
+
+    #: The value actually stored in `case_instances.status`.
+    name:         Mapped[str] = mapped_column(String(30), nullable=False)
+    #: What an operator sees. Separate from `name` so it can be renamed — or
+    #: translated — without rewriting every stored row.
+    label:        Mapped[str] = mapped_column(String(100), nullable=False)
+
+    #: open | working | waiting | terminal. Lets code reason about KINDS of
+    #: status without knowing a customer's names, so a rule written against it
+    #: survives a tenant renaming `pending` to `awaiting_customer`.
+    category:     Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+
+    #: Whether reaching this ends the case. First-class rather than derived from
+    #: `category`, because deriving it is the indirection that let the two
+    #: hardcoded terminal tuples drift away from the data.
+    is_terminal:  Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_default:   Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    #: Status names a case may arrive here FROM. Empty (or NULL on MySQL) means
+    #: "from any status" — the permissive default every seeded row ships with,
+    #: so migration 198 breaks no transition that works today.
+    allowed_from: Mapped[list] = mapped_column(PortableJSON(), default=list)
+
+    sort_order:   Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: A disabled status is not offered for NEW transitions but is still
+    #: recognised on rows already holding it — deleting a status a case sits on
+    #: would make that case unreadable.
+    enabled:      Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CaseActionConfigModel(Base):
+    """What a customer may change about an action — and nothing more.
+
+    The behaviour of each action is a closed registry in code
+    (`case_actions/registry.py`). A row here naming an action outside that
+    registry is refused at write time; ignoring it at read time would leave an
+    operator staring at a configuration that silently does nothing.
+    """
+    __tablename__ = "case_action_config"
+    __table_args__ = (
+        UniqueConstraint("scope_key", "action", name="ux_case_action_config_scope"),
+        Index("idx_case_action_config_lookup", "tenant_id", "case_type_id", "enabled"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    case_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("case_types.id", ondelete="CASCADE"), nullable=True)
+    scope_key:    Mapped[str] = mapped_column(String(80), nullable=False)
+
+    action:       Mapped[str] = mapped_column(String(40), nullable=False)
+
+    #: NULL = use the registry's own label.
+    label:        Mapped[str | None] = mapped_column(String(100), nullable=True)
+    #: False makes the action unreachable through the DISPATCHER, not merely
+    #: hidden in the UI. A switch that only hides is decoration.
+    enabled:      Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order:   Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    #: Overrides the registry's default privilege. Must be a known HxGuard
+    #: action; validated on write.
+    privilege:    Mapped[str | None] = mapped_column(String(80), nullable=True)
+    #: Status names this action is offered FROM. Empty = any. This is the
+    #: customer's half of the state machine: the platform says what `close`
+    #: does, the customer says when it may be done.
+    allowed_from: Mapped[list] = mapped_column(PortableJSON(), default=list)
+
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+# <<< 198
+
+
+# >>> 200 — audit streaming to a SIEM (market gap A3)
+class AuditStreamTargetModel(Base):
+    """Where this platform's security events are shipped (mig 200).
+
+    **A reader, not a hook.** The forwarder reads `security_events` after the
+    rows are durable, by a cursor held on this row. Nothing is written into
+    `log_security_event`'s path — that function is called from inside login and
+    inside every authorization denial, and a network call there would make a
+    SIEM outage a platform outage, which is the exact failure a SOC exists to
+    catch.
+
+    **At-least-once.** The cursor advances only after a batch is accepted. A
+    duplicate event in a SIEM is an afternoon's deduplication; a missing one is
+    an incident nobody sees.
+
+    **Off until two separate acts.** A target is created, and then enabled.
+    """
+
+    __tablename__ = "audit_stream_targets"
+    __table_args__ = (
+        Index("ux_audit_stream_targets_name", "tenant_key", "name", unique=True),
+        Index("idx_audit_stream_targets_enabled", "enabled"),
+    )
+
+    id:         Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: NULL = platform-wide: it receives every tenant's events, which is what a
+    #: single-tenant install wants and what a shared box must opt into.
+    tenant_id:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: `tenant_id` or the literal 'platform'. Written by the application on both
+    #: dialects — MariaDB refuses COALESCE in a generated column — and it exists
+    #: because NULL <> NULL makes a UNIQUE over a nullable tenant no constraint
+    #: at all on the platform rows.
+    tenant_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    name:       Mapped[str] = mapped_column(String(255), nullable=False)
+    kind:       Mapped[str] = mapped_column(String(50), nullable=False, default="splunk_hec")
+    endpoint_url: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Envelope-encrypted. Never read back to a screen, never logged.
+    token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    verify_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    enabled:    Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    #: NULL/empty = everything. The safe default for an audit stream: a SOC that
+    #: receives too much can filter, one that receives too little cannot know.
+    min_severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    event_types:  Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    cursor_timestamp: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    cursor_event_id:  Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    last_success_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    last_error:      Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_at:   Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    forwarded_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow, onupdate=_utcnow)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+# <<< 200
+
+
+# >>> 201 — HxShield response layer (roadmap #25)
+class ShieldResponseModel(Base):
+    """What HxShield decided to DO about an incident (mig 201).
+
+    The engine has computed an `action` for every incident since it shipped —
+    flag, alert, suspend, block — and nothing ever performed one. This row is
+    the performance, and the two properties it exists to hold are both about
+    restraint:
+
+    * **Shadow first.** A response is always recorded; it executes only when
+      `shield_response_enabled` is on. An install that takes the update does
+      nothing differently.
+    * **A destructive response is never automatic.** Suspending an account or
+      killing every session waits for a person, whatever the switch says, and
+      the approval is on this row with a name and a time.
+
+    `incident_id` is deliberately NOT a foreign key: incidents are subject to
+    retention, and "why was this account suspended" must outlive the alert.
+    """
+
+    __tablename__ = "shield_responses"
+    __table_args__ = (
+        Index("idx_shield_responses_state", "state", "created_at"),
+        Index("idx_shield_responses_incident", "incident_id"),
+        Index("idx_shield_responses_target", "target_kind", "target_id", "created_at"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    incident_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    response_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_kind:   Mapped[str] = mapped_column(String(40), nullable=False)
+    target_id:     Mapped[str] = mapped_column(String(255), nullable=False)
+
+    #: proposed | approved | executed | failed | declined | shadowed
+    state:       Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    #: Stored rather than derived, so the row still says what it was when the
+    #: registry changes.
+    destructive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    reason:   Mapped[str | None] = mapped_column(Text, nullable=True)
+    patterns: Mapped[str | None] = mapped_column(Text, nullable=True)
+    score:    Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    declined_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    declined_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
+    #: What actually happened, failure included. A response that silently did
+    #: nothing is the failure mode that matters here.
+    result:      Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+# <<< 201

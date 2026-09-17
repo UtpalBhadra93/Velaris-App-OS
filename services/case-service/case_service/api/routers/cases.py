@@ -18,18 +18,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# `CaseAction`, `CasePriorityChange`, `CaseResolve` and `CaseStatusChange` are no
+# longer imported here: the six routes that used them became the action
+# dispatcher, whose body is `ActionRequest`. The schemas themselves are KEPT in
+# `api/schemas/cases.py` — they are part of the published schema surface, and
+# deleting them would break any generated client that still references the type
+# even though the route is gone.
 from case_service.api.schemas.cases import (
     AssignmentResponse,
     AuditEntryResponse,
-    CaseAction,
     CaseCreate,
     CaseDataUpdate,
     CaseListResponse,
-    CasePriorityChange,
-    CaseResolve,
     CaseResponse,
     CaseStageTransition,
-    CaseStatusChange,
     RelationshipCreate,
     RelationshipResponse,
     StepCompleteBody,
@@ -48,6 +50,13 @@ from velaris_shared.db.session import get_session
 from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
+from case_service.tenancy.identity import (
+    DEFAULT_TENANT,
+    case_visible_to,
+    is_superadmin,
+    resolve_tenant,
+    strict_case_reads,
+)
 from velaris_shared.hxstream.emitter import emit_trace
 from case_service.case_vars import service as case_vars
 from sqlalchemy import select as sa_select
@@ -59,6 +68,7 @@ from velaris_shared.core.error_codes import (
     CASE_RULE_DISABLED_409,
     CASE_RULE_SCOPE_403,
     CASE_SUBPROCESS_500,
+    CASE_TENANT_403,
     CASE_VAR_FILTER_400,
     coded,
 )
@@ -66,6 +76,126 @@ from velaris_shared.core.error_codes import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cases", tags=["cases"])
+
+
+# ── 198 ──────────────────────────────────────────────────────────────────────
+# `/cases/actions/catalogue` is declared HERE, above `GET /cases/{case_id}`,
+# and not beside the rest of the dispatcher at the foot of this file. FastAPI
+# matches in registration order, so declared later it is shadowed: "actions" is
+# offered to the `{case_id}` matcher, fails to parse as a UUID, and the endpoint
+# answers 422 to every caller while looking perfectly correct in the source.
+# Route shadowing of exactly this shape has bitten this platform before (F-05).
+
+@router.get("/actions/catalogue")
+async def action_catalogue(
+    case_type_id: uuid.UUID | None = None,
+    case_id: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Every action and status in force for the caller, with the tenant's overrides applied.
+
+    This is what a UI renders its action bar from, so an action a tenant has
+    disabled is ABSENT here — not present and greyed out. A control you may not
+    use is absent, not decoration.
+
+    **`case_id` is optional and narrows further.** Given one, the caller's own
+    tenant clause applies (another tenant's id is a 404, as everywhere else),
+    the case's type fills in `case_type_id`, and the case's STAGE removes the
+    actions that stage does not offer. Without it the answer is the tenant-wide
+    one, exactly as before — an action bar rendered from that would offer a
+    button the dispatcher then refuses, which is why the case screen passes it.
+    """
+    from case_service.case_actions import dispatcher as _disp
+    from case_service.case_actions import registry as _reg
+    from case_service.case_actions import stages as _stg
+    from case_service.case_actions import statuses as _st
+
+    tenant_uuid = await _action_context(session, user)
+
+    stage = None
+    if case_id is not None:
+        # The RELATIONSHIP check, not only the tenant one.
+        #
+        # Without it this endpoint answers "which stage is case X in" to any
+        # caller in the tenant holding a valid token, for any id they can guess
+        # or enumerate — a case-scoped fact the tenant-wide catalogue never
+        # carried before `case_id` existed. `require_case` carries the tenant
+        # clause itself since 2026-09-06, so this is the whole gate: 404 for
+        # another tenant's case, 404 for one this operator has no relationship
+        # to, and never a 403 that would confirm the id is real.
+        await hxguard.require_case(session, user, "case.read", case_id)
+        case = await _get_case_or_404(session, case_id, user)
+        case_type_id = case_type_id or case.case_type_id
+        stage = await _stg.stage_def(
+            session, case_type_id=case.case_type_id,
+            stage_id=case.current_stage_id)
+
+    cfg = await _disp.resolve_config(
+        session, tenant_id=tenant_uuid, case_type_id=case_type_id)
+    status_set = await _st.resolve_set(
+        session, tenant_id=tenant_uuid, case_type_id=case_type_id)
+
+    actions = []
+    for name in _reg.names():
+        action = _reg.ACTIONS[name]
+        row = cfg.get(name)
+        if row is not None and not row.enabled:
+            continue
+        # Absent, not greyed out — the same rule the tenant's own switch gets.
+        # This only applies when the caller named a case; without one there is
+        # no stage to ask, and guessing would empty the bar on every screen that
+        # renders the tenant-wide catalogue.
+        if case_id is not None and not _stg.action_offered(stage, name):
+            continue
+        entry = action.describe()
+        # Both privileges, because a tenant's override is an ADDITIONAL
+        # requirement rather than a replacement — reporting only the override
+        # would understate what a caller actually needs.
+        required = list(_disp.required_privileges(action, row))
+        if row is not None:
+            entry["label"] = row.label or entry["label"]
+            entry["allowed_from"] = list(row.allowed_from or [])
+            entry["sort_order"] = row.sort_order
+        else:
+            entry["allowed_from"] = []
+            entry["sort_order"] = 0
+        entry["privilege"] = action.privilege
+        entry["required_privileges"] = required
+
+        # `permitted` answers "may this operator EVER do this", and only the
+        # PLATFORM half of the gate can answer that here.
+        #
+        # `user_allows` is a synchronous privilege test and says so: a platform
+        # decision is a pure function of the subject, with nothing to await. The
+        # ReBAC half — `case.update` — is a question about a relationship to a
+        # PARTICULAR case, and this endpoint is not case-scoped, so asking it
+        # here would return False for everybody including admin and empty the
+        # action bar. The relationship is checked at action time, per case,
+        # which is the only place it means anything.
+        from velaris_shared.hxguard.service import PLATFORM_ACTIONS
+        platform_half = [p for p in required if p in PLATFORM_ACTIONS]
+        entry["permitted"] = all(hxguard.user_allows(user, p) for p in platform_half)
+        actions.append(entry)
+
+    actions.sort(key=lambda a: (a["sort_order"], a["name"]))
+    return {
+        "actions": actions,
+        "statuses": _st.describe(status_set),
+        "bulk_ceiling": _disp.BULK_CEILING,
+        # Whether the bulk bar may offer "Move to stage". Its own privilege, so
+        # a screen that inferred it from the action list would offer a button
+        # that 403s. Additive: a client that ignores it is unchanged.
+        "bulk_stage_permitted": hxguard.user_allows(user, "case.actions.bulk_stage"),
+        # Named so a screen can say WHY a button it expected is not there. A
+        # missing control with no explanation reads as a bug.
+        "stage": ({"id": stage.get("id"), "name": stage.get("name"),
+                   "actions_allowed": list(_stg.allowed_actions(stage) or ())
+                   if _stg.allowed_actions(stage) is not None else None,
+                   "on_enter_status": _stg.on_enter_status(stage)}
+                  if stage is not None else None),
+    }
+
 
 
 # ── SD-4: Role-gated PII field visibility ────────────────────────────────────
@@ -140,11 +270,43 @@ class MyTaskResponse(BaseModel):
 
 
 async def _get_case_or_404(
-    session: AsyncSession, case_id: uuid.UUID
+    session: AsyncSession, case_id: uuid.UUID, user: AuthenticatedUser | None = None,
+    *, include_deleted: bool = False,
 ):
+    """Load a case, refusing one that belongs to somebody else's tenant.
+
+    `repo.get_case_instance` selects on the primary key and nothing else, so
+    before this check the single-case read had **no tenant clause at all** —
+    weaker than the list endpoint beside it, which at least filtered on
+    `tenant_id = mine OR IS NULL`. Proven on 2026-09-05: tenant `dev` read
+    tenant `default`'s case and its private field through this path.
+
+    `user` is optional so existing internal callers keep working unchanged; when
+    it is supplied the caller's tenant is enforced. A refusal is **404, not
+    403** — 403 would confirm the case exists to somebody with no right to know
+    that.
+
+    A case with no tenant stays visible to everybody, exactly as in every
+    released version, until an operator backfills and sets
+    `VELARIS_CASE_TENANT_STRICT_READS`. See `tenancy.identity.case_visible_to`.
+
+    **A soft-deleted case is a 404 too** (199), and for the same reason the
+    tenant refusal is one: a deleted case that answers 403, or answers 200 with
+    a `deleted` flag for the client to respect, is a case the platform is still
+    showing. `include_deleted` is for the dispatcher and the restore path, which
+    have to see it in order to act on it.
+    """
     case = await repo.get_case_instance(session, case_id)
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
+    if not include_deleted and bool(getattr(case, "is_deleted", False)):
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user is not None:
+        visible = await case_visible_to(
+            session, case.tenant_id, getattr(user, "tenant_id", None),
+            is_superadmin_caller=is_superadmin(user))
+        if not visible:
+            raise HTTPException(status_code=404, detail="Case not found")
     return case
 
 
@@ -232,14 +394,43 @@ async def create_case(
     #   2. else inherit the case type's tenant — covers user-less creation
     #      (e.g. HxFusion: an external system opens a case after a process);
     #   3. else None — global / single-tenant cases are stored with NULL tenant.
-    # Must never be a non-UUID string ("default" used to be inserted here and
-    # crashed the UUID column for tenant-less users).
+    #
+    # `user.tenant_id` comes from `user_directory`, where it is a **slug**
+    # ("default", "dev"), not a UUID. `str(...)` therefore produced a non-UUID
+    # string and the insert died in the GUID bind processor — an unhandled 500
+    # on every case creation by any user who actually had a tenant. The comment
+    # here already said it "must never be a non-UUID string"; nothing enforced
+    # it. `resolve_tenant` is the module that exists for exactly this and takes
+    # either shape.
+    #
+    # This matters beyond the crash: a case that falls through to NULL is read
+    # by EVERY tenant, because the read filter is `tenant_id == mine OR
+    # tenant_id IS NULL`. So failing to resolve a tenant does not merely lose a
+    # label, it publishes the case platform-wide.
+    effective_tenant_id: str | None = None
     if user.tenant_id:
-        effective_tenant_id = str(user.tenant_id)
+        resolved = await resolve_tenant(session, user.tenant_id)
+        if resolved is None:
+            # Named a tenant that does not exist. Refuse rather than store the
+            # case globally — deny is the safe reading of an unknown tenant.
+            raise HTTPException(
+                403, f"VEL-CASE-TENANT-403: {user.tenant_id!r} is not a tenant "
+                     f"on this platform")
+        effective_tenant_id = str(resolved[0])
     elif case_type.tenant_id is not None:
         effective_tenant_id = str(case_type.tenant_id)
-    else:
-        effective_tenant_id = None
+
+    # Under strict reads a NULL-tenant case is visible to NOBODY — not even the
+    # person who just created it. Writing one would be manufacturing a case that
+    # instantly disappears, so the create is refused instead, naming the fix.
+    # With strict off (the default, and every released version) this cannot fire.
+    if effective_tenant_id is None and strict_case_reads():
+        raise coded(
+            403, CASE_TENANT_403,
+            "This case would be stored with no tenant, and strict tenant reads "
+            "are on, so nobody would be able to read it back. Give the acting "
+            "user a tenant in the user directory, or give the case type an "
+            "owner, before creating cases here.")
 
     case = await repo.create_case_instance(
         session,
@@ -483,6 +674,33 @@ async def list_cases(
         if not unrestricted:
             accessible_to_user = (user.user_id, allowed_ids)
 
+    # Tenant scope. This list had NO tenant clause at all, so every caller saw
+    # every tenant's cases — the same hole as the single-case read, one page
+    # wider. Superadmin keeps its documented break-glass; everybody else is
+    # scoped to their own tenant, with NULL-tenant rows still included exactly
+    # as before unless an operator has closed that branch.
+    #
+    # A caller with NO tenant claim is the platform-default tenant — never "every
+    # tenant". Until 2026-09-17 the clause below was skipped for such a caller,
+    # so on a multi-tenant install a user with no directory row listed every
+    # tenant's cases, while the single-case read beside it (`same_tenant`)
+    # already treated them as `default` and answered 404 on the same rows. The
+    # list now follows the read. Where no `default` tenant exists, such a caller
+    # sees only untenanted cases — again exactly what the read allows.
+    scope_tenant = None
+    if not is_superadmin(user):
+        claim = getattr(user, "tenant_id", None)
+        resolved_scope = await resolve_tenant(session, claim or DEFAULT_TENANT)
+        if resolved_scope is None:
+            if claim:
+                # An unknown tenant matches nothing rather than everything.
+                raise coded(403, CASE_TENANT_403,
+                            f"{claim!r} is not a tenant on this platform")
+            # No claim and no default tenant: no owned case is reachable.
+            scope_tenant = _NO_TENANT
+        else:
+            scope_tenant = resolved_scope[0]
+
     cases, total = await repo.search_case_instances(
         session,
         filters=filters,
@@ -490,6 +708,8 @@ async def list_cases(
         limit=page_size,
         variable_filters=variable_filters or None,
         accessible_to_user=accessible_to_user,
+        tenant_id=scope_tenant,
+        include_untenanted=not strict_case_reads(),
     )
     return CaseListResponse(
         items=cases, total=total, page=page, page_size=page_size
@@ -502,7 +722,7 @@ async def get_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
     # HxGuard Phase B pilot (shadow by default — see hxguard_case_enforcement)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
@@ -528,7 +748,13 @@ async def update_case_data(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Merge-update the case's data payload."""
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
+
+    # Sealed cases are inert — one shared rule in `case_actions.seal`,
+    # because a rule enforced at each call site is one that is missing
+    # at the call site somebody adds next year.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
     # HxGuard Phase B pilot — also closes the pre-existing unauthenticated-
     # mutation gap (route previously had NO auth dependency)
     from velaris_shared import hxguard
@@ -590,6 +816,7 @@ async def apply_status_change(
     new_status: str,
     actor_id: str | None,
     reason: str | None = None,
+    audit_action: str = "status_changed",
 ) -> None:
     """The FULL status-change machinery — audit, SLA lifecycle, realtime,
     outbox webhook. Used by the status endpoint AND rule-action application
@@ -599,10 +826,16 @@ async def apply_status_change(
     await repo.update_case_instance(
         session, case_id, values={"status": new_status}
     )
+    # `audit_action` exists so the dispatcher can record the verb its action
+    # has always recorded — `/close` wrote `closed`, `/resolve` wrote
+    # `resolved` — WITHOUT a second audit row being written on top of this one.
+    # An action that produced two entries would double every status change in
+    # the log an auditor reads, and `change_status` would have produced two
+    # identical ones.
     await _audit(
         session,
         case_id,
-        "status_changed",
+        audit_action,
         actor_id=actor_id,
         previous_value={"status": prev},
         new_value={"status": new_status},
@@ -639,19 +872,10 @@ async def apply_status_change(
         logger.warning("outbox dispatch failed for status change %s: %s", case_id, _e)
 
 
-@router.post("/{case_id}/status", response_model=CaseResponse)
-async def change_status(
-    case_id: uuid.UUID,
-    body: CaseStatusChange,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    await apply_status_change(session, case_id, body.status, body.actor_id, body.reason)
-    await _signal_lifecycle(request, case_id, "status_changed", {"status": body.status})
-    return await repo.get_case_instance(session, case_id)
+# `POST /{case_id}/status` was here. It is now the `change_status` action on the
+# dispatcher below — and the difference is not the URL, it is that the target is
+# validated against the configured status set instead of any string being
+# accepted. `apply_status_change` above is unchanged and is still what runs.
 
 
 async def apply_priority_change(
@@ -659,6 +883,7 @@ async def apply_priority_change(
     case_id: uuid.UUID,
     new_priority: str,
     actor_id: str | None,
+    audit_action: str = "priority_changed",
 ) -> None:
     """Full priority-change machinery — shared by the endpoint and
     rule-action application (velaris.priority writes route here)."""
@@ -670,7 +895,7 @@ async def apply_priority_change(
     await _audit(
         session,
         case_id,
-        "priority_changed",
+        audit_action,
         actor_id=actor_id,
         previous_value={"priority": prev},
         new_value={"priority": new_priority},
@@ -700,46 +925,148 @@ async def apply_priority_change(
         logger.warning("outbox dispatch failed for priority change %s: %s", case_id, _e)
 
 
-@router.post("/{case_id}/priority", response_model=CaseResponse)
-async def change_priority(
-    case_id: uuid.UUID,
-    body: CasePriorityChange,
-    session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    await apply_priority_change(session, case_id, body.priority, body.actor_id)
-    return await repo.get_case_instance(session, case_id)
+# `POST /{case_id}/priority` was here — now the `change_priority` action.
+# `apply_priority_change` above is unchanged and is still what runs.
 
 
-@router.post("/{case_id}/stage", response_model=CaseResponse)
-async def transition_stage(
+#: A tenant id no tenant has: scoping a search to it leaves only untenanted
+#: rows (and none at all under strict reads).
+_NO_TENANT = uuid.UUID(int=0)
+
+
+class StageMoveRefused(Exception):
+    """A case that may not be moved, with the code a bulk result reports.
+
+    The single-case route turns it back into exactly the response it always
+    gave; the bulk route reports it against the one case and carries on.
+    """
+
+    def __init__(self, status_code: int, code: str, detail: str,
+                 original: HTTPException | None = None) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
+        #: The exception a shared check raised, so the single-case route can
+        #: re-raise it unchanged rather than rebuild an approximation of it.
+        self.original = original
+
+
+#: "The caller did not resolve the tenant" — distinct from None, which is a
+#: real answer (a caller in no tenant).
+_UNSET_TENANT = object()
+
+
+async def _stage_move_gate(
+    session: AsyncSession,
+    user: AuthenticatedUser,
     case_id: uuid.UUID,
-    body: CaseStageTransition,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    target_stage_id: str,
+    *,
+    consult_policy: bool = True,
 ):
-    case = await _get_case_or_404(session, case_id)
-    # same case-level check the MCP case_advance_stage tool applies
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
+    """Everything that decides whether THIS caller may move THIS case. Writes nothing
+    — except the HxArbiter decision log, which is why `preview` passes
+    `consult_policy=False`: a preview that logged a policy decision for a move
+    nobody made would be a false record.
+
+    Shared by `POST /{case_id}/stage` and the bulk route, so a gate added here
+    holds for both. That is the point: the bulk path is a loop over this, not a
+    second copy of it.
+    """
+    try:
+        case = await _get_case_or_404(session, case_id, user)
+        # same case-level check the MCP case_advance_stage tool applies
+        from velaris_shared import hxguard
+        await hxguard.require_case(session, user, "case.update", case_id)
+    except HTTPException as exc:
+        raise StageMoveRefused(
+            exc.status_code,
+            getattr(exc, "code", None) or ("VEL-CASE-NOTFOUND-404" if exc.status_code == 404
+                                           else "VEL-CASE-ACTION-DENIED-403"),
+            str(exc.detail), original=exc)
+    # Sealed cases are inert. Shared rule, not a local copy —
+    # `case_actions.seal`. This route wrote happily to an archived
+    # case until 2026-09-08.
+    from case_service.case_actions import seal as _seal
+    sealed = _seal.sealed_reason(case)
+    if sealed:
+        raise StageMoveRefused(409, _seal.CODE, sealed)
 
     # HxSentinel verify gate (opt-in per tenant): refuse a manual advance while
     # an open risk hold exists. 409, not a silent no-op, so the operator sees
     # WHY. Fails OPEN (off/fault -> not blocked); a human clears the hold first.
     from case_service.sentinel import engine as _risk_engine
     if await _risk_engine.advance_blocked(session, case_id):
-        raise HTTPException(
-            status_code=409,
-            detail="Stage advance is held by an open HxSentinel risk verification. "
-                   "Clear the hold on the case's risk panel first.",
-        )
+        raise StageMoveRefused(
+            409, "VEL-CASE-STAGE-HELD-409",
+            "Stage advance is held by an open HxSentinel risk verification. "
+            "Clear the hold on the case's risk panel first.")
 
+    if not consult_policy:
+        return case
+
+    # ── HxArbiter PEP (ARB-D) ────────────────────────────────────────────────
+    # HxGuard has already decided whether this CALLER may update the case. The
+    # engine answers a different question — whether this TRANSITION is permitted
+    # for this case in this tenant — which is the thing a policy can express and
+    # a role cannot. NG1 holds: it can only further restrict what HxGuard
+    # allowed, never grant, because it is asked after the gate above and never
+    # instead of it. The `case` namespace defaults to ALLOW, so an install with
+    # no policy sees no change at all, and the namespace is clamped to shadow on
+    # top of that.
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+
+        allowed = await _arb_pep.check(
+            session,
+            tenant_id=str(getattr(case, "tenant_id", None) or "default"),
+            action=_arb_pep.ACTION_STAGE_TRANSITION,
+            subject_id=str(user.user_id),
+            subject_kind=_arb_pep.SubjectKind.USER,
+            resource_kind="case",
+            resource_id=str(case_id),
+            resource_attrs={"case_type": str(case.case_type_id)},
+            context={"from_stage": str(case.current_stage_id or ""),
+                     "to_stage": str(target_stage_id),
+                     "purpose": "stage_transition"},
+            legacy_allowed=True,
+            claimed_by=str(getattr(user, "username", None) or user.user_id)[:255],
+        )
+    except Exception as _arb_exc:                               # noqa: BLE001
+        logger.warning("cases: HxArbiter stage PEP unavailable: %s", _arb_exc)
+        allowed = True
+    if not allowed:
+        raise StageMoveRefused(
+            403, "VEL-ARB-STAGE-DENIED-403",
+            "VEL-ARB-STAGE-DENIED-403: policy refuses this stage "
+            "transition for this case.")
+    return case
+
+
+async def _stage_move_apply(
+    request: Request,
+    session: AsyncSession,
+    user: AuthenticatedUser,
+    case,
+    target_stage_id: str,
+    *,
+    ct_def: dict | None = None,
+    tenant_uuid: Any = _UNSET_TENANT,
+    signal: bool = True,
+    audit_details: dict | None = None,
+) -> dict | None:
+    """Move the case and fire what entering the stage fires. Returns the stage
+    definition entered, or None when the case type does not define it.
+
+    `ct_def` and `tenant_uuid` let a bulk run resolve each once rather than once
+    per case; `signal=False` lets it nudge Temporal after the loop, under a
+    budget, instead of two round trips per case inside a transaction.
+    """
+    case_id = case.id
     prev = case.current_stage_id
     await repo.update_case_instance(
-        session, case_id, values={"current_stage_id": body.target_stage_id}
+        session, case_id, values={"current_stage_id": target_stage_id}
     )
     await _audit(
         session,
@@ -747,15 +1074,22 @@ async def transition_stage(
         "stage_transitioned",
         actor_id=user.user_id,
         previous_value={"stage_id": prev},
-        new_value={"stage_id": body.target_stage_id},
+        new_value={"stage_id": target_stage_id},
+        # Absent on the single-case route, exactly as before. A bulk run names
+        # itself, so one move can be told apart from five hundred.
+        **({"details": audit_details} if audit_details else {}),
     )
 
-    # Start the new stage's SLA (idempotent) and nudge the SLA companion
+    # Start the new stage's SLA (idempotent) and nudge the SLA companion.
+    # Bound before the try because the block below reads it: a failure loading
+    # the case type must leave `stage` a real answer, not unbound.
+    stage = None
     try:
-        ct = await repo.get_case_type(session, case.case_type_id)
-        ct_def = (ct.definition_json or {}) if ct else {}
+        if ct_def is None:
+            ct = await repo.get_case_type(session, case.case_type_id)
+            ct_def = (ct.definition_json or {}) if ct else {}
         stage = next(
-            (s for s in ct_def.get("stages", []) if s["id"] == body.target_stage_id),
+            (s for s in ct_def.get("stages", []) if s["id"] == target_stage_id),
             None,
         )
         if stage is not None:
@@ -769,165 +1103,333 @@ async def transition_stage(
             )
     except Exception as e:
         logger.warning("Stage SLA start failed for case %s: %s", case_id, e)
-    await _signal_lifecycle(
-        request, case_id, "stage_entered", {"stage_id": body.target_stage_id}
-    )
+    # The stage's own `on_enter_status`, applied AFTER the stage pointer has
+    # moved and the stage's SLAs have started — so the status change the
+    # designer configured is a consequence of being in the stage, in that order,
+    # and never a reason the stage move failed.
+    try:
+        from case_service.case_actions import stages as _stages
+
+        if stage is not None:
+            await _stages.apply_on_enter_status(
+                session, case_id=case_id, stage=stage,
+                actor=str(user.user_id),
+                tenant_uuid=(await _action_context(session, user)
+                             if tenant_uuid is _UNSET_TENANT else tenant_uuid))
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("stage on_enter_status failed for case %s: %s", case_id, e)
+
+    if signal:
+        await _signal_lifecycle(
+            request, case_id, "stage_entered", {"stage_id": target_stage_id}
+        )
     await emit_trace(
         "stage_transition",
-        {"from_stage": prev, "to_stage": body.target_stage_id},
+        {"from_stage": prev, "to_stage": target_stage_id},
         case_id=case_id,
         tenant_id="default",
         actor_user_id=user.user_id,
         session=session,
     )
-    return await repo.get_case_instance(session, case_id)
+    return stage
 
 
-@router.post("/{case_id}/resolve", response_model=CaseResponse)
-async def resolve_case(
-    case_id: uuid.UUID,
-    body: CaseResolve,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    case = await _get_case_or_404(session, case_id)
-    prev = case.status
-    now = datetime.now(timezone.utc)
-    await repo.update_case_instance(
-        session,
-        case_id,
-        values={"status": "resolved", "resolved_at": now},
-    )
-    await _audit(
-        session,
-        case_id,
-        "resolved",
-        actor_id=body.actor_id,
-        details={"resolution": body.resolution},
-    )
-    await case_lifecycle.on_status_changed(
-        session, case_id=case_id, old_status=prev, new_status="resolved"
-    )
+# ── bulk STAGE transition (2026-09-17) ───────────────────────────────────────
+#
+# Registered BEFORE `/{case_id}/stage`: Starlette matches paths in order, and
+# `/{case_id}/stage` would otherwise claim `/bulk/stage` and 422 on the UUID.
+#
+# Why this is two routes and a token rather than one route with a flag: see
+# `case_actions/bulk_stage.py`. In one line — a stage move fires things per case
+# that moving back does not undo, so what the operator confirmed is checked by
+# the server, not by a dialog.
 
-    # Process mining event log (Phase 14)
+class BulkStageRequest(BaseModel):
+    case_ids: list[uuid.UUID]
+    target_stage_id: str = Field(min_length=1, max_length=255)
+    #: Execute only — the token `preview` returned for exactly these cases.
+    confirmation_token: str | None = Field(default=None, max_length=512)
+    #: Recorded on every case's audit row. Bounded: it is written 500 times.
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+async def _bulk_stage_prepare(
+    body: BulkStageRequest, session: AsyncSession, user: AuthenticatedUser,
+) -> list[uuid.UUID]:
+    """What is wrong with the REQUEST, before any case is read."""
+    from case_service.case_actions import bulk_stage as _bs
+    from case_service.case_actions import dispatcher as _disp
+
+    case_ids: list[uuid.UUID] = list(dict.fromkeys(body.case_ids))
+    if len(case_ids) > _disp.BULK_CEILING:
+        raise coded(400, "VEL-CASE-BULK-CEILING-400",
+                    f"This request names {len(case_ids)} cases; the ceiling is "
+                    f"{_disp.BULK_CEILING}. Narrow it or split it — acting on the "
+                    f"first {_disp.BULK_CEILING} and reporting success is the "
+                    f"worse answer.")
+    if not case_ids:
+        raise coded(400, "VEL-CASE-BULK-EMPTY-400", "No cases named.")
+    # Once, not per case: it is a question about the operator, and asking it
+    # before any case is read means a caller without it learns nothing about
+    # the ids it sent — not even which exist.
     try:
-        duration = None
-        if case.created_at:
-            from datetime import timezone as _tz
-            created = case.created_at if case.created_at.tzinfo else case.created_at.replace(tzinfo=_tz.utc)
-            duration = int((now - created).total_seconds())
-        await event_logger.log_case_resolved(
-            session, case_id=case_id, case_type_id=case.case_type_id,
-            actor_id=body.actor_id, duration_seconds=duration,
-        )
-    except Exception as e:
-        logger.warning("Event log failed for case %s: %s", case_id, e)
-
-    await _signal_lifecycle(request, case_id, "status_changed", {"status": "resolved"})
-    return await repo.get_case_instance(session, case_id)
+        await hxguard.require_user(session, user, _bs.PRIVILEGE)
+    except HTTPException:
+        raise coded(403, "VEL-CASE-BULK-STAGE-DENIED-403",
+                    f"Moving cases through a stage in bulk needs {_bs.PRIVILEGE}.")
+    return case_ids
 
 
-@router.post("/{case_id}/close", response_model=CaseResponse)
-async def close_case(
-    case_id: uuid.UUID,
-    body: CaseAction,
-    request: Request,
+def _case_type_memo(session: AsyncSession):
+    """Case type definitions, read once per case type across a run."""
+    cache: dict[Any, tuple[dict, str | None]] = {}
+
+    async def get(case_type_id) -> tuple[dict, str | None]:
+        if case_type_id not in cache:
+            ct = await repo.get_case_type(session, case_type_id)
+            cache[case_type_id] = (((ct.definition_json or {}) if ct else {}),
+                                   (ct.name if ct else None))
+        return cache[case_type_id]
+
+    return get
+
+
+async def _bulk_stage_evaluate(
+    session: AsyncSession, user: AuthenticatedUser, case_id: uuid.UUID,
+    target_stage_id: str, ct_for, *, consult_policy: bool,
+):
+    """(case, case type definition, stage, unchanged) or StageMoveRefused."""
+    case = await _stage_move_gate(session, user, case_id, target_stage_id,
+                                  consult_policy=consult_policy)
+    ct_def, _ = await ct_for(case.case_type_id)
+    stage = next((s for s in ct_def.get("stages", []) or []
+                  if isinstance(s, dict) and str(s.get("id")) == str(target_stage_id)),
+                 None)
+    if stage is None:
+        # Stricter than the single-case route, which writes any string. A bulk
+        # run spans case types, and a stage id that means something in one and
+        # nothing in another would strand those cases in a stage with no steps.
+        raise StageMoveRefused(
+            409, "VEL-CASE-BULK-STAGE-UNKNOWN-409",
+            f"'{target_stage_id}' is not a stage of this case's case type.")
+    unchanged = str(case.current_stage_id or "") == str(target_stage_id)
+    return case, ct_def, stage, unchanged
+
+
+def _refused(case_id: uuid.UUID, exc: StageMoveRefused) -> dict:
+    return {"case_id": str(case_id), "ok": False, "code": exc.code, "error": exc.detail}
+
+
+@router.post("/bulk/stage/preview")
+async def preview_bulk_stage(
+    body: BulkStageRequest,
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    case = await _get_case_or_404(session, case_id)
-    prev = case.status
-    now = datetime.now(timezone.utc)
-    await repo.update_case_instance(
-        session,
-        case_id,
-        values={"status": "closed", "closed_at": now},
-    )
-    await _audit(session, case_id, "closed", actor_id=body.actor_id)
-    await case_lifecycle.on_status_changed(
-        session, case_id=case_id, old_status=prev, new_status="closed"
-    )
-    await _signal_lifecycle(request, case_id, "status_changed", {"status": "closed"})
-    return await repo.get_case_instance(session, case_id)
+    """What moving these cases into a stage WOULD do. Changes nothing.
 
+    Returns, per case, whether it would move; per case type, what entering the
+    stage fires (the SLA it starts, the status it sets); and a confirmation
+    token for exactly the cases that would move. HxArbiter is consulted at
+    execution only — see `_stage_move_gate`.
+    """
+    from case_service.case_actions import bulk_stage as _bs
+    from case_service.case_actions import stages as _stg
 
-@router.post("/{case_id}/reopen", response_model=CaseResponse)
-async def reopen_case(
-    case_id: uuid.UUID,
-    body: CaseAction,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    case = await _get_case_or_404(session, case_id)
-    prev = case.status
-    await repo.update_case_instance(
-        session, case_id, values={"status": "reopened"}
-    )
-    await _audit(
-        session,
-        case_id,
-        "reopened",
-        actor_id=body.actor_id,
-        details={"reason": body.reason},
-    )
-    await case_lifecycle.on_status_changed(
-        session, case_id=case_id, old_status=prev, new_status="reopened"
-    )
-    # The companion workflow exits when a case reaches a terminal status,
-    # so reopening must restart it before signalling.
-    client = getattr(request.app.state, "temporal_client", None)
-    if client is not None:
+    case_ids = await _bulk_stage_prepare(body, session, user)
+    ct_for = _case_type_memo(session)
+
+    results: list[dict] = []
+    eligible: list[uuid.UUID] = []
+    by_type: dict[Any, dict] = {}
+    for case_id in case_ids:
         try:
-            from case_service.temporal.workflows.case_lifecycle_workflow import (
-                CaseLifecycleWorkflow,
-            )
-            await client.start_workflow(
-                CaseLifecycleWorkflow.run,
-                {"case_id": str(case_id), "case_type_id": str(case.case_type_id)},
-                id=f"helix-case-{case_id}",
-                task_queue="helix-case-service",
-            )
-        except Exception:
-            pass  # already running — the signal below is enough
-    await _signal_lifecycle(request, case_id, "status_changed", {"status": "reopened"})
-    return await repo.get_case_instance(session, case_id)
+            case, ct_def, stage, unchanged = await _bulk_stage_evaluate(
+                session, user, case_id, body.target_stage_id, ct_for,
+                consult_policy=False)
+        except StageMoveRefused as exc:
+            results.append(_refused(case_id, exc))
+            continue
+        results.append({"case_id": str(case_id), "ok": True,
+                        "from_stage": case.current_stage_id,
+                        "unchanged": unchanged})
+        if unchanged:
+            continue
+        eligible.append(case_id)
+        key = case.case_type_id
+        if key not in by_type:
+            _, ct_name = await ct_for(key)
+            sla_id = stage.get("sla_policy_id")
+            sla = next((p for p in ct_def.get("sla_policies", []) or []
+                        if isinstance(p, dict) and p.get("id") == sla_id), None)
+            by_type[key] = {
+                "case_type_id": str(key), "case_type_name": ct_name,
+                "stage_name": stage.get("name") or body.target_stage_id,
+                "cases": 0,
+                # What entering the stage FIRES, named so the confirm screen can
+                # say it rather than an operator having to know the designer.
+                "starts_sla": ((sla or {}).get("name") or sla_id) if sla_id else None,
+                "on_enter_status": _stg.on_enter_status(stage),
+                "signals_workflows": True,
+            }
+        by_type[key]["cases"] += 1
+
+    token, expires_at = (_bs.mint(str(user.user_id), body.target_stage_id, eligible)
+                         if eligible else (None, None))
+    return {
+        "target_stage_id": body.target_stage_id,
+        "requested": len(case_ids),
+        "would_move": len(eligible),
+        "unchanged": sum(1 for r in results if r.get("unchanged")),
+        "refused": sum(1 for r in results if not r["ok"]),
+        "effects": list(by_type.values()),
+        "results": results,
+        # Confirms `eligible_case_ids` and nothing else: execute must send
+        # exactly that set back.
+        "eligible_case_ids": [str(c) for c in eligible],
+        "confirmation_token": token,
+        "confirm_expires_at": expires_at,
+    }
 
 
-@router.post("/{case_id}/cancel", response_model=CaseResponse)
-async def cancel_case(
-    case_id: uuid.UUID,
-    body: CaseAction,
+async def _flush_stage_signals(
+    request: Request, entries: list[tuple[uuid.UUID, str]],
+) -> None:
+    """`_flush_signals`' budget and concurrency, for `stage_entered`. Skipping a
+    signal only delays: both workflows rescan on their own."""
+    if not entries or getattr(request.app.state, "temporal_client", None) is None:
+        return
+
+    import asyncio
+
+    sem = asyncio.Semaphore(_SIGNAL_CONCURRENCY)
+
+    async def one(case_id: uuid.UUID, stage_id: str) -> None:
+        async with sem:
+            await _signal_lifecycle(request, case_id, "stage_entered",
+                                    {"stage_id": stage_id})
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(one(c, s) for c, s in entries), return_exceptions=True),
+            timeout=_SIGNAL_BUDGET_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "bulk stage: workflow nudges exceeded %.0fs for %d cases — the moves "
+            "are committed; the workflows pick them up on their own rescan.",
+            _SIGNAL_BUDGET_SECONDS, len(entries))
+
+
+@router.post("/bulk/stage")
+async def bulk_stage_transition(
+    body: BulkStageRequest,
     request: Request,
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    from velaris_shared import hxguard
-    await hxguard.require_case(session, user, "case.update", case_id)
-    case = await _get_case_or_404(session, case_id)
-    prev = case.status
-    await repo.update_case_instance(
-        session, case_id, values={"status": "cancelled"}
-    )
-    await _audit(
-        session,
-        case_id,
-        "cancelled",
-        actor_id=body.actor_id,
-        details={"reason": body.reason},
-    )
-    await case_lifecycle.on_status_changed(
-        session, case_id=case_id, old_status=prev, new_status="cancelled"
-    )
-    await _signal_lifecycle(request, case_id, "status_changed", {"status": "cancelled"})
+    """Move the cases a preview confirmed into a stage.
+
+    Refused as a whole — before any case is touched — without a confirmation
+    token for exactly this operator, stage and set of cases. Then every case is
+    checked again, because the preview was a moment ago: a case that was held,
+    sealed or re-shared since is refused individually, and partial success is
+    reported per case, never hidden.
+    """
+    from case_service.case_actions import bulk_stage as _bs
+
+    case_ids = await _bulk_stage_prepare(body, session, user)
+    why = _bs.verify(body.confirmation_token, str(user.user_id),
+                     body.target_stage_id, case_ids)
+    if why is not None:
+        raise coded(409, "VEL-CASE-BULK-STAGE-CONFIRM-409", why)
+
+    ct_for = _case_type_memo(session)
+    tenant_uuid = await _action_context(session, user)
+    run_id = str(uuid.uuid4())
+    audit_details = {"bulk_run_id": run_id, "requested": len(case_ids)}
+    if body.reason:
+        audit_details["reason"] = body.reason
+
+    results: list[dict] = []
+    to_signal: list[tuple[uuid.UUID, str]] = []
+    for case_id in case_ids:
+        try:
+            case, ct_def, stage, unchanged = await _bulk_stage_evaluate(
+                session, user, case_id, body.target_stage_id, ct_for,
+                consult_policy=True)
+        except StageMoveRefused as exc:
+            results.append(_refused(case_id, exc))
+            continue
+        if unchanged:
+            # Already there — entering again would restart nothing useful and
+            # write a second audit row. Reported, not counted as moved.
+            results.append({"case_id": str(case_id), "ok": True,
+                            "detail": {"unchanged": True}})
+            continue
+        prev = case.current_stage_id
+        try:
+            # A savepoint per case: a database error part way through one case's
+            # move rolls back THAT case — its pointer, audit row and SLA — and
+            # leaves the transaction usable for the rest. Without it one failure
+            # poisons the session, every later case fails, and the commit at the
+            # end can take the successful moves down with it while the response
+            # already said they moved.
+            async with session.begin_nested():
+                await _stage_move_apply(
+                    request, session, user, case, body.target_stage_id,
+                    ct_def=ct_def, tenant_uuid=tenant_uuid, signal=False,
+                    audit_details=audit_details)
+        except Exception as exc:                                 # noqa: BLE001
+            logger.exception("bulk stage move failed on %s", case_id)
+            results.append({"case_id": str(case_id), "ok": False,
+                            "code": "VEL-CASE-ACTION-FAILED-500", "error": str(exc)})
+            continue
+        results.append({"case_id": str(case_id), "ok": True,
+                        "detail": {"from_stage": prev, "to_stage": body.target_stage_id}})
+        to_signal.append((case_id, body.target_stage_id))
+
+    await _flush_stage_signals(request, to_signal)
+
+    moved = len(to_signal)
+    failed = sum(1 for r in results if not r["ok"])
+    return {
+        "target_stage_id": body.target_stage_id,
+        "bulk_run_id": run_id,
+        "requested": len(case_ids),
+        "moved": moved,
+        "unchanged": len(results) - moved - failed,
+        "failed": failed,
+        "results": results,
+    }
+
+
+@router.post("/{case_id}/stage", response_model=CaseResponse)
+async def transition_stage(
+    case_id: uuid.UUID,
+    body: CaseStageTransition,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        case = await _stage_move_gate(session, user, case_id, body.target_stage_id)
+    except StageMoveRefused as exc:
+        if exc.original is not None:
+            # The exact response this route gave before the gate was shared.
+            raise exc.original
+        raise coded(exc.status_code, exc.code, exc.detail)
+
+    await _stage_move_apply(request, session, user, case, body.target_stage_id)
     return await repo.get_case_instance(session, case_id)
+
+
+# `POST /{case_id}/resolve`, `/close`, `/reopen` and `/cancel` were here.
+# They are now the `resolve`, `close`, `reopen` and `cancel` actions on the
+# dispatcher below. Each did the same four things — set a status, stamp a
+# timestamp, write an audit row, signal the workflow — with four slightly
+# different spellings, and `/reopen` alone remembered to restart the lifecycle
+# workflow that exits on a terminal status. That restart now happens once, in
+# the dispatcher, for every action that leaves a terminal status.
 
 
 # ─── Assignments (for workflow activities) ────────────────────────────
@@ -949,9 +1451,15 @@ async def create_assignment(
     In-process stage execution uses core/assignment_router directly; this
     HTTP surface is for operators and requires case.update on the case.
     """
-    await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
+    # Sealed cases are inert. Shared rule, not a local copy —
+    # `case_actions.seal`. This route wrote happily to an archived
+    # case until 2026-09-08.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
+
 
     assignment = await repo.create_assignment(
         session,
@@ -988,7 +1496,7 @@ async def list_case_assignments(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """List all assignments for a case."""
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     return await repo.get_assignments_for_case(session, case_id)
@@ -1005,7 +1513,7 @@ async def get_case_history(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     # same posture as get_case — a timeline reveals as much as the case itself
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
@@ -1026,11 +1534,17 @@ async def add_relationship(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
-    await _get_case_or_404(session, body.target_case_id)
+    case = await _get_case_or_404(session, case_id, user)
+    await _get_case_or_404(session, body.target_case_id, user)
     # mirror of the MCP case_link tool: update on source, read on target
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
+    # Sealed cases are inert. Shared rule, not a local copy —
+    # `case_actions.seal`. This route wrote happily to an archived
+    # case until 2026-09-08.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
+
     await hxguard.require_case(session, user, "case.read", body.target_case_id)
     rel = await repo.create_relationship(
         session,
@@ -1064,7 +1578,7 @@ async def list_relationships(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     return await repo.get_relationships(session, case_id)
@@ -1083,9 +1597,15 @@ async def create_child_case(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Create a child case linked to the parent."""
-    parent = await _get_case_or_404(session, case_id)
+    parent = await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.update", case_id)
+    # Sealed cases are inert. Shared rule, not a local copy —
+    # `case_actions.seal`. This route wrote happily to an archived
+    # case until 2026-09-08.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(parent)
+
     body.parent_case_id = case_id
     case_type = await repo.get_case_type(session, body.case_type_id)
     if case_type is None:
@@ -1133,7 +1653,7 @@ async def list_child_cases(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     children, _ = await repo.search_case_instances(
@@ -1224,6 +1744,19 @@ async def _auto_advance_if_complete(
     except Exception as e:
         logger.warning("Stage SLA start failed on auto-advance %s: %s", case_id, e)
 
+    # The stage's `on_enter_status`. An auto-advance is still a stage entry, and
+    # a designer who says "entering Review means under_review" means it however
+    # the case got there — a rule that only held when a human clicked would be
+    # the more surprising behaviour, not the safer one.
+    try:
+        from case_service.case_actions import stages as _stages
+
+        await _stages.apply_on_enter_status(
+            session, case_id=case_id, stage=stages[current_idx + 1],
+            actor=None)
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("stage on_enter_status failed on auto-advance %s: %s", case_id, e)
+
     # Fetch case for outbound rule context
     case_row = await repo.get_case_instance(session, case_id)
     if case_row:
@@ -1265,7 +1798,13 @@ async def complete_step(
     from sqlalchemy import select
     from velaris_shared.db.models import CaseStepCompletionModel, CaseTypeModel
 
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
+
+    # Sealed cases are inert — one shared rule in `case_actions.seal`,
+    # because a rule enforced at each call site is one that is missing
+    # at the call site somebody adds next year.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
 
     # Load case type definition for auto-advance check
     ct = (await session.execute(
@@ -1364,14 +1903,46 @@ async def complete_step(
             tenant_id="default",
         )
 
-    # Auto-advance if all required steps are done
+    # A step advanced, so the case is being worked — §7, answered 2026-09-08.
+    #
+    # Before the advance, and against the CURRENT stage: if that stage declares
+    # its own `on_enter_status` the automatic rule stands down entirely, because
+    # a designer's visible configuration must not be undone by a rule nobody can
+    # see on any screen.
+    auto_status = None
+    if body.status == "completed":
+        try:
+            from case_service.case_actions import stages as _stages
+
+            auto_status = await _stages.apply_auto_in_progress(
+                session, case_id=case_id,
+                stage=await _stages.stage_def(
+                    session, case_type_id=case.case_type_id,
+                    stage_id=body.stage_id),
+                actor=str(user.user_id),
+                tenant_uuid=await _action_context(session, user))
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("auto in_progress failed on case %s: %s", case_id, e)
+
+    # Auto-advance if all required steps are done.
+    #
+    # The gate asks the STATUS SET whether work may proceed — not a literal
+    # `["open", "new", "reopened"]`, which is what stood here until 2026-09-08.
+    # That list was wrong in two directions at once: a tenant's own active
+    # status was missing from it, and so was `in_progress` — so the moment the
+    # rule above began setting `in_progress`, the second step completed on any
+    # case would have stopped advancing.
     auto_advanced = False
     advance_held_by_risk = False
-    if body.status == "completed" and ["open", "new", "reopened"].__contains__(case.status):
-        new_stage, advance_held_by_risk = await _auto_advance_if_complete(
-            session, case_id, body.stage_id, ct_def
-        )
-        auto_advanced = new_stage is not None
+    if body.status == "completed":
+        from case_service.case_actions import statuses as _st
+
+        fresh = await repo.get_case_instance(session, case_id)
+        if await _st.is_workable_for_case(session, fresh or case):
+            new_stage, advance_held_by_risk = await _auto_advance_if_complete(
+                session, case_id, body.stage_id, ct_def
+            )
+            auto_advanced = new_stage is not None
 
     # Nudge the SLA companion (new stage may have started an SLA)
     await _signal_lifecycle(
@@ -1413,7 +1984,13 @@ async def activate_step(
     from sqlalchemy import select
     from velaris_shared.db.models import CaseTypeModel, CaseStepCompletionModel
 
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
+
+    # Sealed cases are inert — one shared rule in `case_actions.seal`,
+    # because a rule enforced at each call site is one that is missing
+    # at the call site somebody adds next year.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
     ct = (await session.execute(
         select(CaseTypeModel).where(CaseTypeModel.id == case.case_type_id)
     )).scalar_one_or_none()
@@ -1622,7 +2199,7 @@ async def get_case_detail(
     from velaris_shared import hxguard
     from velaris_shared.db.models import CaseAssignmentModel
 
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
     await hxguard.require_case(session, user, "case.read", case_id)
 
     history = await repo.get_audit_log(session, case_id)
@@ -1958,7 +2535,13 @@ async def apply_rule_to_case(
     # Phase B: applying a rule mutates the case — case.update in shadow mode
     await hxguard.require_case(session, user, "case.update", case_id)
 
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
+
+    # Sealed cases are inert — one shared rule in `case_actions.seal`,
+    # because a rule enforced at each call site is one that is missing
+    # at the call site somebody adds next year.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
     rule = await repo.get_rule(session, rule_id)
     if rule is None:
         raise coded(404, CASE_NOTFOUND_404, "Rule not found")
@@ -2067,8 +2650,12 @@ async def share_case(
 ):
     if body.relation not in ("viewer", "editor"):
         raise HTTPException(400, "relation must be viewer | editor")
-    await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
     await _require_share_access(session, user, case_id, "case.share")
+    # Sealed: sharing a case is a change to who may reach it, which is exactly
+    # the kind of "further change" archiving is meant to stop.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
     target = await _resolve_share_user(session, body.user_id)
     if target is None or not target.is_active:
         raise HTTPException(400, f"No user found for '{body.user_id}' — use a user id, username, or email")
@@ -2091,7 +2678,7 @@ async def list_case_shares(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     await _require_share_access(session, user, case_id, "case.read")
     from velaris_shared.hxguard import tuples as hxg_tuples
     rows = await hxg_tuples.list_tuples(
@@ -2131,7 +2718,13 @@ async def unshare_case(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
+
+    # Sealed cases are inert — one shared rule in `case_actions.seal`,
+    # because a rule enforced at each call site is one that is missing
+    # at the call site somebody adds next year.
+    from case_service.case_actions import seal as _seal
+    _seal.assert_writable(case)
     await _require_share_access(session, user, case_id, "case.share")
     from velaris_shared.hxguard import tuples as hxg_tuples
     # Accept id/username/email like share; fall back to the raw value so
@@ -2164,7 +2757,7 @@ async def list_step_completions(
     from sqlalchemy import select
     from velaris_shared.db.models import CaseStepCompletionModel
 
-    await _get_case_or_404(session, case_id)
+    await _get_case_or_404(session, case_id, user)
     from velaris_shared import hxguard
     await hxguard.require_case(session, user, "case.read", case_id)
     stmt = select(CaseStepCompletionModel).where(
@@ -2202,7 +2795,7 @@ async def get_my_task(
         CaseAssignmentModel, CaseTypeModel, CaseStepCompletionModel
     )
 
-    case = await _get_case_or_404(session, case_id)
+    case = await _get_case_or_404(session, case_id, user)
     now = datetime.now(timezone.utc)
 
     # Find most recent active assignment for this operator
@@ -2317,3 +2910,310 @@ async def unlock_step(
             actor_user_id=user.user_id,
             session=session,
         )
+
+
+# ── 198: the action dispatcher ───────────────────────────────────────────────
+#
+# Design: docs/Future/CASE-ACTIONS-STATUS-DESIGN.md
+#
+# One endpoint replaces six named routes, and `POST /cases/bulk` is the same
+# function in a loop rather than a second implementation. That is the whole
+# reason B3 (interactive bulk case actions) closes here: every named route had
+# to remember the tenant clause, the per-case ReBAC check, the privilege, the
+# audit row, the lifecycle hook and the realtime broadcast, and seventeen routes
+# would have been seventeen chances to forget one. Nineteen handlers gating on
+# `require_case` alone were readable across the tenant boundary until
+# 2026-09-06; the fix there was to move the clause INTO `require_case` so the
+# next feature inherits it. Same lesson, one level up.
+
+class ActionRequest(BaseModel):
+    """Parameters are per action; `precheck` refuses a missing one up front."""
+    params: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
+class BulkActionRequest(BaseModel):
+    case_ids: list[uuid.UUID]
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
+async def _action_context(session: AsyncSession, user: AuthenticatedUser):
+    """The caller's tenant, resolved once per request rather than per case."""
+    resolved = await resolve_tenant(session, getattr(user, "tenant_id", None))
+    return resolved[0] if resolved else None
+
+
+async def _restart_lifecycle_if_needed(
+    request: Request, session: AsyncSession, case_id: uuid.UUID, result,
+) -> None:
+    """Restart the companion workflow when a case leaves a terminal status.
+
+    `/reopen` was the only one of the four removed routes that remembered this,
+    and it mattered: the lifecycle workflow exits on a terminal status, so a
+    case moved out of one by any other route sat with no workflow behind it and
+    advanced only on the poll interval. Doing it here means every action that
+    leaves a terminal status gets it, including a tenant's own.
+    """
+    if not result.ok or not isinstance(result.detail, dict):
+        return
+    if result.detail.get("terminal") is not False:
+        return
+    client = getattr(request.app.state, "temporal_client", None)
+    if client is None:
+        return
+    case = await repo.get_case_instance(session, case_id)
+    if case is None:
+        return
+    try:
+        from case_service.temporal.workflows.case_lifecycle_workflow import (
+            CaseLifecycleWorkflow,
+        )
+        await client.start_workflow(
+            CaseLifecycleWorkflow.run,
+            {"case_id": str(case_id), "case_type_id": str(case.case_type_id)},
+            id=f"helix-case-{case_id}",
+            task_queue="helix-case-service",
+        )
+    except Exception:
+        pass  # already running — the signal below is enough
+
+
+#: How many workflow nudges a bulk run may have in flight, and how long it may
+#: spend on them in total. Both are ceilings on damage, not tuning knobs.
+_SIGNAL_CONCURRENCY = 16
+_SIGNAL_BUDGET_SECONDS = 10.0
+
+
+async def _flush_signals(
+    request: Request, session: AsyncSession,
+    entries: list[tuple[uuid.UUID, dict]],
+) -> None:
+    """Nudge Temporal for a batch, concurrently and time-boxed.
+
+    Returns when the work is done OR the budget expires, whichever is first —
+    and an expired budget is not an error. The workflows rescan on their own, so
+    an unsent signal costs latency, never correctness.
+    """
+    if not entries or getattr(request.app.state, "temporal_client", None) is None:
+        return
+
+    import asyncio
+
+    sem = asyncio.Semaphore(_SIGNAL_CONCURRENCY)
+
+    async def one(case_id: uuid.UUID, payload: dict) -> None:
+        async with sem:
+            # The lifecycle restart is in here too: it is the same Temporal
+            # round trip shape and belongs under the same budget.
+            await _restart_lifecycle_if_needed(
+                request, session, case_id,
+                _disp_result_shim(payload))
+            await _signal_lifecycle(request, case_id, "status_changed", payload)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(one(cid, p) for cid, p in entries),
+                           return_exceptions=True),
+            timeout=_SIGNAL_BUDGET_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "bulk: workflow nudges exceeded %.0fs for %d cases — the cases are "
+            "updated and committed; their workflows will pick the change up on "
+            "their own rescan.", _SIGNAL_BUDGET_SECONDS, len(entries))
+
+
+class _disp_result_shim:
+    """`_restart_lifecycle_if_needed` wants a result object; this is the two
+    fields it reads, so the batch path can reuse it without rebuilding one."""
+
+    def __init__(self, payload: dict) -> None:
+        self.ok = True
+        self.detail = payload
+
+
+@router.post("/{case_id}/actions/{action}")
+async def perform_action(
+    case_id: uuid.UUID,
+    action: str,
+    body: ActionRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Perform one action on one case."""
+    from case_service.case_actions import dispatcher as _disp
+
+    params = dict(body.params or {})
+    if body.reason and "reason" not in params:
+        params["reason"] = body.reason
+
+    try:
+        _disp.precheck(action, params, case_count=1)
+    except _disp.ActionError as exc:
+        raise coded(exc.status_code, exc.code, str(exc))
+
+    tenant_uuid = await _action_context(session, user)
+    # `restore` is the one action whose target is, by definition, hidden.
+    case = await _get_case_or_404(
+        session, case_id, user, include_deleted=(action == "restore"))
+    cfg = await _disp.resolve_config(
+        session, tenant_id=tenant_uuid, case_type_id=case.case_type_id)
+
+    result = await _disp.perform(
+        session, case_id=case_id, action_name=action, params=params,
+        user=user, tenant_uuid=tenant_uuid, config=cfg, audit=_audit,
+    )
+
+    # A single action reports its failure as a status code, because there is
+    # exactly one outcome to report. A bulk run cannot — see below.
+    if not result.ok:
+        code = result.code or "VEL-CASE-ACTION-FAILED-500"
+        status_code = (404 if code.endswith("-404")
+                       else 403 if code.endswith("-403")
+                       else 409 if code.endswith("-409")
+                       else 500 if code.endswith("-500")
+                       else 400)
+        raise coded(status_code, code, result.error)
+
+    effects = set(_disp.registry.ACTIONS[action].effects)
+    await _restart_lifecycle_if_needed(request, session, case_id, result)
+    if "status" in effects:
+        # `terminal` travels WITH the signal. A workflow may not query the
+        # database — it has to stay deterministic on replay — so it cannot look
+        # up whether a tenant's own status ends a case. The dispatcher already
+        # resolved it, so it says so.
+        await _signal_lifecycle(request, case_id, "status_changed", {
+            "status": (result.detail or {}).get("to"),
+            "terminal": (result.detail or {}).get("terminal"),
+        })
+
+    # The updated case comes back, as every named route this replaces did. A
+    # client that closes a case wants the new state, and making it re-fetch is
+    # both a second round trip and a chance to read a stale row.
+    updated = await repo.get_case_instance(session, case_id)
+    return {"case_id": str(case_id), "action": action,
+            **result.as_dict(),
+            "case": CaseResponse.model_validate(updated, from_attributes=True)
+                    if updated is not None else None}
+
+
+@router.post("/bulk")
+async def bulk_action(
+    body: BulkActionRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Perform one action across many cases.
+
+    **Partial success is the normal outcome and is reported, never hidden.** A
+    200 whose body says nothing about the twelve cases that refused is how a
+    bulk feature loses an operator's trust in its first week.
+
+    The permission check is **per case, inside the loop** — never once for the
+    batch — because the answer genuinely differs per case. And a request naming
+    more ids than the ceiling is **refused, not truncated**: silently acting on
+    the first N and reporting success is the worse answer, which is the posture
+    `scheduler/actions.py::CaseBulkAction` already takes.
+    """
+    from case_service.case_actions import dispatcher as _disp
+
+    params = dict(body.params or {})
+    if body.reason and "reason" not in params:
+        params["reason"] = body.reason
+
+    # Deduplicated first, so a caller who repeats an id does not get two audit
+    # rows and two notes on one case.
+    case_ids: list[uuid.UUID] = list(dict.fromkeys(body.case_ids))
+
+    try:
+        action_def = _disp.precheck(
+            body.action, params, case_count=len(case_ids))
+    except _disp.ActionError as exc:
+        raise coded(exc.status_code, exc.code, str(exc))
+
+    tenant_uuid = await _action_context(session, user)
+
+    # Configuration is resolved PER CASE TYPE, memoised across the batch.
+    #
+    # Resolving once at tenant scope would have been one query instead of a
+    # handful — and it would have silently skipped a tenant's per-case-type
+    # narrowing. An operator who restricted `close` to `resolved` on one case
+    # type would find that restriction enforced on the single-case route and
+    # bypassed by selecting the same cases and using bulk, which is worse than
+    # not offering bulk at all. A selection made on one screen usually spans one
+    # or two case types, so the memo makes this a query or two, not N.
+    cfg_cache: dict[uuid.UUID | None, dict] = {}
+
+    async def _cfg_for(case_type_id):
+        if case_type_id not in cfg_cache:
+            cfg_cache[case_type_id] = await _disp.resolve_config(
+                session, tenant_id=tenant_uuid, case_type_id=case_type_id)
+        return cfg_cache[case_type_id]
+
+    # The stage rule is memoised on the same principle, keyed by case type AND
+    # stage: a selection is usually a handful of stages, and the alternative is
+    # one `case_types` read per case — 500 of them for the same few answers.
+    from case_service.case_actions import stages as _stg
+
+    stage_cache: dict[tuple, Any] = {}
+
+    async def _stage_for(case_type_id, stage_id):
+        key = (case_type_id, stage_id)
+        if key not in stage_cache:
+            stage_cache[key] = await _stg.stage_def(
+                session, case_type_id=case_type_id, stage_id=stage_id)
+        return stage_cache[key]
+
+    results = []
+    to_signal: list[tuple[uuid.UUID, dict]] = []
+    for case_id in case_ids:
+        from velaris_shared.db.models import CaseInstanceModel as _CI
+        case_row = (await session.execute(
+            sa_select(_CI.case_type_id, _CI.current_stage_id).where(_CI.id == case_id)
+        )).first()
+        case_type_of, stage_of = (case_row if case_row is not None else (None, None))
+        result = await _disp.perform(
+            session, case_id=case_id, action_name=body.action, params=params,
+            user=user, tenant_uuid=tenant_uuid,
+            config=await _cfg_for(case_type_of),
+            stage_def=await _stage_for(case_type_of, stage_of), audit=_audit,
+        )
+        results.append(result)
+        if result.ok and "status" in action_def.effects:
+            to_signal.append((case_id, {
+                "status": (result.detail or {}).get("to"),
+                "terminal": (result.detail or {}).get("terminal"),
+            }))
+
+    # Temporal is nudged AFTER the loop, concurrently, and under a hard time
+    # budget.
+    #
+    # Signalling inside the loop was 2 round trips per case — **1000 sequential
+    # network calls for a 500-case run**, awaited one at a time while this
+    # request holds a database transaction open. At 20ms each that is twenty
+    # seconds of a pool connection; with Temporal slow or unreachable it is the
+    # per-call timeout multiplied by a thousand, and the request dies at the
+    # gateway with the transaction still open. One authorised operator clicking
+    # one button could exhaust the pool.
+    #
+    # Skipping a signal is SAFE by construction and `_signal_lifecycle` says so:
+    # both workflows rescan and poll regardless, so a signal that never lands
+    # only delays. That is what makes a time budget the right answer rather than
+    # a compromise — the worst case is a case advancing on its poll interval
+    # instead of instantly.
+    await _flush_signals(request, session, to_signal)
+
+    succeeded = sum(1 for r in results if r.ok)
+    return {
+        "action": body.action,
+        "requested": len(case_ids),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": [r.as_dict() for r in results],
+    }

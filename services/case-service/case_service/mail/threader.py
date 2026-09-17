@@ -41,16 +41,35 @@ def build_references_chain(in_reply_to: Optional[str], existing_refs: list) -> l
     return chain
 
 
+async def _visible_to_mailbox(session: AsyncSession, case, tenant_id) -> bool:
+    """Is this case one the receiving mailbox's tenant may attach mail to?
+
+    The same rule as a case read (`case_visible_to`): a case owned by another
+    tenant never; a case with no tenant yes, unless strict reads are on. A
+    mailbox with no tenant is the platform-default tenant, never every tenant.
+    """
+    from case_service.tenancy.identity import case_visible_to
+
+    return await case_visible_to(session, case.tenant_id, tenant_id)
+
+
 async def resolve_case_id_from_message(
     session: AsyncSession,
     *,
     in_reply_to: Optional[str],
     references: list[str] | None,
     subject: Optional[str],
+    tenant_id: Optional[str] = None,
 ) -> Optional[uuid.UUID]:
-    """Match an inbound email to a case.
+    """Match an inbound email to a case **of the receiving mailbox's tenant**.
 
     Order: in_reply_to + references → subject tag.
+
+    Until 2026-09-17 neither step looked at the tenant: a message id or a subject
+    tag that pointed at another tenant's case attached the mail to it, so a
+    mailbox of tenant A could write into tenant B's case — and a sender who knew
+    or guessed a case tag could aim it. `tenant_id` is the receiving account's
+    tenant; a candidate case outside it is skipped, not matched.
     """
     from velaris_shared.db.models import EmailMessageModel, CaseInstanceModel
 
@@ -63,16 +82,22 @@ async def resolve_case_id_from_message(
         q = select(EmailMessageModel).where(EmailMessageModel.message_id.in_(candidates))
         res = await session.execute(q)
         for m in res.scalars().all():
-            if m.case_id is not None:
+            if m.case_id is None:
+                continue
+            case = await session.get(CaseInstanceModel, m.case_id)
+            if case is not None and await _visible_to_mailbox(session, case, tenant_id):
                 return m.case_id
 
     short = extract_subject_tag(subject or "")
     if short:
         q2 = select(CaseInstanceModel).where(
             cast(CaseInstanceModel.id, SAString).ilike(f"{short}%")
-        ).limit(2)
+        ).limit(10)
         res2 = await session.execute(q2)
-        rows = list(res2.scalars().all())
+        rows = [r for r in res2.scalars().all()
+                if await _visible_to_mailbox(session, r, tenant_id)]
+        # Exactly one, among the cases this mailbox may reach. Ambiguity is not
+        # resolved by guessing.
         if len(rows) == 1:
             return rows[0].id
     return None
@@ -169,8 +194,10 @@ async def find_open_case_for_sender(
     session: AsyncSession,
     from_address: str,
     case_type_id: uuid.UUID,
+    tenant_id: Optional[str] = None,
 ) -> Optional["_CaseInstance"]:
-    """Find the most recent open case of a given type submitted by this sender."""
+    """The most recent open case of a given type submitted by this sender, among
+    the cases the receiving mailbox's tenant may reach (see `_visible_to_mailbox`)."""
     from velaris_shared.db.models import CaseInstanceModel
 
     q = (
@@ -181,6 +208,9 @@ async def find_open_case_for_sender(
             CaseInstanceModel.status.in_(_OPEN_STATUSES),
         )
         .order_by(CaseInstanceModel.created_at.desc())
-        .limit(1)
+        .limit(20)
     )
-    return (await session.execute(q)).scalar_one_or_none()
+    for row in (await session.execute(q)).scalars().all():
+        if await _visible_to_mailbox(session, row, tenant_id):
+            return row
+    return None

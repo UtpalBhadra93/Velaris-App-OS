@@ -86,7 +86,10 @@ async def start_worker(
 async def stop_worker(worker: Worker) -> None:
     """Gracefully shut down a running worker."""
     logger.info("temporal_worker_stopping")
-    worker.shutdown()
+    # `Worker.shutdown()` is a coroutine: unawaited, the engine logged
+    # "temporal_worker_stopped" while the worker was still running, and Python
+    # warned about a never-awaited coroutine on every shutdown (2026-09-17).
+    await worker.shutdown()
     logger.info("temporal_worker_stopped")
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Renew the internal service certificates before they expire (roadmap #18).
 #
-#   deploy/tls/rotate-internal-certs.sh [--force] [--days-before N]
+#   deploy/tls/rotate-internal-certs.sh [--force] [--days-before N] [--no-reload]
 #
 # Run daily by velaris-cert-rotate.timer. Renews any leaf within N days of
 # expiry (default 21), leaves the CA alone, then restarts what has to reload to
@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_DIR="${VELARIS_INTERNAL_TLS_DIR:-$SCRIPT_DIR/certs}"
 DAYS_BEFORE=21
 LEAF_DAYS=90
+NO_RELOAD=0
 FORCE=0
 CHECK_ONLY=0
 
@@ -35,6 +36,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1 ;;
     --check) CHECK_ONLY=1 ;;
+    # Renew and stop there. Used by the launch path, which calls this BEFORE a
+    # service starts: there is nothing running to restart, and restarting the
+    # other three mid-boot would fight systemd for control of a starting unit.
+    --no-reload) NO_RELOAD=1 ;;
     --days-before) DAYS_BEFORE="$2"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -100,12 +105,25 @@ EXT
   mv "$CERT_DIR/${name}.key.new" "$CERT_DIR/${name}.key"
   mv "$CERT_DIR/${name}.crt.new" "$CERT_DIR/${name}.crt"
   chmod 600 "$CERT_DIR/${name}.key"; chmod 644 "$CERT_DIR/${name}.crt"
+  # The timer runs this as root so it can restart the services afterwards, which
+  # would leave the new files root-owned — and the services do NOT run as root,
+  # so they could not read a 0600 key they had just been handed. Give them back
+  # to whoever owns the directory, which is the account that made the CA.
+  if [ "$(id -u)" = 0 ]; then
+    owner="$(stat -c '%U:%G' "$CERT_DIR")"
+    chown "$owner" "$CERT_DIR/${name}.key" "$CERT_DIR/${name}.crt" 2>/dev/null || true
+  fi
   rm -f "$CERT_DIR/${name}.csr" "$CERT_DIR/${name}.ext"
   RENEWED=$((RENEWED + 1))
 done
 
 if [ "$RENEWED" = 0 ]; then
   echo "Nothing due."
+  exit 0
+fi
+
+if [ "$NO_RELOAD" = 1 ]; then
+  echo "Renewed ${RENEWED} certificate(s); not reloading (--no-reload)."
   exit 0
 fi
 

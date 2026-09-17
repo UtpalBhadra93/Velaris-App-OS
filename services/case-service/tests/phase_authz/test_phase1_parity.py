@@ -146,6 +146,14 @@ class TestBypasses:
             # for the first time by intent rather than by discovery. A bot is
             # developer work; a channel conversation is casework.
             ("developer", {"marketplace.packages.publish", "marketplace.catalogue.read",
+                           # 2026-09-04: F-11. Authoring a process fragment is
+                           # developer work — it is a building block every
+                           # future plan may be composed from. Reading plans
+                           # comes with it; CONFIRMING one does not, because the
+                           # author of a fragment may not be the person who
+                           # consents to a process built from it.
+                           "intent.fragments.read", "intent.fragments.write",
+                           "intent.plans.read",
                            "platform.dbmanager.read", "platform.dbmanager.reauth",
                            "devconn.namespace.register",
                            "bots.definitions.read", "bots.definitions.write",
@@ -167,12 +175,40 @@ class TestBypasses:
                            "deploy.packages.write", "deploy.runs.read",
                            "deploy.windows.read",
                            "apps.packages.read", "apps.packages.write",
+                           # 2026-08-28: HxArbiter. Reading policy and running a
+                           # what-if change nothing — a developer needs both to
+                           # know why a call was refused. `policies.write`,
+                           # `policies.activate` and `namespaces.promote` are
+                           # NOT here: authoring a rule the whole platform obeys,
+                           # putting it into effect, and switching a namespace
+                           # from shadow to enforce are not developer work.
+                           "arbiter.policies.read", "arbiter.simulate.run",
+                           # 2026-09-01: F-00 agent identity. A developer wiring
+                           # a worker needs to see which agents exist and what
+                           # each may hold — the slug is what their code names.
+                           # Creating one, changing its status and minting it a
+                           # token are NOT here: an agent principal, and the
+                           # authority handed to it, are an operator's to grant.
+                           "agents.registry.read",
+                           # 2026-09-01: F-04. A developer rehearses a change
+                           # — that is ordinary devops work. Setting the
+                           # thresholds and overriding a failed gate are not.
+                           "deploy.simulation.run",
                            # 2026-08-21: Calendar. A developer can see who is
                            # away — a build waits on people too — but records
                            # nobody's leave and approves none.
                            "calendar.absences.read",
-                           "calendar.events.read", "calendar.events.write"}),
-            ("finance", {"finance.details.read"}),
+                           "calendar.events.read", "calendar.events.write",
+                           # A developer can see WHICH calendars are subscribed
+                           # to — a feed that has been failing is an operational
+                           # fact — but subscribes to none, and the URL is a
+                           # capability they are not shown.
+                           "calendar.subscriptions.read"}),
+            ("finance", {"finance.details.read",
+                         # 2026-09-01: F-02. Finance reads what a case cost;
+                         # it does not set the rates, and it does not gain the
+                         # governance ledger.
+                         "costing.decisions.read"}),
             ("manager", {"marketplace.catalogue.read", "analytics.reports.read",
                          "design.escalation.read", "risk.assessment.read", "risk.outcomes.write",
                          "risk.rules.configure", "risk.scores.review", "casework.records.any",
@@ -189,14 +225,146 @@ class TestBypasses:
                          # — contracted hours are an admin change.
                          "calendar.absences.read", "calendar.absences.write",
                          "calendar.absences.approve",
-                         "calendar.events.read", "calendar.events.write"}),
+                         "calendar.events.read", "calendar.events.write",
+                         # 2026-08-27: importing an .ics. Its own action rather
+                         # than part of `events.write` — an upload writes many
+                         # rows from a file this platform did not produce, and
+                         # it can request leave. Subscribing is separated again,
+                         # because it makes this SERVER fetch a URL a user chose.
+                         "calendar.imports.write",
+                         "calendar.subscriptions.read",
+                         "calendar.subscriptions.write",
+                         # 2026-09-01: F-01. A manager reviews AI proposals for
+                         # the same reason a case worker does; the governance
+                         # read is still not theirs.
+                         "ai_ledger.verdicts.write",
+                         # 2026-09-01: F-02. What a case cost is a management
+                         # number. Setting the RATES is not — that stays admin.
+                         "costing.decisions.read",
+                         # 2026-09-02: F-05. A manager supervises the mixed
+                         # roster and is the human in the routing-weight loop.
+                         # ENROLLING an agent is a staffing decision and stays
+                         # admin.
+                         "agents.workforce.read", "agents.workforce.approve",
+                         # 2026-09-04: F-07. A manager may see what models left
+                         # this install and what was taken in. Publishing and
+                         # installing both stay admin — one sends this tenant's
+                         # learned aggregates outside, the other accepts a
+                         # stranger's.
+                         "marketplace.models.read",
+                         # 2026-09-04: F-08. A manager may read what the
+                         # platform proposed to do to itself. Approving and
+                         # rolling back stay with admin and security.
+                         "healing.episodes.read",
+                         # 2026-09-04: F-09. A manager dispatches a case to an
+                         # enrolled counterparty and reads the trail. ENROLLING
+                         # one — pinning a key, setting the ceiling they may
+                         # ever be granted — stays with admin and security.
+                         "handoff.counterparties.read", "handoff.orders.issue",
+                         "handoff.orders.read",
+                         # 2026-09-04: F-10. A manager dispatches to a field
+                         # node and reads the fleet; REGISTERING one — pinning
+                         # its key, fixing its charter, ordering a shred — stays
+                         # with admin and security.
+                         "field.nodes.read", "field.nodes.dispatch",
+                         "field.conflicts.resolve",
+                         # 2026-09-04: F-11. A manager reads the fragment
+                         # library, plans, and CONFIRMS — the consent that binds
+                         # the hash. Authoring a fragment stays with developers.
+                         "intent.fragments.read", "intent.plans.read",
+                         "intent.plans.create", "intent.plans.confirm",
+                         # 2026-09-04: F-12. A manager negotiates and may close
+                         # the seam; APPROVING a contract — agreeing to be bound
+                         # by it — stays with admin.
+                         "negotiate.contracts.read", "negotiate.contracts.propose",
+                         "negotiate.contracts.suspend",
+                         # 2026-09-04: item 12. A manager does everything a rep
+                         # does, and may MERGE two profiles.
+                         "engage.profile.read", "engage.profile.write",
+                         "engage.profile.reveal", "engage.profile.merge",
+                         "engage.interactions.read", "engage.interactions.write",
+                         "engage.actions.on_behalf",
+                         # 2026-09-07: migration 198. A manager acts on cases,
+                         # so they hold the five action privileges the six
+                         # removed routes required — this is the legacy role set
+                         # of `case.update`, unwidened. `case.actions.configure`
+                         # is NOT here: authoring a tenant's status set decides
+                         # what every case worker may do next, which is an
+                         # administrator's job rather than case work.
+                         "case.actions.update", "case.actions.close",
+                         "case.actions.reopen", "case.actions.assign",
+                         "case.actions.note",
+                         # 2026-09-08, §7 answered. A manager may seal a
+                         # finished case, raise one up its escalation tree,
+                         # split work out of it and hand it to another queue or
+                         # group. `delete` is NOT here — hiding a case from
+                         # everyone is an administrator's act.
+                         "case.actions.archive", "case.actions.escalate",
+                         "case.actions.split", "case.actions.transfer",
+                         # 2026-09-17. A manager moves a selection of cases
+                         # through a stage. A case worker does not by default:
+                         # it fires SLAs and workflow steps per case.
+                         "case.actions.bulk_stage",
+                         # 2026-09-17: item 12 P5. A supervisor reads the
+                         # floor's numbers; naming the wrap-up codes is admin.
+                         "engage.analytics.read"}),
             ("case_worker", {"risk.assessment.read",
                              "channels.conversations.read", "channels.conversations.write",
                              "channels.cti.pop", "bots.jobs.read", "bots.jobs.run",
                              # Their own leave, and the team's availability. They
                              # approve nothing.
                              "calendar.absences.read", "calendar.absences.write",
-                             "calendar.events.read", "calendar.events.write"}),
+                             "calendar.events.read", "calendar.events.write",
+                             # Their own calendar, imported from their own
+                             # Outlook export — bounded by `_may_write_for`.
+                             "calendar.imports.write",
+                             "calendar.subscriptions.read",
+                             "calendar.subscriptions.write",
+                             # 2026-09-01: F-01. The person who accepts or
+                             # rejects an AI proposal is the case worker looking
+                             # at it. Recording that is case work — it does NOT
+                             # come with `ai_ledger.records.read`, which is the
+                             # auditor's governance surface.
+                             "ai_ledger.verdicts.write",
+                             # 2026-09-04: F-10. Choosing between a field value
+                             # and the hub's is case work — the person who
+                             # understands the case decides it, and needs no
+                             # authority over the node fleet to do so.
+                             "field.conflicts.resolve",
+                             # 2026-09-04: F-11. Stating an intent composes and
+                             # shows a plan; it changes nothing until somebody
+                             # with `plans.confirm` agrees to it.
+                             "intent.plans.create",
+                             # 2026-09-04: item 12. The rep desk is case work —
+                             # the person on the call reads the 360, verifies,
+                             # reveals a field with a reason, and raises work in
+                             # the customer's name. MERGE is not here: moving one
+                             # person's history onto another's screen is a
+                             # supervisor's decision.
+                             "engage.profile.read", "engage.profile.write",
+                             "engage.profile.reveal",
+                             "engage.interactions.read",
+                             "engage.interactions.write",
+                             "engage.actions.on_behalf",
+                             # 2026-09-07: migration 198. Each of the five
+                             # carries the legacy role set of `case.update` —
+                             # what the six removed routes actually required —
+                             # so a case worker holds exactly what they held
+                             # before. Widening here would have granted, on
+                             # upgrade, something no route granted before.
+                             # `case.actions.configure` is deliberately absent:
+                             # authoring a tenant's status set decides what
+                             # every case worker may do next, which is an
+                             # administrator's job rather than case work.
+                             "case.actions.update", "case.actions.close",
+                             "case.actions.reopen", "case.actions.assign",
+                             "case.actions.note",
+                             # 2026-09-08. A case worker escalates, splits and
+                             # transfers — all ordinary case work. `archive`
+                             # (sealing) and `delete` (hiding) are not: both
+                             # take a case away from everybody else.
+                             "case.actions.escalate", "case.actions.split",
+                             "case.actions.transfer"}),
         ):
             granted = {n for n in ACTIONS if backend.evaluate(_Subject([role]), n).allow}
             assert granted == expected, f"{role}: {granted ^ expected}"
@@ -302,7 +470,7 @@ class TestRegistry:
         with a phase."""
         endpoint = [a for a in ACTIONS.values() if a.kind == "endpoint"]
         module = [a for a in ACTIONS.values() if a.kind == "module"]
-        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1 + 4 + 14 + 6, (
+        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1 + 4 + 14 + 6 + 1 + 2 + 7 + 4 + 1 + 5 + 4 + 2 + 2 + 3 + 3 + 3 + 3 + 4 + 4 + 5 + 4 + 7 + 6 + 5 + 2 + 1 + 1 + 1 + 2 + 1, (
             f"{len(endpoint)} endpoint actions — expected 49 (Phase 0) + 19 "
             f"(Phase 3.5) + 16 (Phase 4 step 2) + 6 (ungated sweep) + 15 "
             f"(Phase 5: the case layer's ACTION_ROLES table + the ReBAC bypass) "
@@ -319,7 +487,147 @@ class TestRegistry:
             f"a scheduling input, so read/write/approve are split and the kind "
             f"and note are filtered per caller) + 2 (calendar.events.* — team "
             f"meetings, which HxMeet could not hold because its sessions are "
-            f"case-scoped)")
+            f"case-scoped) + 7 (arbiter.* — HxArbiter ARB-A: reading policy is "
+            f"split from writing it, writing from ACTIVATING it (a draft is not "
+            f"a decision, and four-eyes has nothing to attach to if the two are "
+            f"one privilege), and promoting a namespace ceiling — the control "
+            f"that turns shadow into enforcement across a whole class of actions "
+            f"at once — is admin-only and separate from all three) + 4 "
+            f"(arbiter.* — ARB-B..F: reading PARITY is separated from reading "
+            f"policy because a reviewer signs off on the evidence, which is a "
+            f"different job from authoring the rule it is about; regenerating a "
+            f"legacy MIRROR is separate again because it rewrites the oracle "
+            f"the evidence is measured against; and drafting a policy in words "
+            f"is separated from APPROVING one, or four-eyes has nothing to "
+            f"attach to) + 1 (arbiter.upkeep.read — ARB-I: maintenance "
+            f"findings over the live policy set. Read-only in the strongest "
+            f"sense, and not folded into `policies.read` because it also "
+            f"counts decisions, nor into `decisions.read` because somebody "
+            f"holding neither still needs telling that their policies stopped "
+            f"compiling) + 5 (agents.* — F-00 agent identity: reading the "
+            f"registry is split from writing it; SUSPENDING an agent is split "
+            f"from both, so an incident responder can stop one at 3am without "
+            f"also being able to create one or widen a ceiling; and minting a "
+            f"token — authority handed to something that acts unattended — is "
+            f"admin-only and separate from revoking one) + 4 (ai_ledger.* — F-01 "
+            f"AI decision ledger: reading the ledger is separated from every "
+            f"case action, so an auditor establishes HOW decisions were made "
+            f"without thereby reading what they were made about; recording a "
+            f"VERDICT is case work and is not implied by that read, or an "
+            f"auditor could manufacture the oversight they are auditing; and "
+            f"exporting the dossier and verifying the seal are their own "
+            f"actions) + 2 (costing.* — F-02 cost per decision: setting a "
+            f"MODEL's token price is separate from the LABOUR rate, because "
+            f"the platform-wide default row is inherited by every tenant that "
+            f"has not priced that model itself; and reading a cost breakdown "
+            f"is case-adjacent — it shows how a case was worked — so it sits "
+            f"with the people who already see case analytics) + 2 "
+            f"(compliance.proofs.* — "
+            f"F-03 counterfactual compliance proofs: GENERATING one replays a "
+            f"candidate policy across the whole recorded caseload, which is "
+            f"the most expensive read this platform offers and whose cohort "
+            f"definition is itself a statement about what exists; reading one "
+            f"back is an auditor's job and producing one is an operator's) + 3 "
+            f"(deploy.simulation.* — F-04's gate: RUNNING a rehearsal is "
+            f"ordinary devops work; CONFIGURING the thresholds decides what "
+            f"every future promotion must clear; and OVERRIDING a failed gate "
+            f"is the one control that lets a change through after its "
+            f"rehearsal said not to, so bypassing the gate and approving the "
+            f"deployment are two grants rather than one) + 3 "
+            f"(agents.workforce.* — F-05: reading the mixed roster is "
+            f"supervision; ENROLLING an agent decides that a non-human may "
+            f"hold case work at all, which is a staffing decision; and "
+            f"approving a routing-weight change is separated from both, "
+            f"because a system adjusting its own routing from its own "
+            f"performance data is a feedback loop nobody is steering) + 3 "
+            f"(marketplace.models.* — F-07 the sovereign model marketplace: "
+            f"PUBLISHING sends this tenant's learned aggregates — the "
+            f"per-feature means and standard deviations over real cases — "
+            f"outside the install, while INSTALLING accepts a stranger's, and "
+            f"an operator may very reasonably want one and not the other; "
+            f"reading what left here and what was taken in is an auditor's "
+            f"question and implies neither power) + 3 "
+            f"(healing.episodes.* — F-08 self-healing: READING the episode log "
+            f"is governance, and establishes what the platform proposed to do "
+            f"to itself without thereby being able to do any of it; APPROVING "
+            f"is the one human decision in the loop AND applies the change, "
+            f"because a second 'now really do it' step would be either a "
+            f"second approval or a rubber stamp; and ROLLING BACK is separate "
+            f"because the person undoing a healing change at 3 a.m. is usually "
+            f"not the person who approved it at 2 p.m.) + 4 "
+            f"(handoff.* — F-09 agent-to-agent handoff, on OUR side only: the "
+            f"counterparty's side is authenticated by the work order token "
+            f"alone, because an external party never holds a role in this "
+            f"platform's vocabulary. ENROLLING is separated from ISSUING "
+            f"because they are decisions of different size — enrolling pins an "
+            f"organisation's key and sets the ceiling it may EVER be granted, "
+            f"while issuing hands one case to an already-trusted party for a "
+            f"few hours, and a dispatcher who may do the second should not "
+            f"thereby be able to add a new organisation to the list of who "
+            f"exists) + 4 "
+            f"(field.* — F-10 offline field operations: registering a node pins "
+            f"a key and fixes the CHARTER — what that device may ever hold — "
+            f"while dispatching hands it cases that charter already admits, so "
+            f"the two follow the blast radius rather than the workflow; and "
+            f"RESOLVING a field/hub conflict is case work rather than fleet "
+            f"work, so the person who understands the case needs no authority "
+            f"over nodes to decide it) + 5 "
+            f"(intent.* — F-11 intent-based execution: WRITING a fragment is "
+            f"separated from confirming a plan because a fragment is a building "
+            f"block every future plan may be composed from — an authoring "
+            f"decision with a long tail — while confirming is a decision about "
+            f"one process now; and CREATING a plan is separated from confirming "
+            f"it because planning composes and shows and changes nothing, while "
+            f"confirming is the consent that binds the hash of what will run) "
+            f"+ 4 (negotiate.* — F-12 process-as-negotiation: SUSPENDING is its "
+            f"own action, and that is the important split — the person closing "
+            f"a seam during an incident is not necessarily the person who "
+            f"approved the contract, and a kill switch that requires the "
+            f"approver's authority is a kill switch nobody can reach at 3 a.m.) "
+            f"+ 5 (case.actions.* — §7 answered 2026-09-08: archive is "
+            f"separated from close because it is the action after which nothing "
+            f"else may happen; delete is the only destructive one and is "
+            f"soft; escalate reaches OUTSIDE the case and notifies people not "
+            f"working it; split CREATES a case, which is not implied by being "
+            f"allowed to change one; transfer moves who holds it) "
+            f"+ 6 (case.actions.* — migration 198: one privilege per action "
+            f"GROUP rather than one per action, because `close`, `resolve` and "
+            f"`cancel` all end a case and no coherent grant permits one and "
+            f"refuses the others; and `configure` is separate from all five "
+            f"because authoring a tenant's status set decides what every case "
+            f"worker may do next, which is not itself case work) "
+            f"+ 7 (engage.* — item 12, the rep desk: READING a profile is not "
+            f"reading a FIELD, so `reveal` is its own action — 'may see that "
+            f"this person exists' and 'may read their national id' are held by "
+            f"different people on most floors; MERGE is separate because it is "
+            f"the one operation that moves one person's history onto another's "
+            f"screen; and raising work in a customer's NAME is an act of "
+            f"attribution a 360 reader does not automatically hold) "
+            f"+ 2 (audit.stream.* — market gap A3, streaming security events "
+            f"to a SIEM: READ is separated from WRITE because seeing where "
+            f"the audit goes, and whether it is arriving, is a security "
+            f"reviewer's job, while POINTING it somewhere else decides who "
+            f"sees the platform's security events at all — the one change "
+            f"that can make an install go quiet without anything appearing "
+            f"to break) "
+            f"+ 1 (security.shield.respond — roadmap #25: HxShield computed an "
+            f"action for every incident since it shipped and nothing ever "
+            f"performed one. Approving a response suspends an account or kills "
+            f"every session, which is not the same job as reading the incident "
+            f"queue that `security.shield.access` already covers) "
+            f"+ 1 (case.actions.bulk_stage — 2026-09-17: moving many cases "
+            f"into a stage fires SLAs, on_enter_status and workflow signals "
+            f"per case, so it is not implied by `case.update` on one case) "
+            f"+ 1 (ai.index_queue.read — 2026-09-17: the tenant-wide document "
+            f"index queue names documents across every case, so it is not the "
+            f"per-case listing's case access) "
+            f"+ 2 (engage.analytics.read, engage.config.write — item 12 P5: "
+            f"floor analytics is a supervisor's view; naming wrap-up codes "
+            f"changes what every rep may record) "
+            f"+ 1 (case.actions.transfer_tenant — 2026-09-17: moving a case into "
+            f"another tenant's data is not `transfer`, which every case worker "
+            f"holds; admin only, and still needs a second admin and the "
+            f"destination's acceptance)")
         assert len(module) == 18, (
             f"{len(module)} module actions — 12 from Phase 0, 6 from Phase 4")
 

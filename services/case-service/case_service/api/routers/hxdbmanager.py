@@ -877,6 +877,48 @@ async def dbview_reauth(
     if not ok:
         raise coded(401, DBM_REAUTH_401, "Incorrect password")
 
+    # ── HxArbiter PEP (ARB-C, auth namespace) ────────────────────────────────
+    # The `auth` namespace has been registered since migration 177 and had no
+    # enforcement point, so `pep.ACTION_SESSION_ELEVATE` was a constant with no
+    # caller and §11's "auth step-up" was a promise the code did not keep.
+    #
+    # This is the platform's real elevation: fifteen minutes of read access to
+    # account numbers and IBANs, unlocked by a password. A tenant can now say
+    # "nobody elevates from outside our region", or "not without recent MFA" —
+    # things a role cannot express.
+    #
+    # NG1 holds: it runs AFTER the privilege check and the password check, so
+    # it can only further restrict what they already allowed, never grant. The
+    # namespace defaults to ALLOW and ships clamped to shadow, so an install
+    # with no policy sees no change whatever.
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+
+        if not await _arb_pep.check(
+            session,
+            tenant_id=str(getattr(current_user, "tenant_id", None) or "default"),
+            action=_arb_pep.ACTION_SESSION_ELEVATE,
+            subject_id=str(current_user.user_id),
+            subject_kind=_arb_pep.SubjectKind.USER,
+            subject_attrs={"roles": list(getattr(current_user, "roles", []) or [])},
+            resource_kind="session",
+            resource_id=str(current_user.user_id),
+            context={"purpose": "dbview_sensitive_read",
+                     "ttl_seconds": _DBVIEW_ELEVATION_TTL_S},
+            legacy_allowed=True,
+            claimed_by="hxdbmanager.reauth",
+        ):
+            raise coded(
+                403, DBM_ROLE_403,
+                "VEL-ARB-ELEVATE-DENIED-403: policy refuses session elevation "
+                "for this account.")
+    except HTTPException:
+        raise
+    except Exception as _arb_exc:                               # noqa: BLE001
+        # Never let the observer break the observed.
+        log.warning("hxdbmanager: HxArbiter elevation PEP unavailable: %s",
+                       _arb_exc)
+
     expiry = time.monotonic() + _DBVIEW_ELEVATION_TTL_S
     async with _DBVIEW_ELEVATION_LOCK:
         _DBVIEW_ELEVATIONS[current_user.user_id] = expiry

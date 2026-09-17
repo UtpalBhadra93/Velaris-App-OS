@@ -196,21 +196,21 @@ export default function DocumentManager() {
   }, [focusedDocId]);
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
+    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", color: "var(--text-primary)", background: "var(--bg-root)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
       {error && (
-        <div style={{ color: "#c33", marginBottom: 12, whiteSpace: "pre-wrap" }}>
+        <div style={{ color: "var(--status-failed)", marginBottom: 12, whiteSpace: "pre-wrap" }}>
           ⚠ {error}
           <ErrorCodeLink error={errorObj} componentKey="documents" />
         </div>
       )}
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 20 }}>
-        <label style={{ fontSize: 13, color: "#555" }}>Case ID:</label>
+        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>Case ID:</label>
         <input
           value={caseId}
           onChange={(e) => setCaseId(e.target.value)}
           placeholder="UUID of a case"
-          style={{ padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4, width: 320, fontFamily: "ui-monospace, monospace" }}
+          style={{ padding: "6px 10px", border: "1px solid var(--border-default)", borderRadius: 4, width: 320, fontFamily: "ui-monospace, monospace", background: "var(--bg-input)", color: "var(--text-primary)" }}
         />
         <button onClick={loadDocs} style={btn()}>Load</button>
         <label style={{ ...btn(), cursor: busy ? "not-allowed" : "pointer" }}>
@@ -227,13 +227,13 @@ export default function DocumentManager() {
             <button
               onClick={onDeleteSelectedDocs}
               disabled={selectedDocIds.size === 0 || busy}
-              style={{ ...btn(), color: selectedDocIds.size === 0 ? "#aaa" : "#c33" }}
+              style={{ ...btn(), color: selectedDocIds.size === 0 ? "var(--text-muted)" : "var(--status-failed)" }}
             >
               Delete selected ({selectedDocIds.size})
             </button>
           </div>
           {docs.length > 0 && (
-            <label style={{ fontSize: 12, color: "#666", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <input
                 type="checkbox"
                 checked={selectedDocIds.size === docs.length && docs.length > 0}
@@ -242,7 +242,7 @@ export default function DocumentManager() {
               Select all
             </label>
           )}
-          {docs.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>No documents. Load a case or upload.</div>}
+          {docs.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No documents. Load a case or upload.</div>}
           {docs.map((d) => {
             const isSel = selectedDocIds.has(d.id);
             const isFocus = focusedDocId === d.id;
@@ -251,9 +251,9 @@ export default function DocumentManager() {
                 key={d.id}
                 style={{
                   padding: 10,
-                  border: `2px solid ${isFocus ? "#4a6cf7" : "#eee"}`,
+                  border: `2px solid ${isFocus ? "var(--accent)" : "var(--border-subtle)"}`,
                   borderRadius: 4, marginBottom: 8,
-                  background: isSel ? "#fff8e0" : isFocus ? "#eef3ff" : "#fff",
+                  background: isSel ? "var(--accent-dim)" : isFocus ? "var(--bg-card-hover)" : "var(--bg-card)",
                   display: "flex", alignItems: "center", gap: 10,
                 }}
               >
@@ -268,10 +268,10 @@ export default function DocumentManager() {
                   style={{ flex: 1, cursor: "pointer" }}
                 >
                   <div style={{ fontWeight: 600 }}>{d.filename}</div>
-                  <div style={{ fontSize: 12, color: "#666" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
                     {d.content_type} · v{d.current_version} · {new Date(d.created_at).toLocaleString()}
                     {d.portal_source === "customer" && (
-                      <span style={{ marginLeft: 8, color: "#0d9488", fontWeight: 600 }}>[Customer Upload]</span>
+                      <span style={{ marginLeft: 8, color: "var(--accent-text)", fontWeight: 600 }}>[Customer Upload]</span>
                     )}
                   </div>
                 </div>
@@ -281,9 +281,9 @@ export default function DocumentManager() {
                   style={{
                     padding: "3px 8px", fontSize: 11, border: "1px solid",
                     borderRadius: 4, cursor: "pointer", flexShrink: 0,
-                    borderColor: d.portal_visible ? "#16a34a" : "#d1d5db",
-                    background: d.portal_visible ? "#f0fdf4" : "#f9fafb",
-                    color: d.portal_visible ? "#16a34a" : "#6b7280",
+                    borderColor: d.portal_visible ? "var(--status-completed)" : "var(--border-default)",
+                    background: d.portal_visible ? "rgba(13,148,136,0.12)" : "var(--bg-elevated)",
+                    color: d.portal_visible ? "var(--status-completed)" : "var(--text-secondary)",
                     fontWeight: 600,
                   }}
                 >
@@ -292,7 +292,7 @@ export default function DocumentManager() {
               </div>
             );
           })}
-          <div style={{ fontSize: 11, color: "#888", marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
             Tip: checkbox = select for bulk delete; click row body to view details.
           </div>
         </section>
@@ -300,12 +300,12 @@ export default function DocumentManager() {
         {/* ── Details + versions with checkboxes ── */}
         <section style={card}>
           <h2 style={h2}>Details</h2>
-          {!focusedDoc && <div style={{ color: "#888", fontSize: 13 }}>Click a document row to view details.</div>}
+          {!focusedDoc && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Click a document row to view details.</div>}
           {focusedDoc && (
             <div>
               <div style={{ fontSize: 14, marginBottom: 12 }}>
                 <strong>{focusedDoc.filename}</strong><br />
-                <span style={{ color: "#666", fontSize: 12 }}>{focusedDoc.id}</span>
+                <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>{focusedDoc.id}</span>
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
                 {/* Buttons, not <a href>: browser navigation sends no
@@ -336,7 +336,7 @@ export default function DocumentManager() {
                 <button
                   onClick={onDeleteSelectedVersions}
                   disabled={selectedVersions.size === 0 || busy}
-                  style={{ ...btn(), color: selectedVersions.size === 0 ? "#aaa" : "#c33" }}
+                  style={{ ...btn(), color: selectedVersions.size === 0 ? "var(--text-muted)" : "var(--status-failed)" }}
                 >
                   Delete selected ({selectedVersions.size})
                 </button>
@@ -353,7 +353,7 @@ export default function DocumentManager() {
                 </thead>
                 <tbody>
                   {versions.map((v) => (
-                    <tr key={v.id} style={{ background: selectedVersions.has(v.version) ? "#fff8e0" : undefined }}>
+                    <tr key={v.id} style={{ background: selectedVersions.has(v.version) ? "var(--accent-dim)" : undefined }}>
                       <td style={td}>
                         <input
                           type="checkbox"
@@ -364,7 +364,7 @@ export default function DocumentManager() {
                       <td style={td}>
                         {v.version}
                         {v.version === focusedDoc.current_version && (
-                          <span style={{ marginLeft: 4, fontSize: 10, color: "#2a7" }}>(current)</span>
+                          <span style={{ marginLeft: 4, fontSize: 10, color: "var(--status-completed)" }}>(current)</span>
                         )}
                       </td>
                       <td style={td}>{fmtBytes(v.size_bytes)}</td>
@@ -398,10 +398,10 @@ const CHECKLIST_ITEMS: { key: string; label: string }[] = [
 ];
 
 const statusColor = (s: string) =>
-  s === "passed" ? "#16a34a" : s === "failed" ? "#c33" : "#b45309";
+  s === "passed" ? "var(--status-completed)" : s === "failed" ? "var(--status-failed)" : "var(--status-running)";
 
 function CheckChip({ c }: { c: DocCheck }) {
-  const color = c.result === "pass" ? "#16a34a" : c.result === "fail" ? "#c33" : "#888";
+  const color = c.result === "pass" ? "var(--status-completed)" : c.result === "fail" ? "var(--status-failed)" : "var(--text-muted)";
   return (
     <span title={c.detail} style={{
       fontSize: 11, padding: "1px 6px", borderRadius: 3, marginRight: 4,
@@ -454,7 +454,7 @@ function VerificationSection({ docId }: { docId: string }) {
   const allTicked = CHECKLIST_ITEMS.every((i) => checklist[i.key]);
 
   return (
-    <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
+    <div style={{ marginTop: 16, borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h3 style={{ fontSize: 14, margin: 0 }}>
           Verification
@@ -471,24 +471,24 @@ function VerificationSection({ docId }: { docId: string }) {
       </div>
 
       {open && (
-        <div style={{ marginTop: 10, padding: 12, border: "1px solid #e3e3e8", borderRadius: 6, background: "#fafafa" }}>
-          <div style={{ fontSize: 11, color: "#888", marginBottom: 10 }}>
+        <div style={{ marginTop: 10, padding: 12, border: "1px solid var(--border-default)", borderRadius: 6, background: "var(--bg-elevated)" }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
             Automated checks (file integrity, image quality, MRZ, expiry) run on submit.
             They are evidence attached to your verdict — a document cannot be passed over a failing check.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <label style={{ fontSize: 12, color: "#555" }}>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>
               MRZ line 2 (optional)
               <input value={mrz} onChange={(e) => setMrz(e.target.value)}
                 placeholder="L898902C36UTO7408122F1204159…"
                 style={{ width: "100%", boxSizing: "border-box", marginTop: 3, padding: "5px 8px",
-                  border: "1px solid #ccc", borderRadius: 4, fontFamily: "ui-monospace, monospace", fontSize: 12 }} />
+                  border: "1px solid var(--border-default)", borderRadius: 4, fontFamily: "ui-monospace, monospace", fontSize: 12, background: "var(--bg-input)", color: "var(--text-primary)" }} />
             </label>
-            <label style={{ fontSize: 12, color: "#555" }}>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>
               Expiry date (optional)
               <input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)}
                 style={{ width: "100%", boxSizing: "border-box", marginTop: 3, padding: "5px 8px",
-                  border: "1px solid #ccc", borderRadius: 4, fontSize: 12 }} />
+                  border: "1px solid var(--border-default)", borderRadius: 4, fontSize: 12, background: "var(--bg-input)", color: "var(--text-primary)" }} />
             </label>
           </div>
           <div style={{ marginBottom: 10 }}>
@@ -501,21 +501,21 @@ function VerificationSection({ docId }: { docId: string }) {
             ))}
           </div>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Notes (optional)"
-            style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", border: "1px solid #ccc",
-              borderRadius: 4, fontSize: 12, resize: "vertical", marginBottom: 10 }} />
-          {err && <div style={{ color: "#c33", fontSize: 12, marginBottom: 8, whiteSpace: "pre-wrap" }}>⚠ {err}</div>}
+            style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", border: "1px solid var(--border-default)",
+              borderRadius: 4, fontSize: 12, resize: "vertical", marginBottom: 10, background: "var(--bg-input)", color: "var(--text-primary)" }} />
+          {err && <div style={{ color: "var(--status-failed)", fontSize: 12, marginBottom: 8, whiteSpace: "pre-wrap" }}>⚠ {err}</div>}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button disabled={busy || !allTicked} onClick={() => submit("passed")}
               title={allTicked ? "" : "Confirm every checklist item to record a pass"}
-              style={{ ...btn(), color: "#fff", background: allTicked && !busy ? "#16a34a" : "#a7c9b2", borderColor: "transparent" }}>
+              style={{ ...btn(), color: "#fff", background: allTicked && !busy ? "var(--status-completed)" : "var(--border-strong)", borderColor: "transparent" }}>
               {busy ? "…" : "✓ Passed"}
             </button>
             <button disabled={busy} onClick={() => submit("review")}
-              style={{ ...btn(), color: "#b45309", borderColor: "#b45309", background: "#fff" }}>
+              style={{ ...btn(), color: "var(--status-running)", borderColor: "var(--status-running)", background: "var(--bg-card)" }}>
               {busy ? "…" : "Needs review"}
             </button>
             <button disabled={busy} onClick={() => submit("failed")}
-              style={{ ...btn(), color: "#c33", borderColor: "#c33", background: "#fff" }}>
+              style={{ ...btn(), color: "var(--status-failed)", borderColor: "var(--status-failed)", background: "var(--bg-card)" }}>
               {busy ? "…" : "✕ Failed"}
             </button>
           </div>
@@ -523,33 +523,33 @@ function VerificationSection({ docId }: { docId: string }) {
       )}
 
       {history.length === 0 && !open && (
-        <div style={{ color: "#888", fontSize: 12, marginTop: 8 }}>Not verified yet.</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>Not verified yet.</div>
       )}
       {history.map((v) => (
-        <div key={v.id} style={{ marginTop: 8, padding: 8, border: "1px solid #f0f0f0", borderRadius: 4 }}>
+        <div key={v.id} style={{ marginTop: 8, padding: 8, border: "1px solid var(--border-subtle)", borderRadius: 4 }}>
           <div style={{ fontSize: 12, marginBottom: 4 }}>
             <strong style={{ color: statusColor(v.status) }}>{v.status.toUpperCase()}</strong>
-            <span style={{ color: "#888", marginLeft: 8 }}>
+            <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
               {v.created_at ? new Date(v.created_at).toLocaleString() : ""} · by {v.verified_by}
             </span>
           </div>
           <div>{v.checks.map((c, i) => <CheckChip key={i} c={c} />)}</div>
-          {v.notes && <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>{v.notes}</div>}
+          {v.notes && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>{v.notes}</div>}
         </div>
       ))}
     </div>
   );
 }
 
-const card: React.CSSProperties = { background: "#fff", border: "1px solid #e3e3e8", borderRadius: 8, padding: 16 };
-const h2: React.CSSProperties = { margin: "0", fontSize: 15, color: "#333" };
-const th: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid #eee", padding: "4px 6px", color: "#666", fontWeight: 500 };
-const td: React.CSSProperties = { padding: "4px 6px", borderBottom: "1px solid #f5f5f5" };
+const card: React.CSSProperties = { background: "var(--bg-card)", border: "1px solid var(--border-default)", borderRadius: 8, padding: 16 };
+const h2: React.CSSProperties = { margin: "0", fontSize: 15, color: "var(--text-primary)" };
+const th: React.CSSProperties = { textAlign: "left", borderBottom: "1px solid var(--border-subtle)", padding: "4px 6px", color: "var(--text-secondary)", fontWeight: 500 };
+const td: React.CSSProperties = { padding: "4px 6px", borderBottom: "1px solid var(--border-subtle)" };
 
 function btn(): React.CSSProperties {
   return {
-    padding: "6px 12px", border: "1px solid #ccc", borderRadius: 4,
-    background: "#fafafa", fontSize: 13, textDecoration: "none", color: "#333",
+    padding: "6px 12px", border: "1px solid var(--border-default)", borderRadius: 4,
+    background: "var(--bg-elevated)", fontSize: 13, textDecoration: "none", color: "var(--text-primary)",
     display: "inline-block", cursor: "pointer",
   };
 }

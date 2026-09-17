@@ -472,53 +472,227 @@ export async function updateCaseData(
   });
 }
 
+/**
+ * Escape hatch for the case-config authoring screen.
+ *
+ * `caseRequest` is module-private on purpose — every other caller goes through a
+ * named helper so the URL shape lives in one file. The config screen is CRUD
+ * over two tables with no interesting shape of its own, and eight near-identical
+ * wrappers would be more code than the screen. This keeps the base-URL, auth and
+ * 204 handling that `caseRequest` provides.
+ */
+export async function caseConfigRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  return caseRequest<T>(path, options);
+}
+
+
+// ── Case actions (migration 198) ──────────────────────────────────────────
+//
+// Six named routes — /status, /priority, /resolve, /close, /reopen, /cancel —
+// became one dispatcher: `POST /cases/{id}/actions/{action}`. The helpers below
+// keep their names and signatures so no calling screen changes, but each is now
+// one line over the dispatcher.
+//
+// Bulk is the SAME endpoint over many ids (`bulkCaseAction`), not a second
+// implementation, which is why an action added to the registry is immediately
+// available in bulk with nothing more written here.
+
+export interface CaseActionResult {
+  case_id: string;
+  action: string;
+  ok: boolean;
+  detail?: Record<string, unknown>;
+  code?: string;
+  error?: string;
+  case?: CaseSummary;
+}
+
+export interface BulkActionResult {
+  action: string;
+  requested: number;
+  succeeded: number;
+  /** Partial success is the NORMAL outcome — always render this, never assume 0. */
+  failed: number;
+  results: CaseActionResult[];
+}
+
+export interface CaseActionDef {
+  name: string;
+  label: string;
+  privilege: string;
+  status_effect: string | null;
+  effects: string[];
+  summary: string;
+  destructive: boolean;
+  reversible_by: string | null;
+  required_params: string[];
+  allowed_from: string[];
+  /** False = the caller lacks the privilege; the button should not be offered. */
+  permitted: boolean;
+}
+
+export interface CaseStatusDef {
+  name: string;
+  label: string;
+  category: "open" | "working" | "waiting" | "terminal";
+  is_terminal: boolean;
+  is_default: boolean;
+  allowed_from: string[];
+  sort_order: number;
+  enabled: boolean;
+}
+
+/**
+ * What this operator may do, and the status set in force. Render the action bar
+ * from this.
+ *
+ * Pass `caseId` on a single-case screen: the answer then also drops the actions
+ * the case's STAGE does not offer, and carries a `stage` block so the screen can
+ * say why. Without it the answer is tenant-wide — right for a bulk bar, which
+ * spans many stages, and wrong for one case.
+ */
+export async function caseActionCatalogue(caseTypeId?: string, caseId?: string): Promise<{
+  actions: CaseActionDef[];
+  statuses: CaseStatusDef[];
+  bulk_ceiling: number;
+  /** Whether "Move to stage" may be offered — its own privilege. Absent on an older server. */
+  bulk_stage_permitted?: boolean;
+  stage?: { id: string; name: string; actions_allowed: string[] | null; on_enter_status: string | null } | null;
+}> {
+  const params = new URLSearchParams();
+  if (caseTypeId) params.set("case_type_id", caseTypeId);
+  if (caseId) params.set("case_id", caseId);
+  const q = params.toString() ? `?${params}` : "";
+  return caseRequest(`/cases/actions/catalogue${q}`);
+}
+
+export async function performCaseAction(
+  id: string,
+  action: string,
+  params: Record<string, unknown> = {},
+  reason?: string
+): Promise<CaseActionResult> {
+  return caseRequest(`/cases/${id}/actions/${action}`, {
+    method: "POST",
+    body: JSON.stringify({ params, reason }),
+  });
+}
+
+/**
+ * One action across many cases.
+ *
+ * Over the ceiling the server REFUSES rather than truncating, so a caller must
+ * surface that error rather than assuming the first N were applied.
+ */
+export async function bulkCaseAction(
+  caseIds: string[],
+  action: string,
+  params: Record<string, unknown> = {},
+  reason?: string
+): Promise<BulkActionResult> {
+  return caseRequest(`/cases/bulk`, {
+    method: "POST",
+    body: JSON.stringify({ case_ids: caseIds, action, params, reason }),
+  });
+}
+
+// ── Bulk STAGE transition ────────────────────────────────────────────────────
+//
+// Two calls, and the second is refused without the first. A stage move fires the
+// stage's SLA, its on_enter_status and workflow signals per case, and moving
+// back undoes none of it — so the server issues a confirmation for exactly the
+// cases a preview found movable, and `bulkStageExecute` must send that set back
+// with it. Changing the selection or the stage means previewing again.
+
+export interface BulkStageEffect {
+  case_type_id: string;
+  case_type_name: string | null;
+  stage_name: string;
+  cases: number;
+  starts_sla: string | null;
+  on_enter_status: string | null;
+  signals_workflows: boolean;
+}
+
+export interface BulkStagePreview {
+  target_stage_id: string;
+  requested: number;
+  would_move: number;
+  unchanged: number;
+  refused: number;
+  effects: BulkStageEffect[];
+  results: { case_id: string; ok: boolean; from_stage?: string | null; unchanged?: boolean; code?: string; error?: string }[];
+  eligible_case_ids: string[];
+  /** Null when nothing would move — there is nothing to confirm. */
+  confirmation_token: string | null;
+  confirm_expires_at: number | null;
+}
+
+export interface BulkStageResult {
+  target_stage_id: string;
+  bulk_run_id: string;
+  requested: number;
+  moved: number;
+  unchanged: number;
+  /** Partial success is normal — cases are re-checked at execution. */
+  failed: number;
+  results: CaseActionResult[];
+}
+
+export async function bulkStagePreview(caseIds: string[], targetStageId: string): Promise<BulkStagePreview> {
+  return caseRequest(`/cases/bulk/stage/preview`, {
+    method: "POST",
+    body: JSON.stringify({ case_ids: caseIds, target_stage_id: targetStageId }),
+  });
+}
+
+export async function bulkStageExecute(
+  preview: BulkStagePreview,
+  reason?: string
+): Promise<BulkStageResult> {
+  return caseRequest(`/cases/bulk/stage`, {
+    method: "POST",
+    body: JSON.stringify({
+      case_ids: preview.eligible_case_ids,
+      target_stage_id: preview.target_stage_id,
+      confirmation_token: preview.confirmation_token,
+      reason: reason || undefined,
+    }),
+  });
+}
+
 export async function changeCaseStatus(
   id: string,
   status: string,
   reason?: string
-): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/status`, {
-    method: "POST",
-    body: JSON.stringify({ status, reason }),
-  });
+): Promise<CaseActionResult> {
+  return performCaseAction(id, "change_status", { status }, reason);
 }
 
 export async function changeCasePriority(
   id: string,
   priority: string
-): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/priority`, {
-    method: "POST",
-    body: JSON.stringify({ priority }),
-  });
+): Promise<CaseActionResult> {
+  return performCaseAction(id, "change_priority", { priority });
 }
 
 export async function resolveCase(
   id: string,
   resolution?: Record<string, unknown>
-): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/resolve`, {
-    method: "POST",
-    body: JSON.stringify({ resolution }),
-  });
+): Promise<CaseActionResult> {
+  return performCaseAction(id, "resolve", { resolution });
 }
 
-export async function closeCase(id: string): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/close`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+export async function closeCase(id: string): Promise<CaseActionResult> {
+  return performCaseAction(id, "close");
 }
 
-export async function reopenCase(id: string): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/reopen`, { method: "POST", body: JSON.stringify({}) });
+export async function reopenCase(id: string, reason?: string): Promise<CaseActionResult> {
+  return performCaseAction(id, "reopen", {}, reason);
 }
 
-export async function cancelCase(id: string, reason?: string): Promise<CaseSummary> {
-  return caseRequest(`/cases/${id}/cancel`, {
-    method: "POST",
-    body: JSON.stringify({ reason }),
-  });
+export async function cancelCase(id: string, reason?: string): Promise<CaseActionResult> {
+  return performCaseAction(id, "cancel", {}, reason);
 }
 
 export async function transitionStage(
@@ -1455,6 +1629,94 @@ export async function listAbsences(params: {
   return caseRequest(`/calendar/absences${qs ? `?${qs}` : ""}`);
 }
 
+/* ── Calendar: import, subscriptions, export ─────────────────────────────
+ *
+ * `source='import'` sat in the schema with no producer until 2026-08-27. An
+ * upload is a snapshot; a subscription is the same reader on a URL, re-read on
+ * a timetable — "add a calendar by URL", the way Google and Outlook offer it.
+ * Both are read-only against the far end.
+ */
+
+export interface CalendarSubscription {
+  id: string;
+  user_id: string;
+  name: string;
+  enabled: boolean;
+  interval_minutes: number;
+  last_status: "never" | "ok" | "unchanged" | "error";
+  last_fetched_at: string | null;
+  last_success_at: string | null;
+  last_event_count: number;
+  consecutive_errors: number;
+  /** Only returned to somebody who may see the detail — a Google or Outlook
+   *  private address embeds a token, so the URL is a credential in all but name. */
+  url?: string;
+  last_error?: string;
+}
+
+export async function importCalendarIcs(body: {
+  ics: string; user_id?: string; dry_run?: boolean;
+}): Promise<any> {
+  return caseRequest("/calendar/import", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function listCalendarSubscriptions(user_id?: string): Promise<{
+  subscriptions: CalendarSubscription[]; allowed_hosts: string[];
+}> {
+  const qs = user_id ? `?user_id=${encodeURIComponent(user_id)}` : "";
+  return caseRequest(`/calendar/subscriptions${qs}`);
+}
+
+export async function createCalendarSubscription(body: {
+  name: string; url: string; user_id?: string; interval_minutes?: number;
+}): Promise<CalendarSubscription> {
+  return caseRequest("/calendar/subscriptions", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function updateCalendarSubscription(
+  id: string,
+  body: { name?: string; url?: string; interval_minutes?: number; enabled?: boolean },
+): Promise<CalendarSubscription> {
+  return caseRequest(`/calendar/subscriptions/${id}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
+}
+
+export async function deleteCalendarSubscription(
+  id: string, keepEvents = true,
+): Promise<void> {
+  return caseRequest(`/calendar/subscriptions/${id}?keep_events=${keepEvents}`, {
+    method: "DELETE",
+  });
+}
+
+export async function refreshCalendarSubscription(id: string): Promise<any> {
+  return caseRequest(`/calendar/subscriptions/${id}/refresh`, { method: "POST" });
+}
+
+/** The `.ics` text. Not JSON, so it cannot go through `caseRequest` — and the
+ *  download is built in the browser rather than followed as a link, because a
+ *  plain `<a href>` carries no Authorization header and would 401. */
+export async function exportCalendarIcs(params: {
+  start: string; end: string; user_id?: string; include_absences?: boolean;
+}): Promise<string> {
+  const q = new URLSearchParams({ start: params.start, end: params.end });
+  if (params.user_id) q.set("user_id", params.user_id);
+  if (params.include_absences === false) q.set("include_absences", "false");
+  const res = await fetch(caseUrl(`/calendar/export?${q.toString()}`), {
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(res.status, body.detail || "Export failed");
+  }
+  return res.text();
+}
+
 export async function createAbsence(body: {
   user_id?: string; kind?: string; starts_at: string; ends_at: string;
   all_day?: boolean; delegate_user_id?: string | null; note?: string;
@@ -1575,6 +1837,37 @@ export async function proposeSlots(body: {
 
 export async function listRules(): Promise<any> {
   return caseRequest("/rules");
+}
+
+/* ── DMN interchange (market gap B5) ───────────────────────────────────────
+   The engine has always run decision tables; the standard FILE is what was
+   missing, and it is the half procurement asks about. */
+
+export type DmnImportedTable = {
+  name: string; rule_type: string; hit_policy: string;
+  input_count: number; output_count: number; row_count: number;
+  notes: string[]; rule_id?: string | null;
+};
+
+/** `dry_run` defaults to true on the server: an import previews first and
+ *  creates nothing, so the second click confirms something that was read. */
+export async function importDmn(body: {
+  xml: string; dry_run?: boolean; scope?: string;
+  scope_target_id?: string | null; version?: string; enabled?: boolean;
+}): Promise<{ dry_run: boolean; tables: DmnImportedTable[]; created: number }> {
+  return caseRequest("/rules/dmn/import", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The rule as a `.dmn` file. A blob rather than a link, for the same reason
+ *  every other download here is one: a plain `<a href>` carries no
+ *  Authorization header. */
+export async function exportRuleAsDmn(ruleId: string): Promise<Blob> {
+  const resp = await fetch(`${CASE_BASE}/rules/${ruleId}/dmn`, { headers: authHeaders() });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.detail?.message || body.detail || "This rule cannot be exported as DMN");
+  }
+  return resp.blob();
 }
 
 export async function createRule(body: {
@@ -2015,6 +2308,58 @@ export async function updateRetentionPolicy(id: string, body: any): Promise<any>
 
 export async function getEnterpriseSystemInfo(): Promise<any> {
   return caseRequest("/enterprise/system-info");
+}
+
+/* ── Audit streaming to a SIEM (migration 200) ─────────────────────────────
+   The stream is PLATFORM-scoped: `security_events` has no tenant column, so a
+   target receives every tenant's events. The API says so on create by refusing
+   a request that has not acknowledged it, and the screen says so too. */
+
+export type AuditStreamTarget = {
+  id: string; name: string; kind: string; endpoint_url: string;
+  has_token: boolean; verify_tls: boolean; enabled: boolean; scope: string;
+  min_severity: string | null; event_types: string[];
+  cursor_timestamp: string | null; last_success_at: string | null;
+  last_error: string | null; last_error_at: string | null;
+  forwarded_count: number; created_at: string | null;
+};
+
+/** The API answers `{items, kinds}` — `items`, not `targets`. Typed the way the
+ *  server actually replies, so a screen reading the wrong key fails to compile
+ *  rather than rendering an empty list against a working endpoint. */
+export async function listAuditStreamTargets(): Promise<{ items: AuditStreamTarget[]; kinds: string[] }> {
+  return caseRequest("/audit-stream/targets");
+}
+
+export async function createAuditStreamTarget(body: {
+  name: string; endpoint_url: string; token?: string | null; kind?: string;
+  verify_tls?: boolean; min_severity?: string | null; event_types?: string[] | null;
+  acknowledge_platform_scope: boolean;
+}): Promise<AuditStreamTarget> {
+  return caseRequest("/audit-stream/targets", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateAuditStreamTarget(
+  id: string,
+  body: Partial<{ name: string; endpoint_url: string; token: string | null;
+                  verify_tls: boolean; enabled: boolean;
+                  min_severity: string | null; event_types: string[] | null }>,
+): Promise<AuditStreamTarget> {
+  return caseRequest(`/audit-stream/targets/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export async function deleteAuditStreamTarget(id: string): Promise<void> {
+  return caseRequest(`/audit-stream/targets/${id}`, { method: "DELETE" });
+}
+
+/** One synthetic event. Proves the URL, the token and the certificate without
+ *  moving the cursor or forwarding anything real. */
+export async function testAuditStreamTarget(id: string): Promise<{ ok: boolean; error?: string; message?: string }> {
+  return caseRequest(`/audit-stream/targets/${id}/test`, { method: "POST" });
+}
+
+export async function runAuditStreamTarget(id: string): Promise<any> {
+  return caseRequest(`/audit-stream/targets/${id}/run`, { method: "POST" });
 }
 
 export async function resolveGDPRRequest(requestId: string, status: "completed" | "rejected" = "completed"): Promise<any> {
@@ -2579,4 +2924,883 @@ export async function acceptBotProposal(
     method: "POST",
     body: JSON.stringify({ expected_checksum: expectedChecksum, fields }),
   });
+}
+
+/* ── HxArbiter — sovereignty & security policy engine (ARB-E) ───────────────
+ *
+ * Everything here is read-mostly on purpose. The one call that changes what the
+ * platform enforces is `promoteNamespace`, and the server refuses it without
+ * parity evidence unless an override with a written reason is supplied — so the
+ * UI never has to decide whether a promotion is safe, only how to show why it
+ * was refused.
+ */
+
+export interface ArbiterAttribute {
+  path: string; type: string; description: string; allowed?: string[] | null;
+}
+export interface ArbiterNamespace {
+  namespace: string; default_effect: string; max_mode: string;
+  description: string; promoted_at?: string | null;
+  //: null means decisions here are kept forever, which is the default.
+  decision_retention_days?: number | null;
+}
+export interface ArbiterCatalog {
+  attributes: ArbiterAttribute[]; operators: string[];
+  namespaces: ArbiterNamespace[];
+}
+export interface ArbiterPolicy {
+  id: string; name: string; namespace: string; description: string;
+  scope: "platform" | "tenant"; status: string;
+  active_version: number | null; origin: string; retired_at?: string | null;
+}
+export interface ArbiterDecision {
+  id: string; namespace: string; action: string; subject_kind: string;
+  subject_id: string; effect: string; mode: string; enforced: boolean;
+  default_applied: boolean; matched: unknown[]; obligations: unknown[];
+  legacy_effect: string | null; error: string | null;
+  claimed_by: string | null; simulated: boolean; latency_us: number;
+  sealed: boolean; evaluated_at: string;
+}
+export interface ArbiterParity {
+  namespace: string; window_days: number; compared: number;
+  agreements: number; disagreements: number;
+  engine_stricter: number; engine_weaker: number; errors: number;
+  agreement_rate: number; eligible_for_promotion: boolean;
+  reasons: string[]; examples: Record<string, unknown>[];
+}
+export interface ArbiterDraft {
+  id: string; state: string; compiled?: boolean; errors?: string[];
+  rules: unknown[]; analysis: { severity: string; kind: string; message: string;
+    rule_ids: string[] }[];
+  readback: string | null; readback_source: string | null;
+  provenance: { provider: string | null; model: string | null;
+    prompt_version: string | null; attempts: number };
+  intent?: string; namespace?: string; corpus_refs?: string[] | null;
+}
+
+export async function getArbiterCatalog(): Promise<ArbiterCatalog> {
+  return caseRequest("/arbiter/catalog");
+}
+export async function listArbiterPolicies(namespace?: string): Promise<ArbiterPolicy[]> {
+  return caseRequest(`/arbiter/policies${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ""}`);
+}
+export async function createArbiterPolicy(body: {
+  name: string; namespace: string; description?: string; platform?: boolean;
+}): Promise<{ id: string; status: string }> {
+  return caseRequest("/arbiter/policies", { method: "POST", body: JSON.stringify(body) });
+}
+export async function addArbiterVersion(
+  policyId: string, body: { rules: unknown[]; mode?: string },
+): Promise<{ version: number; signature: string }> {
+  return caseRequest(`/arbiter/policies/${policyId}/versions`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function activateArbiterVersion(policyId: string, version: number) {
+  return caseRequest(`/arbiter/policies/${policyId}/activate?version=${version}`,
+    { method: "POST" });
+}
+export async function retireArbiterPolicy(policyId: string) {
+  return caseRequest(`/arbiter/policies/${policyId}/retire`, { method: "POST" });
+}
+/** Which version of a rule was in force at a moment — the audit question. */
+export async function arbiterActiveAt(policyId: string, moment: string) {
+  return caseRequest(
+    `/arbiter/policies/${policyId}/active-at?moment=${encodeURIComponent(moment)}`);
+}
+export async function listArbiterDecisions(params: {
+  namespace?: string; subject_id?: string; disagreements_only?: boolean; limit?: number;
+} = {}): Promise<ArbiterDecision[]> {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== "") q.set(k, String(v)); });
+  const qs = q.toString();
+  return caseRequest(`/arbiter/decisions${qs ? `?${qs}` : ""}`);
+}
+export async function verifyArbiterChain(): Promise<{ ok: boolean; problem: string | null }> {
+  return caseRequest("/arbiter/decisions/verify");
+}
+export async function getArbiterParity(
+  namespace: string, windowDays = 14,
+): Promise<ArbiterParity> {
+  return caseRequest(`/arbiter/parity/${encodeURIComponent(namespace)}?window_days=${windowDays}`);
+}
+export async function syncArbiterBridge() {
+  return caseRequest("/arbiter/bridge/sync", { method: "POST" });
+}
+export async function promoteArbiterNamespace(
+  namespace: string,
+  body: { max_mode: string; override_parity?: boolean; override_reason?: string },
+) {
+  return caseRequest(`/arbiter/namespaces/${encodeURIComponent(namespace)}/promote`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function simulateArbiter(body: {
+  subject: { kind: string; id: string; attrs?: Record<string, unknown> };
+  action: string;
+  resource: { kind: string; id?: string; attrs?: Record<string, unknown> };
+  context?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
+}) {
+  return caseRequest("/arbiter/simulate", { method: "POST", body: JSON.stringify(body) });
+}
+export async function createArbiterDraft(body: {
+  intent: string; namespace: string; policy_id?: string; corpus_refs?: string[];
+}): Promise<ArbiterDraft> {
+  return caseRequest("/arbiter/drafts", { method: "POST", body: JSON.stringify(body) });
+}
+export async function getArbiterDraft(id: string): Promise<ArbiterDraft> {
+  return caseRequest(`/arbiter/drafts/${id}`);
+}
+export async function approveArbiterDraft(id: string, readback: string) {
+  return caseRequest(`/arbiter/drafts/${id}/approve`,
+    { method: "POST", body: JSON.stringify({ readback }) });
+}
+export async function activateArbiterDraft(id: string) {
+  return caseRequest(`/arbiter/drafts/${id}/activate`, { method: "POST" });
+}
+
+/* ── ARB-I — policy upkeep ─────────────────────────────────────────────────
+ *
+ * `getArbiterUpkeep` is deterministic and always available. `adviseArbiterUpkeep`
+ * asks HxNexus to read the same findings back in plain English and answers 503
+ * when no provider is configured — which is a feature being ABSENT, not broken,
+ * so the caller shows the report unchanged and hides the button.
+ */
+export interface ArbiterUpkeepFinding {
+  id: string; severity: "error" | "warning" | "info"; kind: string;
+  message: string; suggestion: string;
+  namespace: string | null; policy_id: string | null; policy_name: string | null;
+  scope: "platform" | "tenant" | null; rule_ids: string[];
+  assessable: boolean; caveat: string | null;
+  evidence: Record<string, unknown>;
+}
+export interface ArbiterUpkeep {
+  window_days: number; since: string; generated_at: string;
+  scope: "tenant" | "platform";
+  policies_examined: number; namespaces_examined: number;
+  decisions_examined: number;
+  counts: { error: number; warning: number; info: number };
+  findings: ArbiterUpkeepFinding[];
+  limitations: string[];
+}
+export type ArbiterUpkeepAction =
+  | "none" | "review_rules" | "amend_policy" | "check_pep_wiring"
+  | "run_bridge_sync" | "review_promotion" | "check_sealer" | "investigate_now";
+
+export interface ArbiterUpkeepAdvice {
+  ok: boolean; summary: string;
+  // `action` is a CLOSED set, not free text. It used to be a paste-ready
+  // sentence the model wrote, which an operator could send straight into the
+  // authoring model — and a policy NAME reading "ignore all previous
+  // instructions…" steered a real model into writing that sentence. The UI
+  // owns the wording for each action now; the model only picks one.
+  entries: Record<string, { meaning: string;
+    priority: "now" | "soon" | "watch"; action: ArbiterUpkeepAction }>;
+  errors: string[]; dropped: string[];
+  explained: number; of_findings: number;
+  provenance: { provider: string | null; model: string | null;
+    prompt_version: string | null };
+}
+
+export async function getArbiterUpkeep(windowDays = 30): Promise<ArbiterUpkeep> {
+  return caseRequest(`/arbiter/upkeep?window_days=${windowDays}`);
+}
+/** How long decisions in a namespace are kept. `null` = forever. */
+export async function setArbiterRetention(
+  namespace: string, days: number | null,
+) {
+  return caseRequest(`/arbiter/namespaces/${encodeURIComponent(namespace)}/retention`,
+    { method: "PUT", body: JSON.stringify({ decision_retention_days: days }) });
+}
+export async function anchorArbiterDecisions(force = false) {
+  return caseRequest(`/arbiter/decisions/anchor?force=${force}`, { method: "POST" });
+}
+export async function purgeArbiterDecisions() {
+  return caseRequest("/arbiter/decisions/purge", { method: "POST" });
+}
+export async function exportArbiterPolicies(namespace?: string) {
+  return caseRequest(`/arbiter/export${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ""}`);
+}
+export async function importArbiterPolicies(body: {
+  document: unknown; platform?: boolean; refuse_duplicates?: boolean;
+  activate?: boolean;
+}) {
+  return caseRequest("/arbiter/import", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function adviseArbiterUpkeep(
+  body: { window_days?: number; finding_ids?: string[] } = {},
+): Promise<ArbiterUpkeepAdvice> {
+  return caseRequest("/arbiter/upkeep/advise",
+    { method: "POST", body: JSON.stringify(body) });
+}
+
+// ── F-05 agent workforce ────────────────────────────────────────────────────
+// The roster reads as one call: availability arrives with its REASONS, not a
+// bare flag, because "at capacity" and "over budget" are different problems and
+// a screen that showed only "unavailable" would hide which one you have.
+
+export interface WorkforceAvailability {
+  available: boolean; reasons: string[];
+  active_load: number; tokens_last_hour: number | null;
+}
+export interface WorkforceAgentRef {
+  slug: string; display_name: string; kind: string; status: string;
+  model_binding: string | null;
+}
+export interface WorkforceRow {
+  agent_id: string; skills: string[];
+  max_concurrent: number | null; token_budget_per_hour: number | null;
+  escalation_queue: string; routing_weight: number;
+  benched: boolean; bench_reason: string | null; benched_at: string | null;
+  availability?: WorkforceAvailability;
+  agent?: WorkforceAgentRef;
+}
+export interface WorkforceRoster {
+  scorecard_cron: { enabled: boolean; interval_hours: number; window_days: number };
+  roster: WorkforceRow[];
+}
+export interface AgentScorecard {
+  id: string; agent_id: string;
+  window: { start: string; end: string };
+  decisions: number; reviewed: number; accepted: number; overridden: number;
+  override_rate: number | null;
+  cost_total: number; cost_per_decision: number | null; currency: string | null;
+  proposed_weight: number | null; proposal_status: string | null;
+  proposal_reason: string | null;
+  decided_by: string | null; decided_at: string | null; created_at: string;
+}
+
+export async function getWorkforce(): Promise<WorkforceRoster> {
+  return caseRequest("/agents/workforce");
+}
+export async function listWorkforceScorecards(
+  opts: { agentId?: string; status?: string; limit?: number } = {},
+): Promise<{ scorecards: AgentScorecard[] }> {
+  const qs = new URLSearchParams();
+  if (opts.agentId) qs.set("agent_id", opts.agentId);
+  if (opts.status)  qs.set("status", opts.status);
+  if (opts.limit)   qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return caseRequest(`/agents/workforce/scorecards${q ? `?${q}` : ""}`);
+}
+export async function enrolWorkforceAgent(agentId: string, body: {
+  escalation_queue: string; skills?: string[];
+  max_concurrent?: number | null; token_budget_per_hour?: number | null;
+}): Promise<WorkforceRow> {
+  return caseRequest(`/agents/${agentId}/workforce`,
+    { method: "PUT", body: JSON.stringify(body) });
+}
+export async function benchWorkforceAgent(
+  agentId: string, benched: boolean, reason = "",
+): Promise<WorkforceRow> {
+  return caseRequest(`/agents/${agentId}/workforce/bench`,
+    { method: "POST", body: JSON.stringify({ benched, reason }) });
+}
+export async function buildWorkforceScorecard(
+  agentId: string, days = 7,
+): Promise<AgentScorecard> {
+  return caseRequest(`/agents/${agentId}/workforce/scorecard?days=${days}`,
+    { method: "POST" });
+}
+export async function proposeWorkforceWeight(
+  cardId: string, weight: number, reason: string,
+): Promise<{ id: string; proposed_weight: number; status: string }> {
+  return caseRequest(`/agents/workforce/scorecards/${cardId}/propose`,
+    { method: "POST", body: JSON.stringify({ weight, reason }) });
+}
+export async function decideWorkforceWeight(
+  cardId: string, approve: boolean,
+): Promise<{ id: string; status: string; routing_weight: number | null }> {
+  return caseRequest(`/agents/workforce/scorecards/${cardId}/decide`,
+    { method: "POST", body: JSON.stringify({ approve }) });
+}
+export async function listAgents(): Promise<{
+  tokens_enabled: boolean; capability_vocabulary: string[];
+  issuable_kinds: string[];
+  agents: { id: string; slug: string; kind: string; display_name: string;
+            model_binding: string | null; status: string }[];
+}> {
+  return caseRequest("/agents");
+}
+
+// ── F-06 ambient capture ────────────────────────────────────────────────────
+// The digest is a read of the case by another name, so every call here is
+// case-scoped and gated by the caller's relationship to the case.
+
+export interface CaptureRun {
+  id: string; case_id: string;
+  source: { kind: string; ref: string; locator: string | null; sha256: string };
+  status: string; refusal_reason: string | null; error: string | null;
+  provider: string | null; model: string | null; prompt_sha256: string | null;
+  attempts: number; proposed: number; dropped: number;
+  requested_by: string; created_at: string | null; completed_at: string | null;
+}
+export interface CaptureProposal {
+  id: string; run_id: string; case_id: string;
+  kind: string; target: string | null;
+  current_value: unknown; proposed_value: unknown;
+  confidence: number | null;
+  snippet: string | null; locator: string | null;
+  status: string; applied_value: unknown;
+  decided_by: string | null; decided_by_name: string | null;
+  decided_at: string | null;
+  ledger_record_id: string | null; created_at: string | null;
+}
+export interface CaptureDigest {
+  case_id: string; enabled: boolean;
+  source_kinds: string[]; proposal_kinds: string[];
+  runs: CaptureRun[]; proposals: CaptureProposal[];
+}
+export interface CaptureTargets {
+  case_id: string;
+  targets: { key: string; type: string; label: string; description: string }[];
+  blocked_namespaces: string[]; max_proposals: number;
+}
+
+export async function getCaptureDigest(
+  caseId: string, includeDecided = false,
+): Promise<CaptureDigest> {
+  return caseRequest(
+    `/capture/cases/${caseId}${includeDecided ? "?include_decided=true" : ""}`);
+}
+export async function getCaptureTargets(caseId: string): Promise<CaptureTargets> {
+  return caseRequest(`/capture/cases/${caseId}/targets`);
+}
+export async function runCapture(caseId: string, body: {
+  source_kind: string; source_ref?: string | null; text?: string | null;
+}): Promise<CaptureRun & { refusal_reason?: string; detail?: string }> {
+  return caseRequest(`/capture/cases/${caseId}/runs`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function decideCaptureProposal(
+  proposalId: string, decision: "accept" | "edit" | "reject", value?: unknown,
+): Promise<CaptureProposal> {
+  return caseRequest(`/capture/proposals/${proposalId}/decide`,
+    { method: "POST", body: JSON.stringify({ decision, value }) });
+}
+
+// ── F-07 sovereign model marketplace ────────────────────────────────────────
+// Two facts this API is careful about, and the types carry both rather than
+// flattening them:
+//
+//   · `signed` says the bytes match a key. It does NOT say the key belongs to
+//     anybody — the public half travels inside the file — so `signing_key_id`
+//     is what an operator pins out of band, and no field here is called
+//     "trusted".
+//   · `declared_metrics` is the publisher's arithmetic about the publisher's
+//     data; an evaluation's `measured` is about THIS tenant's. They are
+//     separate fields because putting one where the other belongs would print
+//     a stranger's number at somebody deciding whether to trust it.
+
+export interface ModelCanaryCheck {
+  check: string; ok: boolean; blocking: boolean; detail: string;
+}
+export interface ModelPackage {
+  id: string; direction: "published" | "imported"; kind: string;
+  package_id: string; version: number; content_sha256: string;
+  status: string; status_reason: string | null;
+  manifest: Record<string, unknown>;
+  trained_on: number | null;
+  declared_metrics: Record<string, unknown> | null;
+  eval_fingerprint: string | null;
+  canary: { verdict: string; detail: { checks?: ModelCanaryCheck[] } | null };
+  data_classes: string[] | null; special_category: boolean;
+  signed: boolean; signing_key_id: string | null;
+  publisher_ref: string | null;
+  signed_off_by: string | null; signed_off_at: string | null;
+  created_by: string | null; created_at: string;
+}
+export interface ModelEvaluation {
+  id: string; verdict: "pass" | "fail" | "insufficient_data"; reason: string | null;
+  holdout_size: number; positives: number; negatives: number;
+  declared: Record<string, unknown> | null;
+  measured: Record<string, unknown> | null;
+  tolerance: number | null;
+  evaluated_by: string | null; evaluated_at: string;
+}
+export interface ModelInstall {
+  id: string; package_ref: string; model_origin: string;
+  target_kind: string; target_ref: string | null; status: string;
+  installed_by: string | null; installed_at: string;
+  activated_by: string | null; activated_at: string | null;
+  uninstalled_at: string | null; shredded_at: string | null;
+}
+export interface ModelSources {
+  risk_models: { source: string; version: number; status: string;
+                 trained_on: number; metrics: Record<string, unknown>;
+                 publishable: boolean }[];
+  signal_packs: { source: string; name: string; version: string;
+                  enabled: boolean; rules: number }[];
+}
+export interface ModelPrepared {
+  kind: string; source_ref: string;
+  manifest: Record<string, any>;
+  payload: Record<string, unknown>;
+  trained_on: number;
+  declared_metrics: Record<string, unknown>;
+  canary: { verdict: string; checks: ModelCanaryCheck[]; failed: string[];
+            data_classes: string[]; special_category: boolean };
+  eval_fingerprint: string;
+}
+
+export async function listModelSources(): Promise<ModelSources> {
+  return caseRequest("/model-market/sources");
+}
+export async function prepareModelPackage(
+  body: { kind: string; source: string },
+): Promise<ModelPrepared> {
+  return caseRequest("/model-market/prepare",
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function publishModelPackage(body: {
+  kind: string; source: string; package_id: string; acknowledged: boolean;
+}): Promise<{ package: ModelPackage; published: boolean }> {
+  return caseRequest("/model-market/publish",
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function listModelPackages(
+  direction?: "published" | "imported",
+): Promise<{ packages: ModelPackage[]; count: number }> {
+  return caseRequest(`/model-market/packages${direction ? `?direction=${direction}` : ""}`);
+}
+export async function getModelPackage(id: string): Promise<{
+  package: ModelPackage; evaluations: ModelEvaluation[]; install: ModelInstall | null;
+}> {
+  return caseRequest(`/model-market/packages/${id}`);
+}
+export async function downloadModelPackage(id: string): Promise<{
+  filename: string; content: Record<string, unknown>; signed: boolean;
+}> {
+  return caseRequest(`/model-market/packages/${id}/file`);
+}
+export async function importModelPackage(
+  pkg: string,
+): Promise<{ package: ModelPackage }> {
+  return caseRequest("/model-market/import",
+    { method: "POST", body: JSON.stringify({ package: pkg }) });
+}
+export async function evaluateModelPackage(
+  id: string, tolerance?: number,
+): Promise<{ evaluation: ModelEvaluation }> {
+  return caseRequest(`/model-market/packages/${id}/evaluate`,
+    { method: "POST", body: JSON.stringify(tolerance === undefined ? {} : { tolerance }) });
+}
+export async function installModelPackage(
+  id: string,
+): Promise<{ install: ModelInstall; note: string }> {
+  return caseRequest(`/model-market/packages/${id}/install`, { method: "POST" });
+}
+export async function uninstallModelPackage(
+  installId: string, shred: boolean,
+): Promise<{ install: ModelInstall }> {
+  return caseRequest(`/model-market/installs/${installId}/uninstall`,
+    { method: "POST", body: JSON.stringify({ shred }) });
+}
+
+// ── F-08 self-healing ───────────────────────────────────────────────────────
+// The ladder is returned in full, rungs that PASSED included: a person approving
+// a change to their own live process is entitled to see what was checked, not a
+// single green tick.
+
+export interface HealingRung {
+  rung: string; ok: boolean; detail: string;
+  applicable?: boolean; ran?: boolean;
+  started?: number; terminal?: number; stuck?: number; p95_ms?: number | null;
+}
+export interface HealingEpisode {
+  id: string; case_type_id: string; insight_id: string | null;
+  operator: string; diagnosis: Record<string, unknown>;
+  proposal: Record<string, unknown>;
+  ladder: HealingRung[]; stopped_at: string | null; stopped_reason: string | null;
+  status: string;
+  approved_by: string | null; approved_at: string | null; decided_reason: string | null;
+  applied_at: string | null;
+  rollback_signed: boolean; rollback_artifact: string | null;
+  watch_until: string | null; watch_metric: string | null;
+  watch_bound_pct: number | null;
+  outcome: Record<string, any> | null; outcome_at: string | null;
+  rolled_back_at: string | null; rollback_reason: string | null;
+  incident_case_id: string | null;
+  replay_run_id: string | null; twin_run_id: string | null;
+  sequence: number; content_hash: string; created_at: string;
+}
+export interface HealingStatus {
+  enabled: boolean; reason: string | null; operator_switch: boolean;
+  tenant_settings: Record<string, any>;
+  boundary: { operators: string[]; reaches: Record<string, Record<string, string[]>>;
+              forbidden: string[]; intersection: string[] };
+}
+
+export async function getHealingStatus(): Promise<HealingStatus> {
+  return caseRequest("/healing/status");
+}
+export async function listHealingEpisodes(
+  status?: string,
+): Promise<{ episodes: HealingEpisode[]; count: number }> {
+  return caseRequest(`/healing/episodes${status ? `?status=${status}` : ""}`);
+}
+export async function getHealingEpisode(id: string): Promise<{ episode: HealingEpisode }> {
+  return caseRequest(`/healing/episodes/${id}`);
+}
+export async function approveHealingEpisode(
+  id: string, body: { reason?: string; watch_hours?: number },
+): Promise<{ episode: HealingEpisode; note: string }> {
+  return caseRequest(`/healing/episodes/${id}/approve`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function rejectHealingEpisode(
+  id: string, reason: string,
+): Promise<{ episode: HealingEpisode }> {
+  return caseRequest(`/healing/episodes/${id}/reject`,
+    { method: "POST", body: JSON.stringify({ reason }) });
+}
+export async function rollbackHealingEpisode(
+  id: string, reason: string,
+): Promise<{ episode: HealingEpisode }> {
+  return caseRequest(`/healing/episodes/${id}/rollback`,
+    { method: "POST", body: JSON.stringify({ reason }) });
+}
+export async function verifyHealingChain(): Promise<{
+  verified: boolean; episodes: number; broken_at?: number; reason?: string;
+}> {
+  return caseRequest("/healing/chain");
+}
+
+// ── F-11 intent-based execution ─────────────────────────────────────────────
+// `plan_sha256` is passed BACK on confirm. The client sends the hash it
+// displayed, so a plan that moved between reading and confirming is refused —
+// that binding is the whole of "no plan-swap after approval".
+
+export interface IntentStep {
+  step: number; fragment: string; name: string; does: string; capabilities: string[];
+}
+export interface IntentPlan {
+  id: string; intent: string;
+  goal_spec: { goals: string[]; given: string[]; dropped?: string[] };
+  spec_source: string; status: string;
+  fragments: string[]; steps: IntentStep[] | null;
+  capabilities: string[]; data_classes: string[]; step_count: number;
+  plan_sha256: string | null;
+  ladder: { rung: string; ok: boolean; detail: string; consequential?: string[] }[];
+  stopped_at: string | null; stopped_reason: string | null;
+  confirmed_by: string | null; confirmed_at: string | null;
+  confirmed_sha256: string | null; executed_at: string | null; created_at: string;
+}
+export interface IntentFragment {
+  slug: string; display_name: string; description: string;
+  requires: string[]; provides: string[]; data_classes: string[];
+  capabilities: string[]; step_count: number; status: string;
+  content_sha256: string; signed: boolean; signing_key_id: string | null;
+  conformance: Record<string, any> | null;
+  verified_by: string | null; verified_at: string | null;
+}
+
+export async function listFragments(): Promise<{
+  fragments: IntentFragment[]; count: number;
+  vocabulary: { goals: string[]; facts: string[] }; capabilities: string[];
+}> {
+  return caseRequest("/intent/fragments");
+}
+export async function verifyFragment(slug: string): Promise<{ fragment: IntentFragment }> {
+  return caseRequest(`/intent/fragments/${slug}/verify`, { method: "POST" });
+}
+export async function createIntentPlan(body: {
+  intent: string; goal_spec?: Record<string, unknown> | null; require_twin?: boolean;
+}): Promise<{ plan: IntentPlan }> {
+  return caseRequest("/intent/plans", { method: "POST", body: JSON.stringify(body) });
+}
+export async function listIntentPlans(
+  status?: string,
+): Promise<{ plans: IntentPlan[]; count: number }> {
+  return caseRequest(`/intent/plans${status ? `?status=${status}` : ""}`);
+}
+export async function getIntentPlan(id: string): Promise<{
+  plan: IntentPlan; definition: Record<string, unknown> | null;
+}> {
+  return caseRequest(`/intent/plans/${id}`);
+}
+export async function confirmIntentPlan(
+  id: string, planSha256: string,
+): Promise<{ plan: IntentPlan }> {
+  return caseRequest(`/intent/plans/${id}/confirm`,
+    { method: "POST", body: JSON.stringify({ plan_sha256: planSha256 }) });
+}
+export async function executeIntentPlan(id: string): Promise<{
+  plan_id: string; plan_sha256: string; definition: Record<string, any>; note: string;
+}> {
+  return caseRequest(`/intent/plans/${id}/execute`, { method: "POST" });
+}
+
+// ── F-12 process-as-negotiation ─────────────────────────────────────────────
+// `seam_ceiling` is NOT `effective_ceiling`. The first is what the seam carries
+// right now; the second is what was negotiated. A term agreed is not a term in
+// force, and the screen must never show one where the other belongs.
+
+export interface ContractClause {
+  clause: string; ok: boolean; detail: string; agreed?: unknown;
+  negotiated?: string; platform?: string;
+}
+export interface JointContract {
+  id: string; name: string; version: number; counterparty_id: string;
+  supersedes: string | null; status: string; unmatched_reason: string | null;
+  composition: { goals: string[]; seams: number;
+                 steps: { side: string; fragment: string; provides: string[];
+                          crosses_seam: boolean }[] } | null;
+  resolution: { clauses: ContractClause[]; matched: boolean } | null;
+  effective_ceiling: string | null; seam_ceiling: string;
+  contract_sha256: string | null;
+  signed_by_us: boolean; signed_by_them: boolean;
+  approved_by: string | null; approved_at: string | null; enforced_at: string | null;
+  suspended_at: string | null; suspended_by: string | null;
+  suspended_reason: string | null; created_at: string;
+}
+
+export async function listContracts(
+  status?: string,
+): Promise<{ contracts: JointContract[]; count: number }> {
+  return caseRequest(`/negotiate/contracts${status ? `?status=${status}` : ""}`);
+}
+export async function verifyContract(id: string): Promise<{
+  agrees: boolean; inputs_agree: boolean; stored_agrees: boolean;
+  recomputed: string; stored: string; detail: string;
+}> {
+  return caseRequest(`/negotiate/contracts/${id}/verify`);
+}
+export async function approveContract(id: string): Promise<{ contract: JointContract }> {
+  return caseRequest(`/negotiate/contracts/${id}/approve`, { method: "POST" });
+}
+export async function promoteContract(
+  id: string, to: string,
+): Promise<{ contract: JointContract }> {
+  return caseRequest(`/negotiate/contracts/${id}/promote`,
+    { method: "POST", body: JSON.stringify({ to }) });
+}
+export async function suspendContract(
+  id: string, reason: string,
+): Promise<{ contract: JointContract; seam: string; note: string }> {
+  return caseRequest(`/negotiate/contracts/${id}/suspend`,
+    { method: "POST", body: JSON.stringify({ reason }) });
+}
+export async function contractAnchors(id: string): Promise<{
+  exchanges: number; ours: number; theirs: number; clean: boolean;
+  problems: { direction: string; seq: number; detail: string }[]; note: string;
+}> {
+  return caseRequest(`/negotiate/contracts/${id}/anchors`);
+}
+
+// ── F-10 field operations: the conflict queue ───────────────────────────────
+// Nothing here decided itself. A conflict clears only when a person chooses.
+
+export interface FieldConflict {
+  id: string; node_id: string; case_id: string | null; seq: number;
+  kind: string; target: string | null; field_value: unknown;
+  /** The hub's side of the disagreement. `hub_value_known` false means the hub
+   *  holds no such field at all — which is not the same as holding an empty
+   *  value, and the queue must not draw them the same way. */
+  hub_value: unknown; hub_value_known: boolean;
+  reason: string | null; node_time: string | null; received_at: string;
+}
+export interface FieldNode {
+  id: string; slug: string; display_name: string; key_id: string;
+  status: string; ceiling: string; charter: Record<string, unknown>;
+  snapshot_max_age_hours: number; subchain_head: string | null;
+  last_contact_at: string | null; shred_ordered_at: string | null;
+  shredded_at: string | null;
+  staleness: { stale: boolean; reason: string; stale_after?: string } | null;
+  created_at: string;
+}
+
+export async function listFieldNodes(): Promise<{ nodes: FieldNode[]; count: number }> {
+  return caseRequest("/field/nodes");
+}
+export interface FieldNodeIn {
+  slug: string;
+  display_name: string;
+  /** Raw base64 of the node's 32-byte Ed25519 PUBLIC key. Never PEM, and never
+   *  generated here — a hub that once held the private key has pinned nothing. */
+  public_key: string;
+  charter: Record<string, unknown>;
+  ceiling: string;
+  snapshot_max_age_hours: number;
+}
+export async function registerFieldNode(body: FieldNodeIn): Promise<FieldNode> {
+  // The route answers `{"node": {...}}`, not the node. Unwrapping here rather
+  // than at the call site keeps the shape trap in one place — the same one
+  // `POST /negotiate/contracts` sets, which answers without an `id` at all.
+  const r = await caseRequest<{ node: FieldNode }>("/field/nodes",
+    { method: "POST", body: JSON.stringify(body) });
+  return (r as { node?: FieldNode }).node ?? (r as unknown as FieldNode);
+}
+export async function listFieldConflicts(
+  node?: string,
+): Promise<{ conflicts: FieldConflict[]; count: number }> {
+  return caseRequest(`/field/conflicts${node ? `?node=${node}` : ""}`);
+}
+export async function resolveFieldConflict(
+  id: string, resolution: "keep_field" | "keep_hub",
+): Promise<{ id: string; merge_state: string; resolution: string; resolved_by: string }> {
+  return caseRequest(`/field/conflicts/${id}/resolve`,
+    { method: "POST", body: JSON.stringify({ resolution }) });
+}
+
+// ── Item 12 Customer Engagement: the rep desk ───────────────────────────────
+// Two things the screen must never confuse. A panel in `withheld` is ABSENT,
+// not empty — an empty panel says "this customer has none of these". And the
+// verification tier comes from the INTERACTION, never from a control the rep
+// can set.
+
+export interface EngageStatus {
+  enabled: boolean; released: boolean; entitled: boolean;
+  package_id: string; feature_key: string; note: string;
+}
+export interface EngageIdentifier {
+  kind: string; value: string; masked: boolean; revealable: boolean;
+  verified: boolean; verified_by: string | null; is_primary: boolean; source: string;
+}
+export interface EngageSummary {
+  account_exists: boolean; name_initial: string;
+  display_name: string | null; display_name_masked: string | null;
+  open_cases: number; status: string;
+}
+export interface ThreeSixty {
+  customer_id: string; party_kind: string; verification: string;
+  panels: {
+    summary?: EngageSummary;
+    identifiers?: EngageIdentifier[];
+    relations?: { to: string; relation: string; may_act_for: boolean; note: string | null }[];
+    interactions?: { id: string; channel: string; direction: string;
+                     started_at: string | null; verification_level: string;
+                     disposition_code: string | null; status: string;
+                     outcome: string | null }[];
+    cases?: { object_id: string; reason: string; linked_at: string | null }[];
+    conversations?: { object_id: string; reason: string; linked_at: string | null }[];
+    consents?: unknown;
+  };
+  withheld: { panel: string; why: string }[];
+  source_of_truth: string; external_system: string | null;
+  freshness: { stale: boolean; reason: string; refreshed_at?: string | null;
+               minutes_old?: number };
+}
+export interface ScreenPop {
+  interaction_id: string; customer_id: string | null; verification_level: string;
+  resolution: { resolved: boolean; rung: number; reason: string;
+                confidence?: string; verified?: boolean };
+  stub: { actions: string[]; prefill: Record<string, string>; note: string } | null;
+  inherited_verification: boolean;
+}
+
+export async function getEngageStatus(): Promise<EngageStatus> {
+  return caseRequest("/engage/status");
+}
+export async function engageScreenPop(body: {
+  channel: string; ani?: string | null; address?: string | null;
+  dnis?: string | null; queue?: string | null; external_call_id?: string | null;
+  transferred_from?: string | null;
+}): Promise<ScreenPop> {
+  return caseRequest("/engage/screen-pop",
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engage360(
+  customerId: string, interactionId?: string | null,
+): Promise<ThreeSixty> {
+  return caseRequest(`/engage/profiles/${customerId}/360${
+    interactionId ? `?interaction_id=${interactionId}` : ""}`);
+}
+export async function engageVerify(
+  interactionId: string, body: { factor: string; ok: boolean; to_tier: string },
+): Promise<{ verified: boolean; verification_level: string; message?: string;
+             verified_by?: string }> {
+  return caseRequest(`/engage/interactions/${interactionId}/verify`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engageReveal(
+  customerId: string, body: { field_path: string; reason: string;
+                              interaction_id?: string | null },
+): Promise<{ revealed: { field_path: string; at_verification: string; by: string } }> {
+  return caseRequest(`/engage/profiles/${customerId}/reveal`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engageTransfer(
+  interactionId: string, body: { to_agent: string; queue?: string | null },
+): Promise<{ interaction_id: string; verification_level: string;
+             transferred_from: string; note: string }> {
+  return caseRequest(`/engage/interactions/${interactionId}/transfer`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engageWrapUp(
+  interactionId: string, body: { disposition_code: string; notes?: string | null;
+                                 outcome?: string | null },
+): Promise<{ interaction_id: string; status: string }> {
+  return caseRequest(`/engage/interactions/${interactionId}/wrap-up`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engageOnBehalf(
+  customerId: string, body: { interaction_id: string; purpose?: string },
+): Promise<{
+  attribution: Record<string, any>;
+  consent: { granted: boolean; reason?: string; action: string | null;
+             purpose?: string; subject?: string | null; note?: string };
+}> {
+  return caseRequest(`/engage/profiles/${customerId}/on-behalf`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+// ── Rep desk P5/P6 (2026-09-17) ──────────────────────────────────────────────
+
+export interface NextAction { key: string; title: string; why: string; cites: string[] }
+export async function engageNextActions(
+  customerId: string, interactionId?: string | null,
+): Promise<{ customer_id: string; verification: string; actions: NextAction[] }> {
+  return caseRequest(`/engage/profiles/${customerId}/next-actions${
+    interactionId ? `?interaction_id=${interactionId}` : ""}`);
+}
+export async function engageNextActionFeedback(
+  customerId: string, body: { action_key: string; verdict: "accepted" | "rejected";
+                              reason?: string | null; interaction_id?: string | null },
+): Promise<{ id: string; action_key: string; verdict: string }> {
+  return caseRequest(`/engage/profiles/${customerId}/next-actions/feedback`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export interface RecapPoint { text: string; sources: { sid: string; kind: string; ref: string }[] }
+export async function engageRecap(customerId: string, interactionId: string): Promise<{
+  points: RecapPoint[]; sources: { sid: string; kind: string; ref: string }[];
+  withheld: string[]; dropped: number; external_ai?: boolean; note?: string;
+}> {
+  return caseRequest(`/engage/profiles/${customerId}/recap?interaction_id=${interactionId}`,
+    { method: "POST" });
+}
+export interface EngageAnalytics {
+  window_days: number; repeat_window_days: number; since: string; truncated: boolean;
+  interactions: number; by_channel: Record<string, number>; by_status: Record<string, number>;
+  wrap_up_mix: Record<string, number>; aht_seconds: number | null;
+  unresolved_rate: number | null; transfer_rate: number | null; abandoned_rate: number | null;
+  repeat_contact_rate: number | null; first_contact_resolution: number | null;
+  per_agent: { agent: string; interactions: number; aht_seconds: number | null }[];
+  definitions: Record<string, string>;
+}
+export async function engageAnalytics(days = 30, repeatWindowDays = 7): Promise<EngageAnalytics> {
+  return caseRequest(`/engage/analytics?days=${days}&repeat_window_days=${repeatWindowDays}`);
+}
+export type DispositionCode = { code: string; label: string };
+export async function engageDispositionCodes(): Promise<{ codes: DispositionCode[] | null; free_text: boolean }> {
+  return caseRequest("/engage/config/disposition-codes");
+}
+export async function engageSetDispositionCodes(
+  codes: DispositionCode[] | null,
+): Promise<{ codes: DispositionCode[] | null; free_text: boolean }> {
+  return caseRequest("/engage/config/disposition-codes",
+    { method: "PUT", body: JSON.stringify({ codes }) });
+}
+export async function engageCreateProfile(body: {
+  display_name: string; party_kind?: string;
+}): Promise<{ customer: { id: string; display_name: string; party_kind: string;
+                          status: string } }> {
+  return caseRequest("/engage/profiles",
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function engageAddIdentifier(
+  customerId: string, body: { kind: string; value: string; verified?: boolean;
+                              is_primary?: boolean },
+): Promise<{ identifier: { id: string; kind: string; verified: boolean; value: string } }> {
+  return caseRequest(`/engage/profiles/${customerId}/identifiers`,
+    { method: "POST", body: JSON.stringify(body) });
 }

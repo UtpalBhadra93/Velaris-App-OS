@@ -4,7 +4,7 @@ import {
   getPMSummary, getPMActivityStats, getPMBottlenecks,
   getPMVariants, getPMFlowGraph, listCaseTypes, listTenants,
 } from "@shared/api/client";
-import { Card, Spinner, Stat, EmptyState } from "@shared/components";
+import { Card, EmptyState, Spinner, Stat, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -34,7 +34,25 @@ export default function ProcessMining() {
   const caseTypes = ctData?.items ?? [];
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%",
+                  overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Process mining"
+        tabs={[
+          { key: "overview"    as Tab, label: "Overview" },
+          { key: "bottlenecks" as Tab, label: "Bottlenecks" },
+          { key: "variants"    as Tab, label: "Variants" },
+          { key: "flow"        as Tab, label: "Flow" },
+          { key: "activities"  as Tab, label: "Activities" },
+          { key: "insights"    as Tab, label: "Insights" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* Filters live in the body, not beside the tabs: the bar has to reach
+          both edges to sit flush under the app header, the way /help does. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-lg) var(--space-2xl)",
+                    boxSizing: "border-box" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-xl)" }}>
         <div style={{ display: "flex", gap: "var(--space-sm)", alignItems: "center", flexWrap: "wrap" }}>
           <select value={tenantId} onChange={e => handleTenantChange(e.target.value)} style={selectStyle}>
@@ -58,21 +76,6 @@ export default function ProcessMining() {
         </div>
       </div>
 
-      <div style={{
-        display: "flex", gap: 2, marginBottom: "var(--space-xl)",
-        borderBottom: "1px solid var(--border-subtle)",
-      }}>
-        {(["overview", "bottlenecks", "variants", "flow", "activities", "insights"] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
-            textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent",
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1,
-          }}>{t}</button>
-        ))}
-      </div>
 
       {tab === "overview" && <OverviewTab caseTypeId={caseTypeId} days={days} tenantId={tenantId} />}
       {tab === "bottlenecks" && <BottlenecksTab caseTypeId={caseTypeId} days={days} tenantId={tenantId} />}
@@ -80,6 +83,7 @@ export default function ProcessMining() {
       {tab === "flow" && <FlowTab caseTypeId={caseTypeId} days={days} tenantId={tenantId} />}
       {tab === "activities" && <ActivitiesTab caseTypeId={caseTypeId} days={days} tenantId={tenantId} />}
       {tab === "insights" && <InsightsTab caseTypeId={caseTypeId} days={days} />}
+      </div>
     </div>
   );
 }

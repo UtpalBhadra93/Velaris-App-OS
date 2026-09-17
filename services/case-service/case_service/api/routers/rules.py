@@ -7,6 +7,7 @@ SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -16,6 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from case_service.api.schemas.rules import (
     DataValidateRequest,
     DataValidateResponse,
+    DmnImportRequest,
+    DmnImportResponse,
+    DmnImportedTable,
     RuleBatchEvaluateRequest,
     RuleCreate,
     RuleEvaluateRequest,
@@ -29,6 +33,7 @@ from case_service.core.rules_evaluator import (
     evaluate_rules as eval_rules,
     validate_data as validate_data_fn,
 )
+from velaris_shared.core.error_codes import coded
 from velaris_shared.db import repository as repo
 from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
@@ -215,12 +220,23 @@ async def rule_migration_report(
     # NAMES and rule NAMES — an unscoped version would let any authenticated
     # user in one tenant read the process inventory of every other.
     ct_q = select(CaseTypeModel.id, CaseTypeModel.name, CaseTypeModel.version)
-    if user.tenant_id and not hxguard.user_allows(user, "design.rules.read"):
+    from case_service.tenancy.identity import is_superadmin as _is_superadmin
+
+    if not _is_superadmin(user):
         # Global case types (tenant_id NULL) are shared, so they stay visible.
+        #
+        # Until 2026-09-17 this branch was UNREACHABLE: it scoped only callers
+        # without `design.rules.read`, and the route refuses exactly those
+        # callers above — so every tenant's admin read every tenant's case-type
+        # and rule names. It now scopes everybody but a superadmin. A caller
+        # with no tenant claim is the default tenant; `case_types.tenant_id` is
+        # a GUID, so the claim is resolved rather than compared as a string.
+        from case_service.tenancy.identity import resolve_tenant as _rt
+        mine = await _rt(session, user.tenant_id or "default")
         ct_q = ct_q.where(
             or_(
                 CaseTypeModel.tenant_id.is_(None),
-                CaseTypeModel.tenant_id == user.tenant_id,
+                CaseTypeModel.tenant_id == (mine[0] if mine else None),
             )
         )
     case_types = (await session.execute(ct_q)).all()
@@ -351,6 +367,108 @@ async def delete_rule(
     from case_service.testsuite import regen
     background_tasks.add_task(regen.bg_scenario_source_changed,
                               rule.scope_target_id if rule else None)
+
+
+# ─── DMN interchange (market gap B5) ──────────────────────────────
+#
+# The engine has always run decision tables; what was missing was the standard
+# file. Camunda and Flowable are DMN-native, so a customer migrating from either
+# arrives holding `.dmn` files. See `core/dmn.py` for what is read and — more
+# importantly — what is refused rather than approximated.
+
+
+@router.post("/dmn/import", response_model=DmnImportResponse)
+async def import_dmn(
+    body: DmnImportRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
+):
+    """Read a DMN file and (unless previewing) create one rule per table.
+
+    **All or nothing.** A file whose second table cannot be read creates
+    neither: an import that quietly skips what it could not understand leaves an
+    operator believing they migrated a decision they did not.
+    """
+    from case_service.core.dmn import DmnError, parse_dmn
+
+    try:
+        decisions = parse_dmn(body.xml)
+    except DmnError as exc:
+        status = int(exc.code.rsplit("-", 1)[1])
+        raise coded(status, exc.code, exc.message) from exc
+
+    tables: list[DmnImportedTable] = []
+    created = 0
+    for decision in decisions:
+        columns = decision.definition_json["table_columns"]
+        summary = DmnImportedTable(
+            name=decision.name,
+            rule_type=decision.rule_type,
+            hit_policy=decision.definition_json["hit_policy"],
+            input_count=sum(1 for c in columns if c.get("is_condition", True)),
+            output_count=sum(1 for c in columns if not c.get("is_condition", True)),
+            row_count=len(decision.definition_json["table_rows"]),
+            notes=decision.notes,
+        )
+        if not body.dry_run:
+            rule = await repo.create_rule(
+                session,
+                data={
+                    "name": decision.name,
+                    "version": body.version,
+                    "rule_type": decision.rule_type,
+                    "scope": body.scope,
+                    "scope_target_id": body.scope_target_id,
+                    "definition_json": decision.definition_json,
+                    "enabled": body.enabled,
+                    "priority": 0,
+                },
+            )
+            summary.rule_id = rule.id
+            created += 1
+        tables.append(summary)
+
+    if created:
+        from case_service.testsuite import regen
+        background_tasks.add_task(regen.bg_scenario_source_changed, body.scope_target_id)
+
+    return DmnImportResponse(dry_run=body.dry_run, tables=tables, created=created)
+
+
+@router.get("/{rule_id}/dmn")
+async def export_dmn(
+    rule_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """A stored decision table as a DMN 1.3 file.
+
+    Gated exactly as `GET /rules/{rule_id}` is — this returns the same rule in
+    another notation and exposes nothing the JSON did not.
+    """
+    from fastapi.responses import Response
+    from case_service.core.dmn import DmnError, to_dmn
+
+    rule = await repo.get_rule(session, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    if rule.rule_type not in ("decision_table", "decision_tree"):
+        raise coded(
+            409, "VEL-RULE-DMN-EXPORT-409",
+            f"'{rule.name}' is a {rule.rule_type} rule. DMN describes decision "
+            "tables; there is no standard file for the other rule kinds.",
+        )
+    try:
+        xml = to_dmn(rule.name, rule.definition_json or {})
+    except DmnError as exc:
+        raise coded(409, exc.code, exc.message) from exc
+
+    filename = re.sub(r"[^A-Za-z0-9_.-]", "_", rule.name)[:60] or "decision"
+    return Response(
+        content=xml,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.dmn"'},
+    )
 
 
 # ─── Evaluation ───────────────────────────────────────────────────

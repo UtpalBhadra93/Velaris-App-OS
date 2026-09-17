@@ -15,6 +15,11 @@ spec:
   template:
     metadata: { labels: { app: worker } }
     spec:
+      # Nothing here talks to the Kubernetes API, so the default token has no
+      # reader — and a mounted token is a credential an escaped process finds.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "helix.podSecurityContext" . | nindent 8 }}
       terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
       containers:
         - name: worker
@@ -36,13 +41,18 @@ spec:
           command: ["python", "-m", "case_service.temporal.worker"]
           env:
             - name: VELARIS_CASE_DATABASE_URL
-              value: {{ include "helix.databaseUrl" . | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "helix.dbSecretName" . }}
+                  key: {{ include "helix.dbSecretKey" . }}
             - name: VELARIS_CASE_DATABASE_BACKEND
               value: {{ include "helix.databaseBackend" . | quote }}
             - name: TEMPORAL_HOST
               value: {{ .Values.worker.temporalHost | quote }}
             - name: VELARIS_CASE_TASK_QUEUE
               value: {{ .Values.worker.taskQueue | quote }}
+          securityContext:
+            {{- include "helix.containerSecurityContext" . | nindent 12 }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
 {{- end }}

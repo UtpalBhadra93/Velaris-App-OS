@@ -100,7 +100,7 @@ export default function PrivacyPanel() {
           </div>
         )}
 
-        <div style={{ fontSize: 11, color: "#888", marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
           Re-running a scan never overwrites a human verdict — a confirmed or dismissed finding
           only has its last-seen time refreshed. Fields that disappear are marked stale, not deleted.
         </div>
@@ -147,20 +147,20 @@ export default function PrivacyPanel() {
             </thead>
             <tbody>
               {findings.map(f => (
-                <tr key={f.id} style={f.special_category ? { background: "#fffaf0" } : undefined}>
+                <tr key={f.id} style={f.special_category ? { background: "rgba(247,183,49,0.10)" } : undefined}>
                   <td style={{ ...td, ...mono }}>
                     {f.field_path}
                     {f.special_category && <span title="Article 9 special category"> ⚠</span>}
                   </td>
                   <td style={td}>
                     {f.resource_name || "—"}
-                    <span style={{ color: "#999" }}> ({f.resource_type})</span>
+                    <span style={{ color: "var(--text-muted)" }}> ({f.resource_type})</span>
                   </td>
                   <td style={td}>{f.category}</td>
                   <td style={td}>
                     <Confidence value={f.confidence} />
                   </td>
-                  <td style={{ ...td, color: "#666" }}>{f.reason}</td>
+                  <td style={{ ...td, color: "var(--text-secondary)" }}>{f.reason}</td>
                   <td style={td}>{f.status}{f.reviewed_by ? ` (${f.reviewed_by})` : ""}</td>
                   <td style={td}>
                     {f.status === "detected" ? (
@@ -172,7 +172,7 @@ export default function PrivacyPanel() {
                           Dismiss
                         </button>
                       </>
-                    ) : <span style={{ color: "#999" }}>—</span>}
+                    ) : <span style={{ color: "var(--text-muted)" }}>—</span>}
                   </td>
                 </tr>
               ))}
@@ -188,7 +188,7 @@ export default function PrivacyPanel() {
 function Confidence({ value }: { value: number }) {
   const low = value < 0.6;
   return (
-    <span style={{ color: low ? "#8a6d00" : "#222", fontWeight: low ? 400 : 600 }}>
+    <span style={{ color: low ? "var(--status-running)" : "var(--text-primary)", fontWeight: low ? 400 : 600 }}>
       {(value * 100).toFixed(0)}%{low ? " — needs a human" : ""}
     </span>
   );

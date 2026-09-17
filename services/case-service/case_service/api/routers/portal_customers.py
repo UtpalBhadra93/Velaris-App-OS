@@ -530,6 +530,9 @@ async def portal_account_cases(
         select(CaseInstanceModel)
         .join(PortalCustomerCaseLinkModel, PortalCustomerCaseLinkModel.case_id == CaseInstanceModel.id)
         .where(PortalCustomerCaseLinkModel.customer_id == customer.id)
+        # 199 — a deleted case leaves the customer's own list too, for the same
+        # reason it leaves the staff one: it is hidden, not merely unactionable.
+        .where(CaseInstanceModel.is_deleted.is_(False))
         .order_by(CaseInstanceModel.created_at.desc())
     )).scalars().all()
 

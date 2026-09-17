@@ -223,9 +223,13 @@ class EmailService:
 
         # Idempotency — check both directions to avoid duplicates across folder switches
         if parsed["message_id"]:
+            # Per tenant: the same message delivered to two tenants' mailboxes is
+            # two rows, and one tenant's copy must not swallow the other's.
             q = select(EmailMessageModel).where(
                 EmailMessageModel.message_id == parsed["message_id"],
-            )
+                (EmailMessageModel.tenant_id == tenant_id) if tenant_id is not None
+                else EmailMessageModel.tenant_id.is_(None),
+            ).limit(1)
             existing = (await session.execute(q)).scalar_one_or_none()
             if existing is not None:
                 return existing
@@ -235,6 +239,7 @@ class EmailService:
             in_reply_to=parsed["in_reply_to"],
             references=parsed["references"],
             subject=parsed["subject"],
+            tenant_id=tenant_id,
         )
 
         # Fallback: fuzzy case-type routing for unmatched inbound messages.
@@ -248,7 +253,8 @@ class EmailService:
             )
             from_addr = (parsed["from_address"] or "").lower().strip()
             for score, ct in candidates:
-                open_case = await find_open_case_for_sender(session, from_addr, ct.id)
+                open_case = await find_open_case_for_sender(
+                    session, from_addr, ct.id, tenant_id=tenant_id)
                 if open_case is not None:
                     case_id = open_case.id
                     matched_via_type = True

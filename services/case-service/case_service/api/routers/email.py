@@ -19,6 +19,7 @@ from velaris_shared.core.error_codes import CONSENT_REFUSED_403, coded
 from case_service.mail import EmailService
 from case_service.mail.service import ConsentRefused
 from case_service.mail.templates import render_template, TemplateError
+from case_service.mail import tenancy as mail_tenancy
 
 router = APIRouter(prefix="/email", tags=["email"])
 service = EmailService()
@@ -84,6 +85,63 @@ class TemplateRenderIn(BaseModel):
     ctx: dict = {}
 
 
+def _where(q, scope, column):
+    c = mail_tenancy.clause(scope, column)
+    return q if c is None else q.where(c)
+
+
+async def _own_account(session: AsyncSession, user, account_id: uuid.UUID):
+    """The mailbox, if it is the caller's tenant's. Another tenant's mailbox is a
+    404 — a 403 would confirm it exists."""
+    scope = await mail_tenancy.scope_for(session, user)
+    a = await session.get(EmailAccountModel, account_id)
+    if a is None or not mail_tenancy.owns(scope, a.tenant_id):
+        raise HTTPException(404, "Account not found")
+    return a, scope
+
+
+async def _own_message(session: AsyncSession, user, msg_id: uuid.UUID):
+    scope = await mail_tenancy.scope_for(session, user)
+    m = await session.get(EmailMessageModel, msg_id)
+    if m is None or not mail_tenancy.owns(scope, m.tenant_id):
+        raise HTTPException(404, "Message not found")
+    return m, scope
+
+
+async def _tenant_for_write(session: AsyncSession, scope, requested: Optional[str]) -> Optional[str]:
+    """The tenant a new mailbox or template is written under.
+
+    Anyone but a superadmin writes into their own tenant, whatever the body says.
+    A superadmin may name a tenant, which must exist.
+    """
+    if not scope.everything:
+        return scope.slug
+    if requested in (None, ""):
+        return None
+    from case_service.tenancy.identity import resolve_tenant
+    resolved = await resolve_tenant(session, requested)
+    if resolved is None:
+        raise HTTPException(400, f"{requested!r} is not a tenant on this platform")
+    return resolved[1]
+
+
+async def _clear_other_defaults(session: AsyncSession, keep_id, tenant_value) -> None:
+    """One default outbound mailbox PER TENANT. Until 2026-09-17 marking a
+    mailbox default cleared every other tenant's default too."""
+    scope = await mail_tenancy.scope_for_token(session, tenant_value)
+    q = select(EmailAccountModel).where(EmailAccountModel.is_default_outbound.is_(True))
+    if keep_id is not None:
+        q = q.where(EmailAccountModel.id != keep_id)
+    q = _where(q, scope, EmailAccountModel.tenant_id)
+    for existing in (await session.execute(q)).scalars().all():
+        if existing.tenant_id in (None, "") and tenant_value not in (None, ""):
+            # An unassigned mailbox is the default tenant's; a named tenant's
+            # default must not clear it unless that tenant IS the default.
+            if not scope.owns_unassigned:
+                continue
+        existing.is_default_outbound = False
+
+
 def _account_to_dict(a):
     return {
         "id": str(a.id), "name": a.name, "address": a.address,
@@ -133,12 +191,12 @@ async def create_account(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    a = EmailAccountModel(**body.model_dump())
+    scope = await mail_tenancy.scope_for(session, user)
+    values = body.model_dump()
+    values["tenant_id"] = await _tenant_for_write(session, scope, body.tenant_id)
+    a = EmailAccountModel(**values)
     if body.is_default_outbound:
-        for existing in (await session.execute(
-            select(EmailAccountModel).where(EmailAccountModel.is_default_outbound.is_(True))
-        )).scalars().all():
-            existing.is_default_outbound = False
+        await _clear_other_defaults(session, None, a.tenant_id)
     session.add(a)
     await session.flush()
     return _account_to_dict(a)
@@ -150,7 +208,9 @@ async def list_accounts(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
-    q = select(EmailAccountModel).order_by(EmailAccountModel.created_at.desc())
+    scope = await mail_tenancy.scope_for(session, _user)
+    q = _where(select(EmailAccountModel).order_by(EmailAccountModel.created_at.desc()),
+               scope, EmailAccountModel.tenant_id)
     if active_only:
         q = q.where(EmailAccountModel.is_active.is_(True))
     res = await session.execute(q)
@@ -164,21 +224,18 @@ async def update_account(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    a = await session.get(EmailAccountModel, account_id)
-    if a is None:
-        raise HTTPException(404, "Account not found")
+    a, scope = await _own_account(session, user, account_id)
     for k, v in body.model_dump().items():
         if k in ("smtp_password", "imap_password") and v is None:
             continue  # None means "keep existing" — never wipe a stored password
+        if k == "tenant_id":
+            # Only a superadmin moves a mailbox between tenants.
+            if scope.everything:
+                a.tenant_id = await _tenant_for_write(session, scope, v)
+            continue
         setattr(a, k, v)
     if body.is_default_outbound:
-        for existing in (await session.execute(
-            select(EmailAccountModel).where(
-                EmailAccountModel.is_default_outbound.is_(True),
-                EmailAccountModel.id != account_id,
-            )
-        )).scalars().all():
-            existing.is_default_outbound = False
+        await _clear_other_defaults(session, account_id, a.tenant_id)
     await session.flush()
     # #27 Part B: email-account change can affect intake AI scenarios → flag
     # generated suites' AI layer stale (manual regen).
@@ -193,9 +250,7 @@ async def deactivate_account(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    a = await session.get(EmailAccountModel, account_id)
-    if a is None:
-        raise HTTPException(404, "Account not found")
+    a, _ = await _own_account(session, user, account_id)
     a.is_active = False
     await session.flush()
     return _account_to_dict(a)
@@ -207,10 +262,9 @@ async def delete_account(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    a = await session.get(EmailAccountModel, account_id)
-    if a is not None:
-        await session.delete(a)
-        await session.flush()
+    a, _ = await _own_account(session, user, account_id)
+    await session.delete(a)
+    await session.flush()
     from starlette.responses import Response
     return Response(status_code=204)
 
@@ -223,7 +277,10 @@ async def create_template(
 ):
     if body.scope == "case_type" and body.case_type_id is None:
         raise HTTPException(400, "case_type_id required when scope='case_type'")
-    t = EmailTemplateModel(**body.model_dump())
+    scope = await mail_tenancy.scope_for(session, _user)
+    values = body.model_dump()
+    values["tenant_id"] = await _tenant_for_write(session, scope, body.tenant_id)
+    t = EmailTemplateModel(**values)
     session.add(t)
     await session.flush()
     return _tpl_to_dict(t)
@@ -236,7 +293,9 @@ async def list_templates(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
-    q = select(EmailTemplateModel).order_by(EmailTemplateModel.updated_at.desc())
+    scope = await mail_tenancy.scope_for(session, _user)
+    q = _where(select(EmailTemplateModel).order_by(EmailTemplateModel.updated_at.desc()),
+               scope, EmailTemplateModel.tenant_id)
     if active_only:
         q = q.where(EmailTemplateModel.is_active.is_(True))
     if case_type_id:
@@ -254,10 +313,15 @@ async def update_template(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
+    scope = await mail_tenancy.scope_for(session, _user)
     t = await session.get(EmailTemplateModel, tpl_id)
-    if t is None:
+    if t is None or not mail_tenancy.owns(scope, t.tenant_id):
         raise HTTPException(404, "Template not found")
     for k, v in body.model_dump().items():
+        if k == "tenant_id":
+            if scope.everything:
+                t.tenant_id = await _tenant_for_write(session, scope, v)
+            continue
         setattr(t, k, v)
     await session.flush()
     return _tpl_to_dict(t)
@@ -268,8 +332,9 @@ async def delete_template(
     tpl_id: uuid.UUID, session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
+    scope = await mail_tenancy.scope_for(session, _user)
     t = await session.get(EmailTemplateModel, tpl_id)
-    if t is not None:
+    if t is not None and mail_tenancy.owns(scope, t.tenant_id):
         t.is_active = False
         await session.flush()
     from starlette.responses import Response
@@ -298,21 +363,25 @@ async def send_email(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    account = None
+    # A mailbox is its tenant's identity to the outside world: a caller sends
+    # only through their own tenant's. Naming another tenant's mailbox is a 404,
+    # and the default is this tenant's default, not the platform's.
+    scope = await mail_tenancy.scope_for(session, user)
     if body.account_id:
         account = await session.get(EmailAccountModel, body.account_id)
-    if account is None:
-        q = select(EmailAccountModel).where(
-            EmailAccountModel.is_default_outbound.is_(True),
-            EmailAccountModel.is_active.is_(True),
-        ).limit(1)
-        account = (await session.execute(q)).scalar_one_or_none()
+        if account is None or not mail_tenancy.owns(scope, account.tenant_id):
+            raise HTTPException(404, "Account not found")
+    else:
+        account = await mail_tenancy.default_outbound(session, scope)
     if account is None:
         raise HTTPException(400, "No outbound email account configured")
 
     if body.case_id:
+        from case_service.tenancy.identity import case_visible_to
         case = await session.get(CaseInstanceModel, body.case_id)
-        if case is None:
+        if case is None or not await case_visible_to(
+                session, case.tenant_id, getattr(user, "tenant_id", None),
+                is_superadmin_caller=scope.everything):
             raise HTTPException(404, "Case not found")
 
     try:
@@ -359,7 +428,9 @@ async def list_messages(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
-    q = select(EmailMessageModel).order_by(EmailMessageModel.created_at.desc()).limit(limit)
+    scope = await mail_tenancy.scope_for(session, _user)
+    q = _where(select(EmailMessageModel).order_by(EmailMessageModel.created_at.desc()).limit(limit),
+               scope, EmailMessageModel.tenant_id)
     if case_id:
         q = q.where(EmailMessageModel.case_id == case_id)
     if direction:
@@ -377,9 +448,7 @@ async def get_message(
     msg_id: uuid.UUID, session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
-    m = await session.get(EmailMessageModel, msg_id)
-    if m is None:
-        raise HTTPException(404, "Message not found")
+    m, _ = await _own_message(session, _user, msg_id)
     return _msg_to_dict(m)
 
 
@@ -389,9 +458,7 @@ async def mark_read(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    m = await session.get(EmailMessageModel, msg_id)
-    if m is None:
-        raise HTTPException(404, "Message not found")
+    m, _ = await _own_message(session, _user, msg_id)
     m.is_read = read
     await session.flush()
     return {"id": str(m.id), "is_read": m.is_read}
@@ -403,11 +470,12 @@ async def assign_to_case(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.configure")),
 ):
-    m = await session.get(EmailMessageModel, msg_id)
-    if m is None:
-        raise HTTPException(404, "Message not found")
+    m, scope = await _own_message(session, _user, msg_id)
+    from case_service.tenancy.identity import case_visible_to
     case = await session.get(CaseInstanceModel, case_id)
-    if case is None:
+    if case is None or not await case_visible_to(
+            session, case.tenant_id, getattr(_user, "tenant_id", None),
+            is_superadmin_caller=scope.everything):
         raise HTTPException(404, "Case not found")
     m.case_id = case_id
     if m.status == "unmatched":
@@ -421,6 +489,8 @@ async def inbox_stats(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("platform.email.read")),
 ):
+    scope = await mail_tenancy.scope_for(session, _user)
+    own = mail_tenancy.clause(scope, EmailMessageModel.tenant_id)
     q_unread = select(func.count()).select_from(EmailMessageModel).where(
         EmailMessageModel.direction == "inbound",
         EmailMessageModel.is_read.is_(False),
@@ -433,6 +503,8 @@ async def inbox_stats(
         EmailMessageModel.direction == "outbound",
         EmailMessageModel.status == "failed",
     )
+    if own is not None:
+        q_unread, q_unmatched, q_failed = (q.where(own) for q in (q_unread, q_unmatched, q_failed))
     return {
         "unread_inbound": int((await session.execute(q_unread)).scalar_one()),
         "unmatched_inbound": int((await session.execute(q_unmatched)).scalar_one()),
@@ -444,9 +516,14 @@ async def inbox_stats(
 async def simulate_inbound(
     body: dict = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.email.operate")),
 ):
-    """Inject a fake inbound email through the real ingest pipeline for testing."""
+    """Inject a fake inbound email through the real ingest pipeline for testing.
+
+    Gated on `platform.email.operate` since 2026-09-17 — it was open to any
+    signed-in user, and it writes mail into the caller's tenant's inbox and can
+    attach it to a case. The message lands in the caller's own tenant.
+    """
     import email as _email_lib
     from email.mime.text import MIMEText
     from datetime import datetime, timezone
@@ -476,7 +553,7 @@ async def simulate_inbound(
         session, raw,
         account_id=None,
         account_address=to_address,
-        tenant_id=None,
+        tenant_id=(await mail_tenancy.scope_for(session, user)).slug,
     )
     await session.commit()
     await session.refresh(msg)
@@ -492,7 +569,9 @@ async def poll_now(
     from case_service.mail.worker import poll_one_account
     from velaris_shared.db.session import get_session_factory
 
-    q = select(EmailAccountModel).where(EmailAccountModel.is_active.is_(True))
+    scope = await mail_tenancy.scope_for(session, user)
+    q = _where(select(EmailAccountModel).where(EmailAccountModel.is_active.is_(True)),
+               scope, EmailAccountModel.tenant_id)
     if account_id:
         q = q.where(EmailAccountModel.id == account_id)
     accounts = (await session.execute(q)).scalars().all()
@@ -519,9 +598,7 @@ async def test_connection(
     import smtplib
     import imaplib as _imap
 
-    a = await session.get(EmailAccountModel, account_id)
-    if a is None:
-        raise HTTPException(404, "Account not found")
+    a, _ = await _own_account(session, user, account_id)
 
     result: dict = {"smtp": None, "imap": None}
 

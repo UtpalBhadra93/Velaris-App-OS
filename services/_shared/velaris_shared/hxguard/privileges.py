@@ -132,6 +132,29 @@ LEGACY_PRIVILEGE_RESOURCES = frozenset({
     "case", "case_type", "form", "workflow", "document", "queue", "report",
 })
 
+#: Platform resources that happen to sit UNDER a legacy head, and are reachable
+#: from data anyway.
+#:
+#: The rule above is about **vocabulary**, not about spelling: a row saying
+#: `{"resource": "case"}` was written years ago and means "every case-level
+#: resource", so it must not reach a platform action. A row saying
+#: `{"resource": "case.actions"}` could not have been written years ago — that
+#: resource did not exist until migration 198 — so there is no legacy meaning to
+#: protect and nothing an existing grant could accidentally satisfy.
+#:
+#: Without this, `case.actions.close` and its five siblings were reachable ONLY
+#: through the seeded role table: an operator could not grant "may close a case"
+#: to a role of their own from data, which is the corner of the model
+#: `test_no_new_action_is_ungrantable` exists to keep empty. The same trap took
+#: four `risk.*` actions on 2026-08-15, where the fix was a rename; a rename is
+#: the wrong tool here, because `case.actions.*` is the honest name and the
+#: eleven actions it gates are, in fact, case actions.
+#:
+#: **Exact matches only** — a prefix rule would let `case.anything.x` through.
+PLATFORM_RESOURCES_UNDER_A_LEGACY_HEAD = frozenset({
+    "case.actions",
+})
+
 
 def _crosses_into_platform_namespace(priv: Privilege) -> bool:
     """Does this access-group entry mean anything in the *platform* namespace?
@@ -151,6 +174,8 @@ def _crosses_into_platform_namespace(priv: Privilege) -> bool:
     resource = str(priv.get("resource", ""))
     if resource in ("", WILDCARD):
         return False
+    if resource in PLATFORM_RESOURCES_UNDER_A_LEGACY_HEAD:
+        return True
     head = resource.split(".")[0]
     if head in LEGACY_PRIVILEGE_RESOURCES:
         return False

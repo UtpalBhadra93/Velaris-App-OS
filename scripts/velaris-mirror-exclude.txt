@@ -1,0 +1,42 @@
+# rsync exclude list for the Velaris release-twin sync.
+#
+#   rsync -rcin --exclude-from=scripts/velaris-mirror-exclude.txt <dirs> <files> Velaris/
+#
+# Run it with -n FIRST and read the list. The dry run is the control, not this
+# file: an exclude list is only as good as the last artefact somebody thought of,
+# and on 2026-09-09 the one nobody had thought of was `deploy/tls/certs/` — this
+# box's private keys, about to be copied into the release twin, where
+# `Velaris/.gitignore` has no `*.key` rule to catch them on the way out.
+#
+# Two groups: local build/runtime state, and anything `setup-velaris.sh`
+# GENERATES. An install makes its own identity; the twin must not carry one.
+#
+# See CLAUDE.md, "Velaris/ mirror — required files ONLY".
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+*.bak*
+*.log
+.vite/
+services/case-service/data/
+# Uploaded documents written by a running install (found in the 2026-09-17 dry
+# run: a user upload about to be copied into the twin).
+data/documents/
+migrations/mysql/historical/
+.git/
+.env
+git_push.sh
+.gitignore
+fonts/
+deploy/tls/certs/
+deploy/helm/velaris/charts/
+deploy/openbao/agent/role_id
+deploy/openbao/agent/secret_id
+deploy/openbao/agent/out/
+deploy/openbao/.bao-init.json
+deploy/openbao/enabled

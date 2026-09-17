@@ -228,9 +228,19 @@ def test_17_get_ocr_engine_returns_stub_by_default():
 
 @pytest.mark.asyncio
 async def test_18_api_upload_and_get(client: AsyncClient, session, seeded_case, monkeypatch, tmp_path):
-    # Force service to use LocalFS for test isolation
+    # Force the route's service onto a LocalFS backend under this test's own
+    # tmp_path.
+    #
+    # **Through `monkeypatch`, which restores it.** This was a bare assignment
+    # until 2026-09-08, and `documents.service` is a MODULE-LEVEL singleton: the
+    # replacement therefore outlived the test, and every
+    # `GET /documents/{id}/download` for the rest of the session read from a
+    # `tmp_path` pytest had already deleted. It surfaced ~700 tests later as a
+    # single `ObjectNotFound` in `phase_hxmeet` — a file written to the real
+    # store and looked for somewhere else — and it had quietly been taking the
+    # real storage path out of every full run since this file was written.
     from case_service.api.routers import documents as docs_router_mod
-    docs_router_mod.service = DocumentService(backend=LocalFSBackend(tmp_path / "api_docs"))
+    monkeypatch.setattr(docs_router_mod, "service", DocumentService(backend=LocalFSBackend(tmp_path / "api_docs")))
 
     files = {"file": ("spec.txt", b"spec contents", "text/plain")}
     data = {"case_id": str(seeded_case.id), "uploaded_by": "api-tester"}
@@ -244,9 +254,9 @@ async def test_18_api_upload_and_get(client: AsyncClient, session, seeded_case, 
 
 
 @pytest.mark.asyncio
-async def test_19_api_download(client: AsyncClient, session, seeded_case, tmp_path):
+async def test_19_api_download(client: AsyncClient, session, seeded_case, monkeypatch, tmp_path):
     from case_service.api.routers import documents as docs_router_mod
-    docs_router_mod.service = DocumentService(backend=LocalFSBackend(tmp_path / "dl_docs"))
+    monkeypatch.setattr(docs_router_mod, "service", DocumentService(backend=LocalFSBackend(tmp_path / "dl_docs")))
 
     files = {"file": ("data.txt", b"raw-bytes", "text/plain")}  # .bin blocked by upload allowlist
     data = {"case_id": str(seeded_case.id)}
@@ -259,9 +269,9 @@ async def test_19_api_download(client: AsyncClient, session, seeded_case, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_20_api_list_by_case(client: AsyncClient, session, seeded_case, tmp_path):
+async def test_20_api_list_by_case(client: AsyncClient, session, seeded_case, monkeypatch, tmp_path):
     from case_service.api.routers import documents as docs_router_mod
-    docs_router_mod.service = DocumentService(backend=LocalFSBackend(tmp_path / "list_docs"))
+    monkeypatch.setattr(docs_router_mod, "service", DocumentService(backend=LocalFSBackend(tmp_path / "list_docs")))
 
     for fn in ("a.txt", "b.txt", "c.txt"):
         files = {"file": (fn, b"x", "text/plain")}
@@ -274,9 +284,9 @@ async def test_20_api_list_by_case(client: AsyncClient, session, seeded_case, tm
 
 
 @pytest.mark.asyncio
-async def test_21_api_versioning(client: AsyncClient, session, seeded_case, tmp_path):
+async def test_21_api_versioning(client: AsyncClient, session, seeded_case, monkeypatch, tmp_path):
     from case_service.api.routers import documents as docs_router_mod
-    docs_router_mod.service = DocumentService(backend=LocalFSBackend(tmp_path / "ver_docs"))
+    monkeypatch.setattr(docs_router_mod, "service", DocumentService(backend=LocalFSBackend(tmp_path / "ver_docs")))
 
     files = {"file": ("doc.txt", b"v1", "text/plain")}
     data = {"case_id": str(seeded_case.id)}
@@ -294,9 +304,9 @@ async def test_21_api_versioning(client: AsyncClient, session, seeded_case, tmp_
 
 
 @pytest.mark.asyncio
-async def test_22_api_delete(client: AsyncClient, session, seeded_case, tmp_path):
+async def test_22_api_delete(client: AsyncClient, session, seeded_case, monkeypatch, tmp_path):
     from case_service.api.routers import documents as docs_router_mod
-    docs_router_mod.service = DocumentService(backend=LocalFSBackend(tmp_path / "del_docs"))
+    monkeypatch.setattr(docs_router_mod, "service", DocumentService(backend=LocalFSBackend(tmp_path / "del_docs")))
 
     files = {"file": ("tmp.txt", b"x", "text/plain")}
     data = {"case_id": str(seeded_case.id)}

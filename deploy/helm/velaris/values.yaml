@@ -1,5 +1,35 @@
 # ── HELIX Helm chart values ─────────────────────────────────────────
 
+# ── Pod hardening ────────────────────────────────────────────────────
+# Applied to every Velaris workload (the bundled PostgreSQL and Valkey subcharts
+# already carry their own). The images run as an unprivileged user; this states
+# it where the cluster enforces it, and meets the `restricted` Pod Security
+# Standard.
+podSecurity:
+  runAsNonRoot: true
+  # Left empty so the image's own USER decides (case-service `helix`, the others
+  # `velaris`). Set both only if you know the uid your image runs as — a wrong
+  # uid means a pod that cannot read its own files.
+  runAsUser: ""
+  # The images' group (uid/gid 10001). This is what makes a MOUNTED VOLUME
+  # writable by a non-root pod: most storage classes present a fresh volume as
+  # root:root 0755, and without `fsGroup` the document PVC below is mounted and
+  # unwritable — kind's local-path provisioner hands out 0777 and hides it, a
+  # real cluster does not. Set to "" only if your images run as another gid.
+  fsGroup: 10001
+  seccompProfile: RuntimeDefault
+  # OFF by default, deliberately: with local document storage case-service writes
+  # uploads to the container filesystem, and a read-only root turns that into a
+  # 500 on upload. Turn it on when documents go to S3/MinIO.
+  readOnlyRootFilesystem: false
+
+# ── The database URL lives in a Secret ───────────────────────────────
+# `existingSecret` points at one you manage (external secret manager, sealed
+# secret); the chart then creates none. `key` is the entry inside it.
+databaseSecret:
+  existingSecret: ""
+  key: database-url
+
 image:
   caseService:
     repository: helix/case-service
@@ -68,6 +98,25 @@ hxmigrateService:
 
 caseService:
   replicaCount: 2
+  # ── Where uploaded documents go ───────────────────────────────────
+  # The default store is a FILESYSTEM path inside the container
+  # (`./data/velaris-docs`). In a cluster that means two things nobody is told
+  # at upload time: a document is lost when its pod restarts, and with more than
+  # one replica each pod holds a different set, so a download hits the wrong pod
+  # and 404s.
+  #
+  # Two honest options: point the platform at MinIO/S3
+  # (`VELARIS_CASE_STORAGE_BACKEND=minio` in `caseService.env`), or keep the
+  # filesystem and give it a volume here. A ReadWriteOnce volume only works with
+  # ONE replica; more than one needs ReadWriteMany.
+  documents:
+    mountPath: /app/data
+    existingClaim: ""
+    persistence:
+      enabled: false
+      size: 20Gi
+      storageClass: ""
+      accessModes: ["ReadWriteOnce"]
   port: 8200
   resources:
     requests: { cpu: 250m, memory: 256Mi }
@@ -108,8 +157,31 @@ worker:
     maxReplicaCount: 20
     queueDepthThreshold: 50
 
+# ── Bundled database and cache images: PINNED BY DIGEST ─────────────
+#
+# Found 2026-08-26, fixed 2026-09-09. The chart pinned the *chart* version and
+# left the *image* floating: three of the four subcharts default to
+# `bitnami/<name>:latest`, so two clusters installing the same chart version a
+# month apart run different database builds, and an existing cluster silently
+# upgrades its database the next time a pod is rescheduled.
+#
+# The obvious fix — pin a version tag — is not available. Bitnami's 2025 policy
+# leaves only `latest` in the free `bitnami/` namespace and moves every
+# versioned tag to `bitnamilegacy/`. So the pin is a DIGEST: still the
+# maintained image, no longer a moving one. Each digest below was resolved with
+# `docker buildx imagetools inspect bitnami/<name>:latest` on 2026-09-09 and is
+# the build the K8s verification ran against.
+#
+# To take a newer database: resolve the digest again, replace it here, and run
+# the cluster verification. That is a deliberate act with a test behind it,
+# which is exactly what `latest` took away.
+
 postgresql:
   enabled: true
+  image:
+    repository: bitnami/postgresql
+    tag: latest
+    digest: "sha256:5614f19e4a5077217e53b3bd7e7f69d06af6a02919af4b90a9702e3648190c8c"
   auth:
     username: helix
     password: helix_dev_password
@@ -118,8 +190,24 @@ postgresql:
 # Exactly one database may be enabled. PostgreSQL stays the default: an
 # existing install upgrading to this chart version sees no change at all.
 # Enabling either of these means also setting postgresql.enabled=false.
+# MySQL is the sharp one. `docker.io/bitnami/mysql` is **EMPTY** — not "only
+# latest", zero tags — so the version this chart pinned (9.4.0-debian-12-r1)
+# cannot be pulled at all and `mysql.enabled=true` would ImagePullBackOff on a
+# fresh cluster. The image itself still exists under `bitnamilegacy/`, which is
+# where it is pointed, pinned by digest, so the path works today.
+#
+# `bitnamilegacy/` is FROZEN: it receives no updates and no security fixes. An
+# operator running MySQL in production should point the chart at a database
+# they operate (set `mysql.enabled=false` and give the platform its URL) rather
+# than depend on an archived image. Said here rather than in a release note,
+# because this file is where somebody enables it.
 mysql:
   enabled: false
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mysql
+    tag: 9.4.0-debian-12-r1
+    digest: "sha256:ec13e229247a737f7149b7f255d8f2d9c72da861f8bf263b22091bf131540da3"
   auth:
     username: helix
     password: helix_dev_password
@@ -128,6 +216,10 @@ mysql:
 
 mariadb:
   enabled: false
+  image:
+    repository: bitnami/mariadb
+    tag: latest
+    digest: "sha256:16c4d59ca1e33e557e5003596d244aefac4dd03220c8967ae12e3cee2a4c7dd9"
   auth:
     username: helix
     password: helix_dev_password
@@ -137,6 +229,10 @@ mariadb:
 valkey:
   enabled: true
   architecture: standalone
+  image:
+    repository: bitnami/valkey
+    tag: latest
+    digest: "sha256:b330d587970c5925265a12d367feba4b6cd89078c75ba118ffb70002834c1a7c"
   auth:
     enabled: false
 
@@ -150,6 +246,17 @@ terminationDrainSeconds: 5
 podDisruptionBudget:
   enabled: false
   minAvailable: 1
+
+# ── NetworkPolicy ────────────────────────────────────────────────────
+# OFF by default: policies in a cluster whose CNI ignores them buy nothing, and
+# in one that enforces them they cut off whatever this chart did not think of.
+# Enabled, each Velaris service accepts traffic only from this chart's own pods
+# and (optionally) the ingress controller's namespace.
+networkPolicy:
+  enabled: false
+  ingressControllerNamespace: ""     # e.g. ingress-nginx
+  extraIngressFrom: []               # extra `from:` peers, verbatim
+  extraEgressTo: []                  # extra `to:` peers (an external database, a SIEM)
 
 ingress:
   enabled: false

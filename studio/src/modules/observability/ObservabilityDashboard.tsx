@@ -64,10 +64,10 @@ export default function ObservabilityDashboard() {
   }, []);
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
+    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", color: "var(--text-primary)", background: "var(--bg-root)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
       <header style={{ display: "flex", alignItems: "baseline", gap: 16, marginBottom: 20 }}>
-        <span style={{ fontSize: 12, color: "#888" }}>auto-refresh every {REFRESH_MS / 1000}s</span>
-        {error && <span style={{ color: "#c33", fontSize: 13 }}>⚠ {error}</span>}
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>auto-refresh every {REFRESH_MS / 1000}s</span>
+        {error && <span style={{ color: "var(--status-failed)", fontSize: 13 }}>⚠ {error}</span>}
       </header>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
@@ -138,7 +138,7 @@ export default function ObservabilityDashboard() {
               key: "status", label: "Status",
               format: (v) => String(v),
               cellStyle: (row: Span) => ({
-                color: row.status >= 500 ? "#c33" : row.status >= 400 ? "#d80" : "#2a7",
+                color: row.status >= 500 ? "var(--status-failed)" : row.status >= 400 ? "var(--status-running)" : "var(--status-completed)",
                 fontWeight: 600,
               }),
             },
@@ -165,18 +165,18 @@ export default function ObservabilityDashboard() {
 }
 
 const cardStyle: React.CSSProperties = {
-  background: "#fff", border: "1px solid #e3e3e8", borderRadius: 8, padding: 20, marginBottom: 20,
+  background: "var(--bg-card)", border: "1px solid var(--border-default)", borderRadius: 8, padding: 20, marginBottom: 20,
 };
-const h2Style: React.CSSProperties = { margin: "0 0 12px", fontSize: 15, color: "#333" };
+const h2Style: React.CSSProperties = { margin: "0 0 12px", fontSize: 15, color: "var(--text-primary)" };
 
 function Kpi({ label, value, warn = false }: { label: string; value: React.ReactNode; warn?: boolean }) {
   return (
     <div style={{
-      background: "#fff", border: `1px solid ${warn ? "#f0b0b0" : "#e3e3e8"}`,
+      background: "var(--bg-card)", border: `1px solid ${warn ? "var(--status-failed)" : "var(--border-default)"}`,
       borderRadius: 8, padding: "14px 18px",
     }}>
-      <div style={{ fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 600, color: warn ? "#c33" : "#222", marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 600, color: warn ? "var(--status-failed)" : "var(--text-primary)", marginTop: 4 }}>{value}</div>
     </div>
   );
 }
@@ -190,11 +190,11 @@ function Sparkline({ data }: { data: number[] }) {
     const ys = (v: number) => h - pad - (v / max) * (h - 2 * pad);
     return data.map((v, i) => `${i === 0 ? "M" : "L"} ${xs(i).toFixed(1)} ${ys(v).toFixed(1)}`).join(" ");
   }, [data, max]);
-  if (data.length === 0) return <div style={{ color: "#888", fontSize: 13 }}>Collecting data…</div>;
+  if (data.length === 0) return <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Collecting data…</div>;
   return (
     <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
-      <path d={points} stroke="#4a6cf7" strokeWidth={2} fill="none" />
-      <text x={w - 4} y={14} textAnchor="end" fontSize={11} fill="#888">peak {max.toFixed(1)} ms</text>
+      <path d={points} stroke="var(--accent)" strokeWidth={2} fill="none" />
+      <text x={w - 4} y={14} textAnchor="end" fontSize={11} fill="var(--text-muted)">peak {max.toFixed(1)} ms</text>
     </svg>
   );
 }
@@ -243,7 +243,7 @@ type Col<T> = {
 };
 
 function Table<T extends Record<string, any>>({ rows, columns, empty }: { rows: T[]; columns: Col<T>[]; empty: string }) {
-  if (rows.length === 0) return <div style={{ color: "#888", fontSize: 13 }}>{empty}</div>;
+  if (rows.length === 0) return <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{empty}</div>;
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
       <thead>
@@ -251,7 +251,7 @@ function Table<T extends Record<string, any>>({ rows, columns, empty }: { rows: 
           {columns.map((c) => (
             <th key={c.key} style={{
               textAlign: c.align ?? "left", padding: "6px 8px",
-              borderBottom: "1px solid #eee", color: "#666", fontWeight: 500,
+              borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", fontWeight: 500,
             }}>{c.label}</th>
           ))}
         </tr>
@@ -265,7 +265,7 @@ function Table<T extends Record<string, any>>({ rows, columns, empty }: { rows: 
               return (
                 <td key={c.key} style={{
                   textAlign: c.align ?? "left", padding: "6px 8px",
-                  borderBottom: "1px solid #f5f5f5",
+                  borderBottom: "1px solid var(--border-subtle)",
                   fontFamily: c.key === "path" || c.key === "request_id" ? "ui-monospace, monospace" : undefined,
                   ...(c.cellStyle ? c.cellStyle(r) : {}),
                 }}>{val}</td>

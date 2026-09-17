@@ -22,13 +22,29 @@ async def test_permissions_get_default_then_upsert(client):
     assert "/admin" in first.json()["permissions"]
 
     # PUT (insert branch), then PUT again (update branch) — both must persist.
+    #
+    # **The stored map does not REPLACE the defaults; the defaults merge under
+    # it.** This assertion was `== payload` until 2026-09-07, which encoded the
+    # bug rather than the behaviour: a stored row replaced `_DEFAULTS` outright,
+    # so on any install that had ever saved this screen, every route added from
+    # that point on was permanently invisible — `getRouteRoles` returned `[]`
+    # and `RequireRole` denied everybody while the route, the nav entry and the
+    # sitemap all looked correct. It was latent for every FUTURE route, not just
+    # the one that exposed it. So what is pinned here is both halves: an
+    # operator's own choice wins, and a route they never touched keeps its
+    # default.
     for payload in ({"/widget": ["admin"]}, {"/widget": ["admin", "designer"]}):
         put = await client.put("/api/v1/admin/permissions",
                                json={"permissions": payload}, headers=ADMIN_HEADERS)
         assert put.status_code == 200, put.text
         got = await client.get("/api/v1/admin/permissions", headers=ADMIN_HEADERS)
         assert got.status_code == 200, got.text
-        assert got.json()["permissions"] == payload
+        stored = got.json()["permissions"]
+        # The operator's choice wins…
+        assert stored["/widget"] == payload["/widget"]
+        # …and a route they never named still has its default.
+        assert stored["/admin"] == first.json()["permissions"]["/admin"]
+        assert set(first.json()["permissions"]) <= set(stored)
 
 
 # ── hxguard/tuples.py: portable on-conflict-do-nothing upsert ──────────────────

@@ -12,6 +12,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/auth";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/hxdbmanager";
 
@@ -76,9 +77,6 @@ function PaginationBar({ page, totalPages, total, pageSize, onChange }: {
 // ── Styles ────────────────────────────────────────────────────────────────────
 const S = {
   page:    { display: "flex", flexDirection: "column" as const, height: "100%", overflow: "hidden" },
-  tabBar:  { display: "flex", gap: 2, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:     { padding: "8px 18px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)", fontFamily: "var(--font-body)" } as React.CSSProperties,
-  tabA:    { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 } as React.CSSProperties,
   body:    { flex: 1, overflow: "auto", padding: "20px 24px" },
   card:    { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 16, marginBottom: 14 } as React.CSSProperties,
   label:   { fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 5 },
@@ -109,13 +107,7 @@ export default function HxDBManager() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {tabs.map(t => (
-          <button key={t.key} style={{ ...S.tab, ...(tab === t.key ? S.tabA : {}) }} onClick={() => setTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs ariaLabel="Database manager" tabs={tabs} value={tab} onChange={setTab} />
       <div style={S.body}>
         {tab === "schema"  && <SchemaTab onOpenTable={openTable} />}
         {tab === "table"   && <TableTab initialTable={selectedTable} />}
@@ -581,15 +573,19 @@ function SqlTab() {
 
       {err && <div style={S.err}>{err}</div>}
 
-      {/* View tabs */}
-      <div style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border)", marginBottom: 4 }}>
-        {(["results", "explain", "history"] as const).map(v => (
-          <button key={v} onClick={() => setActiveView(v)}
-            style={{ ...S.tab, ...(activeView === v ? S.tabA : {}), textTransform: "capitalize" }}>
-            {v}
-          </button>
-        ))}
-      </div>
+      {/* View tabs — the same component as the module's own bar, so a nested
+          switcher cannot drift into looking like a different control. */}
+      <Tabs
+        ariaLabel="Query result view"
+        style={{ marginBottom: 4 }}
+        tabs={[
+          { key: "results" as const, label: "Results" },
+          { key: "explain" as const, label: "Explain" },
+          { key: "history" as const, label: "History" },
+        ]}
+        value={activeView}
+        onChange={setActiveView}
+      />
 
       {/* Results */}
       {activeView === "results" && result && result.rows.length > 0 && (

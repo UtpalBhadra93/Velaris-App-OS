@@ -145,7 +145,8 @@ async def _customer_case(slug: str, case_id: uuid.UUID,
     case = await _linked_case(slug, case_id, customer, session)
     if not await same_tenant(session, case.tenant_id, tenant.id):
         raise HTTPException(404, "Case not found")
-    if case.status in ("resolved", "closed", "cancelled"):
+    from case_service.case_actions import statuses as _st
+    if await _st.is_terminal_for_case(session, case):
         raise HTTPException(404, "Case not found")
     return case
 

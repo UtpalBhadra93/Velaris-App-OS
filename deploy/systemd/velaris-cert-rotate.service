@@ -5,7 +5,18 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=__VELARIS_USER__
+# **Runs as root, deliberately — and this unit used to say User=__VELARIS_USER__,
+# which contradicted the comment below and would have failed the first time it
+# ever mattered.** The renewal half works as any user; the restart half does not:
+# `systemctl restart velaris-case-service` needs privilege, and a rotation that
+# renews certificates and cannot restart the services leaves four processes
+# serving the OLD, expired key material — the exact failure this timer exists to
+# prevent, arriving silently on the one day it finally has something to do.
+#
+# Running as root means the renewed files land root-owned, so the script hands
+# them back to whoever owns the certificate directory (see rotate-internal-certs
+# .sh). Without that the services, which do NOT run as root, could not read the
+# 0600 key they were just given.
 WorkingDirectory=__VELARIS_DIR__
 EnvironmentFile=__VELARIS_DIR__/.env
 Environment=PATH=__VELARIS_HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

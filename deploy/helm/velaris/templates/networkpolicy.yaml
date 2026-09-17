@@ -1,0 +1,55 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+  Opt-in, and OFF by default: a NetworkPolicy in a cluster whose CNI does not
+  enforce them is a false sense of safety, and one in a cluster that does
+  enforce them will cut off anything this chart did not think of — a service
+  mesh sidecar, a scraper, an operator. Enabled, it says what these workloads
+  actually need: traffic in from the ingress controller and from each other,
+  traffic out to the database, the cache, Temporal, DNS, and whatever the
+  operator adds.
+
+  Without it every pod in the cluster can reach case-service on 8200 directly,
+  which is the gateway's whole job to prevent (see `.well-known/velaris-gateway`
+  and the workload-identity header).
+*/}}
+{{- range $svc, $port := dict "case-service" $.Values.caseService.port "engine" $.Values.engine.port "analytics-service" $.Values.analyticsService.port "hxgraph-service" $.Values.hxgraphService.port "hxmigrate-service" $.Values.hxmigrateService.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "helix.fullname" $ }}-{{ $svc }}
+  labels: { app: {{ $svc }} }
+spec:
+  podSelector:
+    matchLabels: { app: {{ $svc }} }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # Our own workloads (the gateway, and service-to-service calls).
+        - podSelector: {}
+        {{- with $.Values.networkPolicy.ingressControllerNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- with $.Values.networkPolicy.extraIngressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ $port }}
+  egress:
+    # DNS, or nothing resolves — the failure that makes every other rule look broken.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector: {}
+    {{- with $.Values.networkPolicy.extraEgressTo }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

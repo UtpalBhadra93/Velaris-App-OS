@@ -8,7 +8,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { ReviewerPicker } from "@shared/components";
+import { ReviewerPicker, Tabs } from "@shared/components";
 import { useCurrentUserGroups } from "@shared/hooks";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
@@ -92,9 +92,6 @@ const DECISION_COLOR: Record<string, string> = {
 const S: Record<string, React.CSSProperties> = {
   page:   { display: "flex", flexDirection: "column", height: "100%", background: "var(--bg-main)", color: "var(--text-primary)", fontFamily: "system-ui, sans-serif" },
   header: { padding: "18px 24px 0", flexShrink: 0 },
-  tabBar: { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:    { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabA:   { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:   { flex: 1, overflow: "auto", padding: "20px 28px" },
   card:   { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "14px 18px", marginBottom: 10 },
   btn:    { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 },
@@ -365,22 +362,16 @@ function BranchDetail({ branch: initialBranch, onBack }: { branch: Branch; onBac
       </div>
 
       {/* Tab bar: Diff / Reviews / Activity */}
-      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid var(--border)", marginBottom: 12 }}>
-        {(["diff", "reviews", "activity"] as const).map(t => (
-          <button key={t} style={{
-            ...S.btn, ...S.btnS, borderBottom: `2px solid ${activeTab === t ? "var(--accent)" : "transparent"}`,
-            borderRadius: 0, fontWeight: activeTab === t ? 700 : 400,
-            color: activeTab === t ? "var(--accent)" : "var(--text-secondary)",
-            background: "transparent", border: "none",
-            borderBottomWidth: 2, borderBottomStyle: "solid",
-            borderBottomColor: activeTab === t ? "var(--accent)" : "transparent",
-            padding: "8px 16px", fontSize: 12,
-          }}
-            onClick={() => setActiveTab(t)}>
-            {t === "diff" ? "Diff" : t === "reviews" ? `Reviews (${reviews.length})` : `Activity (${auditEvents.length})`}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        ariaLabel="Branch"
+        tabs={[
+          { key: "diff"     as const, label: "Diff" },
+          { key: "reviews"  as const, label: "Reviews",  badge: reviews.length },
+          { key: "activity" as const, label: "Activity", badge: auditEvents.length },
+        ]}
+        value={activeTab}
+        onChange={setActiveTab}
+      />
 
       {/* Diff tab */}
       {activeTab === "diff" && (
@@ -947,13 +938,7 @@ export default function HxBranch() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {tabs.map(t => (
-          <button key={t.key} style={{ ...S.tab, ...(tab === t.key ? S.tabA : {}) }} onClick={() => setTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxBranch" tabs={tabs} value={tab} onChange={setTab} />
 
       {tab === "branches"    && <BranchesTab />}
       {tab === "pull"        && <PullTab />}

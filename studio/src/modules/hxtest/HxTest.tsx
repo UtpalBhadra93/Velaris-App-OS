@@ -6,7 +6,7 @@
  * and the tab shows an "install from Marketplace" notice instead.
  */
 import React, { useState, useEffect, useCallback } from "react";
-import { Button } from "@shared/components";
+import { Button, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const TS = "/api/v1/testsuite";
@@ -21,13 +21,13 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page:    { padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" as const },
+  page:    { display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" as const },
+  //: The page padding lives on the BODY now, not the page: the tab bar has to
+  //: reach both edges to sit flush under the app header, the way /help does.
+  body:    { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" as const },
   header:  { marginBottom: "var(--space-lg)" },
   title:   { fontSize: 24, fontWeight: 700, margin: 0, color: "var(--text-primary)" },
   sub:     { fontSize: 13, color: "var(--text-muted)", marginTop: 4 },
-  tabs:    { display: "flex", gap: 2, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border)" },
-  tab:     { padding: "8px 18px", fontSize: 13, fontWeight: 500, background: "none", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", color: "var(--text-muted)", marginBottom: -1 },
-  tabActive: { borderBottomColor: "var(--accent)", color: "var(--accent)", fontWeight: 700 },
   card:    { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
   label:   { fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" as const, letterSpacing: "0.05em", marginBottom: 4 },
   input:   { width: "100%", padding: "8px 10px", border: "1px solid var(--border-subtle)", borderRadius: 4, fontSize: 13, background: "var(--bg-input)", color: "var(--text-primary)", boxSizing: "border-box" as const, marginBottom: 10 },
@@ -280,12 +280,12 @@ export default function HxTest() {
   const Active = TABS[tab];
   return (
     <div style={S.page}>
-      <div style={S.tabs}>
-        {Object.keys(TABS).map(t => (
-          <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="Test suite"
+            tabs={Object.keys(TABS).map(t => ({ key: t, label: t }))}
+            value={tab} onChange={setTab as (k: string) => void} />
+      <div style={S.body}>
       <Active />
+    </div>
     </div>
   );
 }

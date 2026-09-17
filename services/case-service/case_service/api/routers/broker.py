@@ -201,7 +201,11 @@ async def broker_list_cases(
         tenant_clause = tenant_clause | CaseInstanceModel.tenant_id.is_(None)
     rows = (await session.execute(
         select(CaseInstanceModel)
-        .where(tenant_clause, CaseInstanceModel.case_type_id.in_(visible_ids))
+        .where(tenant_clause, CaseInstanceModel.case_type_id.in_(visible_ids),
+               # 199 — a marketplace package must not read a deleted case.
+               # This is the surface a THIRD PARTY's code sees, so it is the
+               # last place a hidden case should still be legible.
+               CaseInstanceModel.is_deleted.is_(False))
         .order_by(CaseInstanceModel.created_at.desc())
         .limit(max(1, min(limit, 200)))
     )).scalars().all()

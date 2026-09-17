@@ -173,6 +173,15 @@ CASE_ACTIONS: dict[str, set[str]] = {
     "cases.ask":      {"assignee", "editor", "viewer"},  # HxNexus case Q&A: read-derived
     "stt.transcribe": {"assignee", "editor", "viewer"},  # Voice input: dictate into a case surface
     "voicefill.extract": {"assignee", "editor"},         # Voice input P3: propose form values (write-prep)
+    # F-06 ambient capture. Case-scoped like every other line here, and split
+    # three ways on purpose: reading the digest is a read of the case by
+    # another name, running an extraction spends an AI call on the case's own
+    # transcript or mail, and deciding is write-prep — the accepted change then
+    # goes through the ordinary variable path as the person who confirmed it,
+    # so it faces that layer's grant as well. Neither gate is sufficient alone.
+    "capture.read":   {"assignee", "editor", "viewer"},
+    "capture.run":    {"assignee", "editor"},
+    "capture.decide": {"assignee", "editor"},
 }
 
 
@@ -223,6 +232,43 @@ class RebacBackend:
         if rel:
             return Decision(True, f"relationship: {rel}", self.name)
 
+        # A tuple written against an ACCESS GROUP, resolved through membership.
+        #
+        # Added 2026-09-08 for `transfer`. Until then a tuple's subject could
+        # only ever be a `user`, so "hand this case to the Complaints team" had
+        # no representation at all: the only group-shaped rule in this backend
+        # is the case-TYPE scope below, which is about a whole class of cases
+        # and cannot say anything about one of them.
+        #
+        # Membership is read at DECISION time rather than expanded into
+        # per-user tuples when the transfer happens. That is the whole point:
+        # somebody joining the group next week inherits the case, somebody
+        # leaving loses it, and neither requires anybody to remember to rewrite
+        # tuples. Expanding at write time would have produced rows that quietly
+        # outlived the membership that justified them — the same shape as the
+        # reassignment defect where work moved and the authorization did not.
+        #
+        # Inactive groups are excluded, so deactivating a group withdraws the
+        # access it was granting without anything else being touched.
+        # **Never for `case.share`**, and this is not a new rule — it is the one
+        # the access-group parity check twelve lines below already states:
+        # group-derived access must not let its holder spread that access to
+        # people outside the group.
+        #
+        # It matters more here than there. `case.share` requires the `editor`
+        # relation, and `transfer` writes exactly `editor` for a group by
+        # default — so without this line, handing a case to a team would have
+        # given every member of that team the power to re-share it with anyone
+        # on the platform. The transfer would have granted more than the
+        # operator performing it meant to give, and more than a direct
+        # `POST /cases/{id}/shares` to those same people would have given.
+        group_rel = (
+            None if action == "case.share"
+            else await self._group_tuple_allows(
+                session, case_id, relations, subject.id))
+        if group_rel:
+            return Decision(True, f"access-group relationship: {group_rel}", self.name)
+
         # Access-group parity (cutover safety, user-approved): a user whose
         # active access group allows this case TYPE keeps read/update access.
         # NEVER applies to case.share — type-scoped operators must not be
@@ -239,6 +285,41 @@ class RebacBackend:
             "and no access-group scope for this case type",
             self.name,
         )
+
+    async def _group_tuple_allows(
+        self, session: AsyncSession, case_id, relations, user_id: str,
+    ) -> str | None:
+        """Does a tuple on this case name an ACTIVE group this user belongs to?
+
+        Returns the matched relation, or None. Never raises: a membership lookup
+        that fails must fall through to the refusal below rather than take the
+        gate down, and the caller treats None as "no group relationship".
+        """
+        from sqlalchemy import select
+        from velaris_shared.db.models import AccessGroupModel, OperatorAccessGroupModel
+
+        try:
+            group_ids = (await session.execute(
+                select(AccessGroupModel.id)
+                .join(OperatorAccessGroupModel,
+                      OperatorAccessGroupModel.access_group_id == AccessGroupModel.id)
+                .where(OperatorAccessGroupModel.operator_id == user_id)
+                .where(AccessGroupModel.is_active == True)  # noqa: E712
+            )).scalars().all()
+            if not group_ids:
+                return None
+            from .tuples import has_tuple
+            for gid in group_ids:
+                rel = await has_tuple(
+                    session, object_type="case", object_id=case_id,
+                    relations=relations, subject_type="access_group",
+                    subject_id=str(gid),
+                )
+                if rel:
+                    return rel
+        except Exception:                                       # noqa: BLE001
+            log.warning("hxguard: group-tuple lookup failed", exc_info=True)
+        return None
 
     async def _access_group_allows(
         self, session: AsyncSession, user_id: str, case_type_id,
@@ -485,8 +566,37 @@ async def require_case(
     off     → skipped entirely
     shadow  → evaluated; would-be denials audited (mode=shadow), request passes
     enforce → denials raise 403
+
+    **The tenant boundary is checked first, in every mode.** ReBAC answers "does
+    this operator have a relationship to this case" and it has never had an
+    opinion about tenants, so a route that gated on this function alone was
+    readable across the boundary. Proven on 2026-09-06: tenant `dev` listed and
+    then **downloaded the file content** of a document on a case belonging to
+    tenant `default`, through `GET /documents/{id}/download` — the same shape as
+    the `GET /cases/{id}` defect of 2026-09-05, on the surfaces that had been
+    left behind. Nineteen route handlers were in that position.
+
+    It is deliberately outside the mode switch: `hxguard_case_enforcement`
+    decides how hard the RELATIONSHIP rules bite, and an operator who set it to
+    `off` or `shadow` was choosing that, not choosing to publish one tenant's
+    cases to another. And the refusal is **404, not 403** — the same anti-oracle
+    answer this function already gives, and the same one tenant isolation gives
+    everywhere else on the platform.
     """
     from velaris_shared.config import get_settings
+    from velaris_shared.db.models import CaseInstanceModel
+    from velaris_shared.tenancy.identity import case_visible_to, is_superadmin
+
+    if case_id is not None:
+        case = await session.get(CaseInstanceModel, case_id)
+        if case is not None and not await case_visible_to(
+                session, case.tenant_id, getattr(user, "tenant_id", None),
+                is_superadmin_caller=is_superadmin(user)):
+            # A case that exists in another tenant answers exactly as one that
+            # does not exist. A missing case is NOT refused here: the caller's
+            # own 404 is more specific, and several routes create on this path.
+            raise HTTPException(404, "Case not found")
+
     mode = (get_settings().hxguard_case_enforcement or "shadow").lower()
     if mode == "off":
         return

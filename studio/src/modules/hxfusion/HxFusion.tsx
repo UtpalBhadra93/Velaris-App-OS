@@ -7,6 +7,7 @@ import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/fusion";
 
@@ -91,17 +92,14 @@ const S: Record<string, React.CSSProperties> = {
   header:   { padding: "18px 24px 0", flexShrink: 0 },
   title:    { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:      { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabBar:   { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:      { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive:{ borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:     { flex: 1, overflow: "auto", padding: "20px 28px" },
   card:     { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px 20px", marginBottom: 12 },
   btn:      { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 },
   btnP:     { background: "var(--accent)", color: "#fff" },
   btnS:     { background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-secondary)" },
-  btnD:     { background: "#fee2e2", color: "#ef4444", border: "1px solid #fecaca" },
-  btnG:     { background: "#d1fae5", color: "#059669", border: "1px solid #a7f3d0" },
-  btnY:     { background: "#fef9c3", color: "#d97706", border: "1px solid #fde68a" },
+  btnD:     { background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.35)" },
+  btnG:     { background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.35)" },
+  btnY:     { background: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.35)" },
   input:    { width: "100%", padding: "7px 11px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, boxSizing: "border-box" as const, background: "var(--bg-main)", color: "var(--text-primary)" },
   inputRO:  { width: "100%", padding: "7px 11px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, boxSizing: "border-box" as const, background: "var(--bg-main)", color: "var(--text-secondary)", opacity: 0.7 },
   select:   { padding: "7px 11px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, background: "var(--bg-main)", color: "var(--text-primary)", width: "100%" },
@@ -283,7 +281,7 @@ function DefinitionsTab() {
       </div>
 
       {err && (
-        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 10, padding: "7px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6 }}>
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 10, padding: "7px 12px", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", borderRadius: 6 }}>
           {err}<ErrorCodeLink error={errObj} componentKey="hxfusion" />
         </div>
       )}
@@ -322,9 +320,9 @@ function DefinitionsTab() {
           </div>
 
           {validation && (
-            <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: validation.valid ? "#d1fae5" : "#fee2e2", fontSize: 12 }}>
+            <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: validation.valid ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)", color: validation.valid ? "#22c55e" : "#ef4444", fontSize: 12 }}>
               {validation.valid
-                ? <span style={{ color: "#059669" }}>✓ Valid — {validation.node_count} nodes, {validation.flow_count} flows {validation.node_types && `(${validation.node_types.join(", ")})`}</span>
+                ? <span style={{ color: "#22c55e" }}>✓ Valid — {validation.node_count} nodes, {validation.flow_count} flows {validation.node_types && `(${validation.node_types.join(", ")})`}</span>
                 : <span style={{ color: "#ef4444" }}>✗ {validation.error}</span>}
             </div>
           )}
@@ -351,7 +349,7 @@ function DefinitionsTab() {
         <tbody>
           {defs.map(d => (
             <React.Fragment key={d.id}>
-              <tr style={{ background: editingId === d.id ? "#ede9fe" : "transparent" }}>
+              <tr style={{ background: editingId === d.id ? "var(--accent-dim)" : "transparent" }}>
                 <td style={S.td}>
                   <span style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}
                     onClick={() => setExpanded(expanded === d.id ? null : d.id)}>
@@ -512,7 +510,7 @@ function InstancesTab() {
                 · Duration: {fmtDuration(inst.started_at, inst.ended_at)}
               </div>
               {inst.error_message && (
-                <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", padding: "6px 10px", background: "#fee2e2", borderRadius: 4 }}>
+                <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", padding: "6px 10px", background: "rgba(239,68,68,0.15)", borderRadius: 4 }}>
                   Error at <strong>{inst.error_node}</strong>: {inst.error_message}
                 </div>
               )}
@@ -582,13 +580,13 @@ function BindingsTab() {
 
   return (
     <div>
-      <div style={{ ...S.card, background: "#f0f9ff", border: "1px solid #bae6fd", marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#0369a1" }}>What is a Binding?</div>
-        <div style={{ fontSize: 12, color: "#0c4a6e", lineHeight: 1.6 }}>
+      <div style={{ ...S.card, background: "rgba(14,165,233,0.10)", border: "1px solid rgba(14,165,233,0.35)", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#38bdf8" }}>What is a Binding?</div>
+        <div style={{ fontSize: 12, color: "var(--text-primary)", lineHeight: 1.6 }}>
           A binding links a <b>Case</b> to a running <b>Process Instance</b> at a specific stage/step.
           Bindings are created automatically when automation triggers, or manually for custom orchestration.
           <br /><b>How to bind:</b> Start a process from the Definitions tab (launch from a definition), or trigger via the API:
-          <code style={{ display: "block", marginTop: 6, padding: "4px 8px", background: "#e0f2fe", borderRadius: 4, fontSize: 11 }}>
+          <code style={{ display: "block", marginTop: 6, padding: "4px 8px", background: "rgba(14,165,233,0.15)", borderRadius: 4, fontSize: 11 }}>
             POST /api/v1/fusion/instances {"{"} definition_id, case_id, context {"}"}
           </code>
           HxFusion automatically creates the binding record when an instance is launched with a case_id.
@@ -667,9 +665,9 @@ function DirectorTab() {
   return (
     <div>
       {/* Explanation card */}
-      <div style={{ ...S.card, background: "#fefce8", border: "1px solid #fde68a", marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#92400e" }}>How the AI Director works</div>
-        <div style={{ fontSize: 12, color: "#78350f", lineHeight: 1.6 }}>
+      <div style={{ ...S.card, background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#f59e0b" }}>How the AI Director works</div>
+        <div style={{ fontSize: 12, color: "var(--text-primary)", lineHeight: 1.6 }}>
           <b>Case Type</b> — which type of case (e.g. Insurance Claim). Select first; Stage list is then filtered to that type's stages.<br />
           <b>Stage ID</b> — the current stage the case is at (e.g. "investigation"). The Director reasons about what to automate at this stage.<br />
           <b>Case ID</b> — <i>optional</i>. If provided, the Director reads the live case record (fields, history) for richer context. Without it, reasoning uses only type + stage + the JSON context you pass.<br />
@@ -731,7 +729,7 @@ function DirectorTab() {
         {!form.stage_id && <span style={{ marginLeft: 10, fontSize: 11, color: "var(--text-secondary)" }}>Select a case type and stage first</span>}
       </div>
 
-      {error && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 8, padding: "8px 12px", background: "#fef2f2", borderRadius: 6 }}>{error}</div>}
+      {error && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 8, padding: "8px 12px", background: "rgba(239,68,68,0.12)", borderRadius: 6 }}>{error}</div>}
 
       {result && (
         <div style={{ ...S.card, borderColor: result.can_automate ? "#22c55e" : "#f59e0b" }}>
@@ -850,11 +848,8 @@ export default function HxFusion() {
   const [tab, setTab] = useState<typeof TABS[number]>("Definitions");
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {TABS.map(t => (
-          <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxFusion"
+            tabs={TABS.map(t => ({ key: t, label: t }))} value={tab} onChange={setTab} />
       <div style={S.body}>
         {tab === "Definitions" && <DefinitionsTab />}
         {tab === "Instances"   && <InstancesTab />}

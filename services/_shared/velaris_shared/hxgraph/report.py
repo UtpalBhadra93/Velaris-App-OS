@@ -10,12 +10,31 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared.db.models import GraphNodeModel, GraphEdgeModel
 from velaris_shared.hxgraph.community import detect_communities, community_hubs
+
+
+#: The vendored D3, pinned. `vendor/README.md` records its hash and the three
+#: mirrors it was checked against; changing this name is a deliberate upgrade.
+D3_FILENAME = "d3.v7.9.0.min.js"
+
+#: Where the visualizer asks for it. **Not a CDN**: the graph screen used to
+#: load D3 from `https://d3js.org`, so it was dead on any install without
+#: internet — air-gapped, a private network, the kiosk image — and it made
+#: somebody else's server a runtime dependency of a sovereignty-first product.
+#: Absolute, so it resolves the same from Studio's iframe (whose base is the
+#: Studio origin) and from the service-rendered page.
+D3_URL = "/api/v1/graph/vendor/d3.js"
+
+
+def d3_path() -> Path:
+    """The vendored file on disk, wherever this package is installed."""
+    return Path(__file__).resolve().parent / "vendor" / D3_FILENAME
 
 
 async def _fetch_visible(
@@ -184,6 +203,7 @@ async def graph_export(session: AsyncSession, tenant_id: str | None = None) -> d
 async def graph_html(session: AsyncSession, tenant_id: str | None = None) -> str:
     data = await graph_export(session, tenant_id)
     data_json = json.dumps(data)
+    d3_url = D3_URL
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -219,7 +239,11 @@ async def graph_html(session: AsyncSession, tenant_id: str | None = None) -> str
 <svg id="canvas"></svg>
 <div id="tooltip"></div>
 
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="{d3_url}" onerror="document.getElementById('d3-missing').style.display='block'"></script>
+<div id="d3-missing" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);
+     background:#1a1d2e;border:1px solid #4a5568;border-radius:8px;padding:10px 16px;font-size:12px;z-index:30">
+  The graph library did not load from this platform ({d3_url}). The visualizer needs it; nothing else is affected.
+</div>
 <script>
 const RAW = {data_json};
 

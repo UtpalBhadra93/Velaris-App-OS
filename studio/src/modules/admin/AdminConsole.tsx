@@ -22,6 +22,9 @@ import {
   listWebhookEvents,
   deleteWebhook,
   listRules,
+  importDmn,
+  exportRuleAsDmn,
+  type DmnImportedTable,
   createRule,
   updateRule,
   deleteRule,
@@ -31,7 +34,7 @@ import {
   listForms,
   getForm,
 } from "@shared/api/client";
-import { Card, Button, Spinner, EmptyState, Stat, TimeAgo } from "@shared/components";
+import { Card, Button, Spinner, EmptyState, Stat, TimeAgo, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -51,23 +54,19 @@ export default function AdminConsole() {
   const [tab, setTab] = useState<Tab>("overview");
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
-      {/* Tabs */}
-      <div style={{
-        display: "flex", gap: 2, marginBottom: "var(--space-xl)",
-        borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0,
-      }}>
-        {(["overview", "audit", "queues", "webhooks", "rules", "permissions", "sso", "identity", "marketplace"] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
-            textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent",
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1,
-          }}>{TAB_LABELS[t]}</button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Admin console"
+        tabs={(["overview", "audit", "queues", "webhooks", "rules",
+                "permissions", "sso", "identity", "marketplace"] as Tab[])
+          .map(t => ({ key: t, label: TAB_LABELS[t] }))}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "overview"    && <OverviewTab />}
       {tab === "audit"       && <AuditLogTab />}
@@ -78,6 +77,7 @@ export default function AdminConsole() {
       {tab === "sso"         && <SsoTab />}
       {tab === "identity"    && <IdentityTab />}
       {tab === "marketplace" && <MarketplaceSourcesTab />}
+    </div>
     </div>
   );
 }
@@ -668,6 +668,161 @@ function formToDefinition(form: ReturnType<typeof blankForm>): Record<string, an
   return def;
 }
 
+/* ── DMN interchange ───────────────────────────────────────────────────────
+   The engine has always run decision tables. What was missing is the standard
+   FILE, which is the half a migration from Camunda or Flowable arrives with.
+
+   Two things this screen must not soften:
+
+    * **an import previews first.** The API defaults `dry_run` to true and this
+      panel keeps that shape — the second click confirms something that was
+      read, which for rows that decide money and eligibility is the minimum.
+    * **it is all or nothing, and it refuses rather than approximates.** A file
+      whose second table cannot be read creates neither, and a hit policy this
+      engine cannot express is refused instead of silently imported as
+      something that decides differently. When that happens the message from
+      the server is the whole answer, so it is shown verbatim. */
+
+async function downloadDmn(rule: any) {
+  try {
+    const blob = await exportRuleAsDmn(rule.id);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(rule.name || "rule").replace(/[^A-Za-z0-9_.-]/g, "_")}.dmn`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e: any) {
+    alert(e?.message || "This rule cannot be exported as DMN");
+  }
+}
+
+function DmnImportPanel({ onImported }: { onImported: () => void }) {
+  const [xml, setXml] = useState("");
+  const [filename, setFilename] = useState<string | null>(null);
+  const [tables, setTables] = useState<DmnImportedTable[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [version, setVersion] = useState("1.0.0");
+
+  const readFile = async (file: File | undefined) => {
+    if (!file) return;
+    setFilename(file.name);
+    setXml(await file.text());
+    setTables(null); setError(null);
+  };
+
+  const run = async (dry_run: boolean) => {
+    setBusy(true); setError(null);
+    try {
+      const out = await importDmn({ xml, dry_run, version, enabled });
+      setTables(out.tables);
+      if (!dry_run) onImported();
+    } catch (e: any) {
+      // Verbatim: the server's refusal names the construct it would not
+      // approximate, and rewording it here would lose the only useful part.
+      setError(e?.message || "The file could not be read");
+      setTables(null);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Card style={{ marginBottom: "var(--space-lg)" }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: "var(--space-xs)" }}>
+        Import DMN
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: "var(--space-md)" }}>
+        A standard <code>.dmn</code> file from Camunda, Flowable or any DMN 1.3
+        tool. Each decision table in it becomes one business rule. Tables using
+        constructs this engine cannot express are <strong>refused, not
+        approximated</strong> — and one bad table refuses the whole file, so an
+        import never half-lands.
+      </div>
+
+      <div style={{ display: "flex", gap: "var(--space-sm)", alignItems: "center", marginBottom: "var(--space-sm)" }}>
+        <input type="file" accept=".dmn,.xml,text/xml,application/xml"
+               onChange={e => readFile(e.target.files?.[0])} />
+        {filename && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{filename}</span>}
+      </div>
+
+      <textarea
+        value={xml}
+        onChange={e => { setXml(e.target.value); setTables(null); setError(null); }}
+        placeholder="…or paste the DMN XML here"
+        style={{
+          width: "100%", minHeight: 120, fontFamily: "var(--font-mono)", fontSize: 11,
+          padding: "8px 10px", borderRadius: "var(--radius-sm)",
+          border: "1px solid var(--border-default)", background: "var(--bg-main)",
+          color: "var(--text-primary)", boxSizing: "border-box",
+        }} />
+
+      <div style={{ display: "flex", gap: "var(--space-md)", alignItems: "center", marginTop: "var(--space-sm)", flexWrap: "wrap" }}>
+        <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          Version{" "}
+          <input value={version} onChange={e => setVersion(e.target.value)}
+                 style={{ width: 90, padding: "4px 8px", fontSize: 12,
+                          border: "1px solid var(--border-default)",
+                          borderRadius: "var(--radius-sm)", background: "var(--bg-main)",
+                          color: "var(--text-primary)" }} />
+        </label>
+        <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+          Enable the imported rules immediately
+        </label>
+        <Button size="sm" variant="secondary" disabled={busy || !xml.trim()}
+                onClick={() => run(true)}>Preview</Button>
+        <Button size="sm" disabled={busy || !tables} onClick={() => run(false)}>
+          {tables ? `Import ${tables.length} table(s)` : "Import"}
+        </Button>
+      </div>
+      {!enabled && (
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+          Imported rules land disabled. A table that starts deciding the moment
+          the file lands is a decision nobody made.
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginTop: "var(--space-md)", fontSize: 12, color: "var(--status-failed)" }}>
+          {error}
+        </div>
+      )}
+
+      {tables && tables.length > 0 && (
+        <div style={{ marginTop: "var(--space-md)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+            {tables[0].rule_id ? "Imported" : "This file contains"}
+          </div>
+          {tables.map(t => (
+            <div key={t.name} style={{
+              border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)",
+              padding: "8px 10px", marginBottom: 6, fontSize: 12,
+            }}>
+              <div style={{ fontWeight: 600 }}>{t.name}</div>
+              <div style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                {t.rule_type} · hit policy {t.hit_policy} · {t.input_count} in ·{" "}
+                {t.output_count} out · {t.row_count} row(s)
+              </div>
+              {t.notes.map((n, i) => (
+                <div key={i} style={{ color: "var(--status-running)", marginTop: 4 }}>{n}</div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {tables && tables.length === 0 && (
+        <div style={{ marginTop: "var(--space-md)", fontSize: 12, color: "var(--text-muted)" }}>
+          The file was read and contains no decision table.
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function RulesTab() {
   const { data, loading, refetch } = useApi(listRules);
   const rules = data?.items ?? [];
@@ -675,6 +830,7 @@ function RulesTab() {
   const [form, setForm] = useState(blankForm());
   const [saving, setSaving] = useState(false);
   const { options: scopeOptions, loading: scopeLoading, caseTypeMap } = useScopeOptions(form.scope);
+  const [importing, setImporting] = useState(false);
   const [caseTypeIdForFields, setCaseTypeIdForFields] = useState("");
   const [formIdsForFields, setFormIdsForFields] = useState<string[]>([]);
   const fieldPaths = useFieldPaths(caseTypeIdForFields, formIdsForFields);
@@ -719,8 +875,15 @@ function RulesTab() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-lg)" }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{rules.length} business rule(s)</span>
-        <Button size="sm" onClick={openNew}>+ New Business Rule</Button>
+        <div style={{ display: "flex", gap: "var(--space-xs)" }}>
+          <Button size="sm" variant="secondary" onClick={() => setImporting(v => !v)}>
+            {importing ? "Close DMN import" : "Import DMN"}
+          </Button>
+          <Button size="sm" onClick={openNew}>+ New Business Rule</Button>
+        </div>
       </div>
+
+      {importing && <DmnImportPanel onImported={() => { setImporting(false); refetch(); }} />}
 
       {loading && <Spinner size={28} />}
       {!loading && rules.length === 0 && (
@@ -749,6 +912,9 @@ function RulesTab() {
           </div>
           <div style={{ display: "flex", gap: "var(--space-xs)", alignItems: "center" }}>
             <Button size="sm" variant="ghost" onClick={() => handleToggle(r)}>{r.enabled ? "Disable" : "Enable"}</Button>
+            {(r.rule_type === "decision_table" || r.rule_type === "decision_tree") && (
+              <Button size="sm" variant="ghost" onClick={() => downloadDmn(r)}>Export DMN</Button>
+            )}
             <Button size="sm" variant="secondary" onClick={() => openEdit(r)}>Edit</Button>
             <Button size="sm" variant="danger" onClick={async () => {
               if (confirm(`Delete business rule "${r.name}"?`)) { await deleteRule(r.id); refetch(); }

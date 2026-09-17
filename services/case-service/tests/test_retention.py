@@ -676,6 +676,39 @@ class TestSubmitterColumnsAreErased:
         assert case.data[retention.ANON_MARKER] == marker
         assert case.data["claim_amount"] == 1200, "non-PII must still survive"
 
+    async def test_the_ais_copy_of_the_documents_goes_too(self, session):
+        """`hxnexus_document_chunks` holds the extracted TEXT of a case's
+        documents — the name, the address, whatever the PDF said. Anonymization
+        scrubbed `case.data` and the submitter columns and never touched it, so
+        an erased case still carried its own contents in a table HxNexus reads
+        out on request. The same shape as the submitter columns above: the
+        scrub was written when `case.data` was the only place personal data
+        lived.
+        """
+        from velaris_shared.db.models import DocumentChunkModel
+
+        case = await self._portal_case(session)
+        keep = await self._portal_case(session, data={"claim_amount": 1})
+        keep.updated_at = datetime.now(timezone.utc)      # too recent to erase
+        session.add_all([
+            DocumentChunkModel(id=uuid.uuid4(), document_id=uuid.uuid4(),
+                               case_id=case.id, chunk_index=0,
+                               chunk_text="A Customer, 14 Example Street",
+                               embedding=[], tenant_id=None),
+            DocumentChunkModel(id=uuid.uuid4(), document_id=uuid.uuid4(),
+                               case_id=keep.id, chunk_index=0,
+                               chunk_text="somebody else's live case",
+                               embedding=[], tenant_id=None),
+        ])
+        await session.flush()
+
+        await self._run(session)
+
+        rows = (await session.execute(select(DocumentChunkModel))).scalars().all()
+        texts = {r.chunk_text for r in rows}
+        assert "A Customer, 14 Example Street" not in texts
+        assert "somebody else's live case" in texts, "only the erased case's copy goes"
+
     async def test_a_live_portal_case_is_untouched(self, session):
         """HAPPY PATH: a recent case keeps its submitter, or the portal breaks."""
         row = CaseInstanceModel(

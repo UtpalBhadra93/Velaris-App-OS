@@ -69,32 +69,32 @@ class TestCases:
         ct = await deploy_case_type(client)
         case = await create_case(client, ct["id"])
 
-        r = await client.post(f"/api/v1/cases/{case['id']}/status", json={"status": "open"})
-        assert r.json()["status"] == "open"
-        r = await client.post(f"/api/v1/cases/{case['id']}/resolve", json={})
-        assert r.json()["status"] == "resolved"
-        assert r.json()["resolved_at"] is not None
-        r = await client.post(f"/api/v1/cases/{case['id']}/close", json={})
-        assert r.json()["status"] == "closed"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/change_status", json={"params": {"status": "open"}})
+        assert r.json()["case"]["status"] == "open"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/resolve", json={"params": {}})
+        assert r.json()["case"]["status"] == "resolved"
+        assert r.json()["case"]["resolved_at"] is not None
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/close", json={"params": {}})
+        assert r.json()["case"]["status"] == "closed"
 
     async def test_reopen(self, client):
         ct = await deploy_case_type(client)
         case = await create_case(client, ct["id"])
-        await client.post(f"/api/v1/cases/{case['id']}/close", json={})
-        r = await client.post(f"/api/v1/cases/{case['id']}/reopen", json={"reason": "new evidence"})
-        assert r.json()["status"] == "reopened"
+        await client.post(f"/api/v1/cases/{case['id']}/actions/close", json={"params": {}})
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/reopen", json={"params": {}, "reason": "new evidence"})
+        assert r.json()["case"]["status"] == "reopened"
 
     async def test_cancel(self, client):
         ct = await deploy_case_type(client)
         case = await create_case(client, ct["id"])
-        r = await client.post(f"/api/v1/cases/{case['id']}/cancel", json={"reason": "dup"})
-        assert r.json()["status"] == "cancelled"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/cancel", json={"params": {}, "reason": "dup"})
+        assert r.json()["case"]["status"] == "cancelled"
 
     async def test_priority_change(self, client):
         ct = await deploy_case_type(client)
         case = await create_case(client, ct["id"])
-        r = await client.post(f"/api/v1/cases/{case['id']}/priority", json={"priority": "critical"})
-        assert r.json()["priority"] == "critical"
+        r = await client.post(f"/api/v1/cases/{case['id']}/actions/change_priority", json={"params": {"priority": "critical"}})
+        assert r.json()["case"]["priority"] == "critical"
 
     async def test_stage_transition(self, client):
         ct = await deploy_case_type(client)
@@ -107,8 +107,8 @@ class TestAuditTrail:
     async def test_history_tracks_actions(self, client):
         ct = await deploy_case_type(client)
         case = await create_case(client, ct["id"])
-        await client.post(f"/api/v1/cases/{case['id']}/status", json={"status": "open"})
-        await client.post(f"/api/v1/cases/{case['id']}/priority", json={"priority": "high"})
+        await client.post(f"/api/v1/cases/{case['id']}/actions/change_status", json={"params": {"status": "open"}})
+        await client.post(f"/api/v1/cases/{case['id']}/actions/change_priority", json={"params": {"priority": "high"}})
         resp = await client.get(f"/api/v1/cases/{case['id']}/history")
         actions = [e["action"] for e in resp.json()]
         assert "created" in actions

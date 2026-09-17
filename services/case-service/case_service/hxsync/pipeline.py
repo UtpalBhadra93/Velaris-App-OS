@@ -113,7 +113,12 @@ async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
         redactions = [{"field_path": r.field_path, "action": r.action} for r in redaction_rows]
 
         # Extract cases (incremental by updated_at watermark)
-        q = select(CaseInstanceModel).order_by(CaseInstanceModel.updated_at)
+        # Deleted cases are not shipped to a warehouse. Exporting one would
+        # put a row somewhere this platform cannot later hide it from, which
+        # is the one thing a soft delete cannot take back.
+        q = (select(CaseInstanceModel)
+             .where(CaseInstanceModel.is_deleted.is_(False))
+             .order_by(CaseInstanceModel.updated_at))
         if dest.last_synced_at:
             q = q.where(CaseInstanceModel.updated_at > dest.last_synced_at)
         cases = (await session.execute(q)).scalars().all()

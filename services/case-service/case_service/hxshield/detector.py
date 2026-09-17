@@ -169,7 +169,7 @@ async def detect(
         }
 
         async with get_session_factory()() as session:
-            await evaluate(
+            verdict = await evaluate(
                 event_type=engine_event,
                 actor_id=actor_id,
                 tenant_id=tenant_id,
@@ -177,6 +177,28 @@ async def detect(
                 context=context,
                 session=session,
             )
+
+            # The response layer (roadmap #25). Until 2026-09-09 `evaluate`
+            # computed an `action` — flag, alert, suspend, block — and NOTHING
+            # performed it; the string was returned to a caller that wrote it
+            # down. This is the call that acts on it, and almost all of what it
+            # does is decline to: with responses switched off (the default) it
+            # records what would have happened and performs nothing, and a
+            # destructive response waits for a person whatever the switch says.
+            if verdict.get("incident_id"):
+                from case_service.hxshield.response import propose
+
+                await propose(
+                    session,
+                    action=verdict.get("action") or "",
+                    incident_id=verdict["incident_id"],
+                    actor_id=actor_id,
+                    tenant_id=tenant_id,
+                    case_id=(resource_id if (resource_type or "").lower() == "case" else None),
+                    reason=verdict.get("explanation"),
+                    patterns=verdict.get("patterns_matched"),
+                    score=verdict.get("score"),
+                )
             await session.commit()
     except Exception:  # noqa: BLE001
         logger.exception("HxShield detection failed for %s — event still recorded",

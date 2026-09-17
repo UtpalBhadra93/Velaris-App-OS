@@ -311,6 +311,79 @@ work started. Fixes applied here are marked *Fixed*.
     valid YAML, accepted by the API server, 503 at the controller.
     *Fixed 2026-08-26:* `service` defaults to `case-service` and `port` to 8200.
 
+13. **The ENGINE still had the 2026-08-26 shape.** Its readiness probed
+    `/health` — which only says the process is alive — and it has an in-memory
+    fallback: with the database unreachable it keeps deployed processes in one
+    pod's memory, loses them on restart, and every replica holds a different
+    set. Such a pod reported **Ready** and took traffic. Its `/ready` answered
+    **200** with `"database": "unavailable"` in the body, which no probe reads,
+    and it had no liveness probe at all. *Fixed 2026-09-17:* `/ready` returns
+    **503** without a database, the chart's engine readinessProbe points at
+    `/ready`, and a liveness probe on `/health` was added. Every HTTP deployment
+    also gained a **startupProbe** (5s x 30 = 150s), so the boot budget is stated
+    once rather than guessed in a liveness delay. Pinned by
+    `tests/phase32/test_scaling.py::test_10b_every_http_deployment_probes_correctly`.
+
+14. **The case-service IMAGE could not start.** 25 modules import
+    `hxarbiter_core`, one of them (`agents/attribution.py`, reached from
+    `api/routers/hxnexus.py`) at import time — and `libs/hxarbiter-core` is a
+    workspace library that the Dockerfile never copied in. Every case-service
+    image built since HxArbiter shipped exited with
+    `ModuleNotFoundError: No module named 'hxarbiter_core'` before serving a
+    request. The host install hid it completely: there the library is an
+    editable install in the workspace virtualenv. *Fixed 2026-09-17:* the
+    Dockerfile copies and installs it; pinned by
+    `test_10e_the_case_service_image_carries_hxarbiter_core`.
+15. **Our workloads had no securityContext, and the database password was in
+    plain sight.** The bundled PostgreSQL and Valkey subcharts ship
+    `runAsNonRoot`, dropped capabilities and a read-only root; our six
+    deployments had none of it, mounted the default ServiceAccount token into
+    pods that never call the Kubernetes API, and carried the database URL —
+    password included — as an inline env value, readable by anyone who can
+    `get deployments`. *Fixed 2026-09-17:* pod and container security contexts
+    from one helper, `automountServiceAccountToken: false`, and the URL in a
+    Secret (`databaseSecret.existingSecret` to bring your own).
+16. **`runAsNonRoot` needs a NUMERIC uid.** With the images declaring
+    `USER helix` / `USER velaris`, every pod failed with *"image has non-numeric
+    user (helix), cannot verify user is non-root"* — `CreateContainerConfigError`,
+    before the container started. The engine image ran as **root** outright.
+    *Fixed 2026-09-17:* every image pins uid/gid 10001 and the engine gained a
+    user. Verified in-cluster: `id` → `uid=10001`, `CapEff: 0000000000000000`,
+    `NoNewPrivs: 1`, no ServiceAccount token on disk.
+17. **Uploaded documents had nowhere to go.** The default store is
+    `./data/velaris-docs` — `/app/data` at the image's WORKDIR — which is
+    root-owned, so an upload by the non-root user failed as a 500; and even
+    writable, a container path means documents vanish on restart and each
+    replica holds a different set. *Fixed 2026-09-17:* the image creates
+    `/app/data` owned by the user, the chart gained
+    `caseService.documents.persistence` (a PVC, mounted at `/app/data`) and
+    `podSecurity.fsGroup: 10001` so a mounted volume is writable — most storage
+    classes present one as `root:root 0755`, and kind's local-path provisioner
+    hands out `0777`, which hides the problem on a test cluster.
+18. **Nothing stopped pod-to-pod traffic.** Any pod in the cluster could reach
+    case-service on 8200 directly, bypassing the gateway that exists to be the
+    only door. *Added 2026-09-17:* an opt-in `networkPolicy` (off by default —
+    a policy is worthless where the CNI ignores it and disruptive where it does
+    not) plus a `NOTES.txt` that says so after every install, along with the
+    worker's Temporal dependency and the document-storage choice.
+
+### Verified on a live cluster, 2026-09-17
+
+kind v0.24 / Kubernetes v1.31, chart installed from scratch with the bundled
+PostgreSQL and Valkey:
+
+* all five HTTP services **1/1 Ready**; `helm upgrade` reports `deployed`;
+* `kubectl apply --dry-run=server` accepts every rendered object;
+* in-cluster `GET /health` **200**, `GET /ready` **200** (`database: connected`),
+  `GET /api/v1/cases` **401** — the API is up and still refuses an anonymous call;
+* **the probe split proven by taking the database away**: `kubectl scale
+  statefulset postgresql --replicas=0` → case-service and engine went
+  **0/1 NotReady** within ~2 minutes and their Service endpoints emptied (no
+  traffic routed), **restart count stayed 0** (liveness did not kill them), and
+  both returned to 1/1 by themselves when PostgreSQL came back;
+* the worker CrashLoopBackOffs without a Temporal to reach — the chart does not
+  install one, which `NOTES.txt` now says at install time.
+
 Fixed during this work: `DELETE /api/v1/case-types/{id}?hard=true` raised an
 unhandled `IntegrityError` (**500**) when cases still referenced the type. It
 now returns **409** with the count (`case_types.py`). This affected the host

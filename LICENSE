@@ -1,52 +1,87 @@
+Velaris is distributed under two licenses.
+
+  Business Source License 1.1  — the Velaris Platform. The full text follows
+                                 below, and governs this repository including
+                                 engine/.
+
+  Apache License 2.0           — the SDK, the IR and the bundled plugins:
+                                   libs/velaris-sdk/
+                                   libs/velaris-ir/python/
+                                   plugins/
+                                 Full text: licenses/Apache-2.0.txt
+
+Where a subdirectory carries its own LICENSE file, that file governs it.
+This note is for orientation only and grants nothing; everything below the
+line is the license.
+
+-------------------------------------------------------------------------------
+
 Business Source License 1.1
 
-Licensor:           Velaris Contributors
-Licensed Work:      Velaris Platform
-Change Date:        Four years from each release date
-Change License:     Apache License 2.0
+Licensor:             Velaris Contributors
 
-Additional Use Grant:
-You may use the Licensed Work for any purpose, including production use,
-EXCEPT for the following restricted uses:
+Licensed Work:        Velaris Platform
+                      The Licensed Work is (c) 2026 Velaris Contributors.
 
-1. Offering the Licensed Work, or any substantial portion of it, as a
-   commercial BPM-as-a-Service, process automation platform, or low-code
-   platform that competes with the Licensed Work.
+Additional Use Grant: You may make production use of the Licensed Work for any
+                      internal business purpose, without limit on users, data
+                      or deployments, provided that such use is not a
+                      Competing Use.
 
-2. Creating a product that provides substantially similar BPM, process
-   orchestration, or workflow automation functionality to the Licensed Work
-   and distributing it as a competing product.
+                      A "Competing Use" is any of the following:
 
-3. Removing or modifying the Licensor's branding, name, or copyright notices
-   to present the Licensed Work as your own independent product.
+                      (a) Offering the Licensed Work, or any substantial
+                          portion of it, to third parties as a commercial
+                          BPM-as-a-Service, process automation platform,
+                          low-code platform, or other hosted or managed
+                          service that competes with the Licensed Work.
 
-4. Resale and Sublicensing Prohibition: You may not resell, sublicense,
-   transfer, or redistribute the Licensed Work (in whole or in part, modified
-   or unmodified) to any third party as a standalone commercial product or
-   platform. You may purchase, install, customise, and operate the Licensed
-   Work for your own internal business purposes, but the right to use the
-   software does not extend to reselling that right — or any derivative of
-   it — to others. This restriction does not prohibit:
-     (a) selling services, consulting, or support delivered using the software;
-     (b) selling applications, workflows, or case types you build on top of
-         the platform;
-     (c) selling plugins, connectors, adapters, or extensions that integrate
-         with the platform, provided they do not themselves constitute a
-         redistribution of the core Licensed Work.
+                      (b) Distributing to third parties a product that
+                          provides substantially similar BPM, process
+                          orchestration, or workflow automation functionality
+                          to the Licensed Work and competes with it.
 
-You ARE permitted to:
-- Use the Licensed Work internally for any business purpose
-- Build applications, workflows, case types, and automations on the platform
-- Create and sell plugins, connectors, adapters, and extensions
-- Offer consulting, implementation, configuration, and support services
-- Modify the source code for your own internal operational use
-- Use the Licensed Work for development, testing, and evaluation
+                      (c) Reselling, sublicensing, transferring, or otherwise
+                          redistributing the Licensed Work to third parties,
+                          in whole or in part and whether modified or
+                          unmodified, as a standalone commercial product or
+                          platform.
 
-Terms:
+                      (d) Presenting the Licensed Work as your own independent
+                          product, including by removing or altering the
+                          Licensor's branding, name, or copyright notices in a
+                          copy made available to a third party.
+
+                      For the avoidance of doubt, none of the following is a
+                      Competing Use, and all are permitted under this grant:
+
+                      - Using the Licensed Work internally for any business
+                        purpose, including production, development, testing
+                        and evaluation.
+                      - Building applications, workflows, case types and
+                        automations on the platform, and selling those.
+                      - Creating and selling plugins, connectors, adapters and
+                        extensions that integrate with the platform, provided
+                        they do not themselves redistribute a substantial
+                        portion of the Licensed Work.
+                      - Selling consulting, implementation, configuration,
+                        training or support services delivered using the
+                        Licensed Work.
+                      - Modifying the source code for your own internal
+                        operational use.
+
+Change Date:          Four years from the date the Licensed Work is published.
+
+Change License:       Apache License, Version 2.0
+
+For licensing enquiries, commercial agreements, or OEM arrangements, contact:
+velaris.app.os@gmail.com
+
+Terms
+
 The Licensor hereby grants you the right to copy, modify, create derivative
 works, redistribute, and make non-production use of the Licensed Work. The
-Licensor may make an Additional Use Grant, above, permitting limited
-production use.
+Licensor may make an Additional Use Grant, above, permitting limited production use.
 
 Effective on the Change Date, or the fourth anniversary of the first publicly
 available distribution of a specific version of the Licensed Work under this
@@ -54,10 +89,62 @@ License, whichever comes first, the Licensor hereby grants you rights under
 the terms of the Change License, and the rights granted in the paragraph
 above terminate.
 
-Notice:
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may vary
+for each version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
+
+MariaDB hereby grants you permission to use this License's text to license
+your works, and to refer to it using the trademark "Business Source License",
+as long as you comply with the Covenants of Licensor below.
+
+Covenants of Licensor
+
+In consideration of the right to use this License's text and the "Business
+Source License" name and trademark, Licensor covenants to MariaDB, and to all
+other recipients of the licensed work to be provided by Licensor:
+
+1. To specify as the Change License the GPL Version 2.0 or any later version,
+   or a license that is compatible with GPL Version 2.0 or a later version,
+   where "compatible" means that software provided under the Change License
+   can be included in a program with software provided under GPL Version 2.0
+   or a later version. Licensor may specify additional Change Licenses without
+   limitation.
+
+2. To either: (a) specify an additional grant of rights to use that does not
+   impose any additional restriction on the right granted in this License, as
+   the Additional Use Grant; or (b) insert the text "None".
+
+3. To specify a Change Date.
+
+4. Not to modify this License in any other way.
+
+Notice
+
 The Business Source License (this document, or the "License") is not an Open
 Source license. However, the Licensed Work will eventually be made available
 under an Open Source License, as stated in this License.
-
-For licensing enquiries, commercial agreements, or OEM arrangements, contact:
-velaris.app.os@gmail.com

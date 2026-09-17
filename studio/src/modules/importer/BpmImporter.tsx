@@ -4,6 +4,7 @@
  * Tabs: Import · Jobs · Result
  */
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/importer";
 
@@ -41,9 +42,6 @@ const S: Record<string, React.CSSProperties> = {
   header:    { padding: "18px 24px 0", flexShrink: 0 },
   title:     { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:       { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabs:      { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:       { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive: { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:      { flex: 1, overflow: "hidden", display: "flex" },
   sidebar:   { width: 280, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-surface)", flexShrink: 0 },
   sideHead:  { padding: "12px 14px", borderBottom: "1px solid var(--border)", fontSize: 12, fontWeight: 700, color: "var(--text-secondary)", flexShrink: 0 },
@@ -476,14 +474,7 @@ export default function BpmImporter() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabs}>
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-                  style={{ ...S.tab, ...(tab === t.key ? S.tabActive : {}) }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs ariaLabel="BPM importer" tabs={tabs} value={tab} onChange={setTab} />
       <div style={S.body}>
         {tab === "import" && <ImportTab onJobCreated={handleJobCreated} />}
         {tab === "jobs"   && <JobsTab highlightId={newJobId} onSelectJob={() => {}} />}

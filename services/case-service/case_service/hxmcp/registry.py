@@ -178,6 +178,83 @@ def _arg_data(args: dict, key: str = "data") -> dict:
     return data
 
 
+async def _perform_case_action(
+    session: AsyncSession,
+    user: AuthenticatedUser,
+    args: dict,
+    *,
+    action: str,
+    params: dict,
+) -> dict:
+    """Run one case action through the ONE dispatcher, not a route function.
+
+    Until 2026-09-07 these tools imported the named REST handlers
+    (`change_priority`, `change_status`, `close_case`) and called them with a
+    synthetic Request. Migration 198 replaced those six routes with a single
+    dispatcher, so the imports broke at call time — and a URL grep could not
+    see them, because Python importing a handler *function* is not a caller of
+    its URL.
+
+    Calling the dispatcher is what these tools always wanted. It is the same
+    code the route runs, so the per-case ReBAC check, the privilege, the tenant
+    clause, the status-set validation, the HxArbiter PEP and the audit row all
+    apply unchanged — with no fake Request in the middle to keep working.
+    """
+    from case_service.api.routers.cases import (
+        _action_context,
+        _audit,
+        _get_case_or_404,
+        _restart_lifecycle_if_needed,
+        _signal_lifecycle,
+    )
+    from case_service.api.schemas.cases import CaseResponse
+    from case_service.case_actions import dispatcher as _disp
+
+    case_id = _arg_uuid(args, "case_id")
+
+    try:
+        _disp.precheck(action, params, case_count=1)
+    except _disp.ActionError as exc:
+        raise ToolArgError(str(exc)) from None
+
+    tenant_uuid = await _action_context(session, user)
+    # Raises 404 for another tenant's case, exactly as the REST route does.
+    case = await _get_case_or_404(session, case_id, user)
+    cfg = await _disp.resolve_config(
+        session, tenant_id=tenant_uuid, case_type_id=case.case_type_id)
+
+    result = await _disp.perform(
+        session, case_id=case_id, action_name=action, params=params,
+        user=user, tenant_uuid=tenant_uuid, config=cfg, audit=_audit,
+    )
+    if not result.ok:
+        from velaris_shared.core.error_codes import coded
+
+        code = result.code or "VEL-CASE-ACTION-FAILED-500"
+        status_code = (404 if code.endswith("-404")
+                       else 403 if code.endswith("-403")
+                       else 409 if code.endswith("-409")
+                       else 500 if code.endswith("-500")
+                       else 400)
+        raise coded(status_code, code, result.error)
+
+    # The same two nudges the route sends, under the same conditions. MCP's
+    # minimal request exists only to carry `app.state.temporal_client`; when
+    # Temporal is absent both calls no-op.
+    request = _dummy_request()
+    await _restart_lifecycle_if_needed(request, session, case_id, result)
+    if "status" in set(_disp.registry.ACTIONS[action].effects):
+        await _signal_lifecycle(request, case_id, "status_changed", {
+            "status": (result.detail or {}).get("to"),
+            "terminal": (result.detail or {}).get("terminal"),
+        })
+
+    from velaris_shared.db import repository as _repo
+
+    updated = await _repo.get_case_instance(session, case_id)
+    return CaseResponse.model_validate(updated, from_attributes=True).model_dump(mode="json")
+
+
 async def _case_update_data(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
     from case_service.api.routers.cases import update_case_data
     from case_service.api.schemas.cases import CaseDataUpdate, CaseResponse
@@ -190,17 +267,12 @@ async def _case_update_data(session: AsyncSession, user: AuthenticatedUser, args
 
 
 async def _case_set_priority(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service.api.routers.cases import change_priority
-    from case_service.api.schemas.cases import CasePriorityChange, CaseResponse
-
-    case_id = _arg_uuid(args, "case_id")
     priority = args.get("priority")
     if priority not in ("low", "medium", "high", "critical"):
         raise ToolArgError("'priority' must be one of: low, medium, high, critical")
-    body = CasePriorityChange(priority=priority, actor_id=str(user.user_id))
-    case = await change_priority(
-        case_id=case_id, body=body, session=session, user=user)
-    return CaseResponse.model_validate(case).model_dump(mode="json")
+    return await _perform_case_action(
+        session, user, args,
+        action="change_priority", params={"priority": priority})
 
 
 async def _case_link(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
@@ -250,30 +322,24 @@ async def _case_advance_stage(session: AsyncSession, user: AuthenticatedUser, ar
 
 
 async def _case_set_status(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service.api.routers.cases import change_status
-    from case_service.api.schemas.cases import CaseResponse, CaseStatusChange
-
-    case_id = _arg_uuid(args, "case_id")
     status = _arg_opt_str(args, "status", max_len=50)
     if not status:
         raise ToolArgError("'status' is required")
-    body = CaseStatusChange(status=status, reason=_arg_opt_str(args, "reason", max_len=500),
-                            actor_id=str(user.user_id))
-    case = await change_status(case_id=case_id, body=body, request=_dummy_request(),
-                               session=session, user=user)
-    return CaseResponse.model_validate(case).model_dump(mode="json")
+    params: dict = {"status": status}
+    reason = _arg_opt_str(args, "reason", max_len=500)
+    if reason:
+        params["reason"] = reason
+    return await _perform_case_action(
+        session, user, args, action="change_status", params=params)
 
 
 async def _case_close(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:
-    from case_service.api.routers.cases import close_case
-    from case_service.api.schemas.cases import CaseAction, CaseResponse
-
-    case_id = _arg_uuid(args, "case_id")
-    body = CaseAction(reason=_arg_opt_str(args, "reason", max_len=500),
-                      actor_id=str(user.user_id))
-    case = await close_case(case_id=case_id, body=body, request=_dummy_request(),
-                            session=session, user=user)
-    return CaseResponse.model_validate(case).model_dump(mode="json")
+    params: dict = {}
+    reason = _arg_opt_str(args, "reason", max_len=500)
+    if reason:
+        params["reason"] = reason
+    return await _perform_case_action(
+        session, user, args, action="close", params=params)
 
 
 async def _case_create(session: AsyncSession, user: AuthenticatedUser, args: dict) -> dict:

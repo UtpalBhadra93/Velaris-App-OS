@@ -165,10 +165,27 @@ async def select_cohort(session: AsyncSession, tenant_id: str,
     limit = max(1, min(limit, _MAX_COHORT))
 
     from sqlalchemy import or_, select as sa_select
+    # `case_instances.tenant_id` is a UUID column, and callers reach here with a
+    # string sentinel — `run_cohort` passes `run.tenant_id or "default"`. Binding
+    # "default" to a UUID column raises `badly formed hexadecimal UUID string`
+    # inside SQLAlchemy's bind processor, which surfaces as an unhandled 500 and
+    # took HxEvolve's whole replay-prover down with it.
+    #
+    # A tenant id that is not a UUID cannot match any row of a UUID column, so
+    # the honest query is the one without that term: cases no tenant owns. The
+    # equality is added only when there is something a UUID column could equal.
+    try:
+        tenant_uuid: uuid.UUID | None = uuid.UUID(str(tenant_id))
+    except (TypeError, ValueError):
+        tenant_uuid = None
+    tenant_clause = (
+        or_(CaseInstanceModel.tenant_id == tenant_uuid,
+            CaseInstanceModel.tenant_id.is_(None))
+        if tenant_uuid is not None else
+        CaseInstanceModel.tenant_id.is_(None)
+    )
     q = sa_select(CaseInstanceModel.id).where(
-        CaseInstanceModel.case_type_id == ct_id,
-        or_(CaseInstanceModel.tenant_id == tenant_id,
-            CaseInstanceModel.tenant_id.is_(None)),
+        CaseInstanceModel.case_type_id == ct_id, tenant_clause,
     )
     from case_service.hxreplay.inputs import _aware
     if flt.get("from"):

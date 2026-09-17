@@ -24,9 +24,17 @@ from case_service.calendar import service
 
 from tests.conftest import client, session  # type: ignore[attr-defined]
 
-# A Wednesday at 10:00 UTC — inside every default pattern in these tests.
-WED_10 = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
-SAT_10 = datetime(2026, 9, 5, 10, 0, tzinfo=timezone.utc)
+# A Wednesday at 10:00 UTC — inside every default pattern in these tests — and
+# the Saturday of the same week, which is outside all of them.
+#
+# Computed, not pinned. These were `datetime(2026, 9, 2)` and `(2026, 9, 5)`
+# until 2026-09-08, when that date passed and took this file red with it: an
+# absence that has already ended is correctly absent from the listing, so the
+# tests were asserting the past. See `tests/phase_calendar/__init__.py`.
+from tests.phase_calendar import next_wednesday, saturday_after
+
+WED_10 = next_wednesday(10)
+SAT_10 = saturday_after(WED_10, 10)
 
 
 def _headers_for(roles: list[str], user_id: str | None = None,

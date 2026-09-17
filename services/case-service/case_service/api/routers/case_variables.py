@@ -52,7 +52,12 @@ OWNER_TYPES = {"connector", "devconn"}   # registrable via API; platform/form/po
 def _operator_ctx(user: AuthenticatedUser) -> CallerContext:
     # mirrors _has_sensitive_access in the cases router
     privileged = hxguard.user_allows(user, "finance.details.read")
-    return CallerContext(kind="operator", actor_id=user.user_id, privileged=privileged)
+    # The tenant comes from the authenticated user, never from a parameter
+    # (mig 202): namespace resolution reads it, so a caller naming their own
+    # tenant would be naming their own namespace.
+    return CallerContext(kind="operator", actor_id=user.user_id,
+                         privileged=privileged,
+                         tenant_id=getattr(user, "tenant_id", None))
 
 
 # ── Namespace registry (admin) ───────────────────────────────────────
@@ -85,8 +90,15 @@ async def list_namespaces(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # This tenant's namespaces and the platform's — never another tenant's
+    # (mig 202). A caller with no tenant sees the platform set, which is what
+    # every row was before that migration and therefore what every install
+    # sees on the day it upgrades.
+    tenant_key = getattr(user, "tenant_id", None) or "platform"
     rows = (await session.execute(
-        select(VariableNamespaceModel).order_by(VariableNamespaceModel.name)
+        select(VariableNamespaceModel)
+        .where(VariableNamespaceModel.tenant_key.in_({tenant_key, "platform"}))
+        .order_by(VariableNamespaceModel.name)
     )).scalars().all()
     return [_ns_out(n) for n in rows]
 
@@ -107,10 +119,35 @@ async def create_namespace(
     if body.sensitivity not in SENSITIVITY_ORDER:
         raise HTTPException(400, f"sensitivity must be one of {SENSITIVITY_ORDER}")
 
+    # A namespace created by a tenant admin belongs to that tenant (mig 202).
+    # It was globally unique before, so an operator with no tenant still
+    # creates the platform row they always created.
+    tenant_id = getattr(user, "tenant_id", None)
+
+    # A tenant may NOT shadow a platform namespace of the same name, and this
+    # is the same rule `register_connector_namespace` already enforced — the
+    # route was the inconsistent half. The new (tenant_key, name) index would
+    # happily accept both rows, and then this tenant's writes would land in the
+    # new namespace while everything already written stayed in the platform
+    # one: a namespace split in two with nothing saying so. Refusing costs a
+    # rename; allowing it costs a data question nobody can answer later.
+    if tenant_id:
+        platform_row = (await session.execute(
+            select(VariableNamespaceModel).where(
+                VariableNamespaceModel.name == name,
+                VariableNamespaceModel.tenant_key == "platform",
+            )
+        )).scalars().first()
+        if platform_row is not None:
+            raise coded(409, VAR_EXISTS_409,
+                        f"'{name}' is a platform namespace that every tenant "
+                        "already resolves. A tenant namespace of the same name "
+                        "would split its data in two — pick another name.")
     ns = VariableNamespaceModel(
         id=uuid.uuid4(), name=name, owner_type=body.owner_type,
         owner_ref=body.owner_ref, sensitivity=body.sensitivity,
         created_by=user.user_id,
+        tenant_id=tenant_id, tenant_key=tenant_id or "platform",
     )
     session.add(ns)
     try:
@@ -127,9 +164,7 @@ async def patch_namespace(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("variables.namespace.admin")),
 ):
-    ns = await session.get(VariableNamespaceModel, namespace_id)
-    if ns is None:
-        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
+    ns = await _own_namespace(session, namespace_id, user)
     if ns.name in RESERVED_NAMESPACES:
         raise coded(400, VAR_RESERVED_400, "Reserved namespaces cannot be modified")
     if body.sensitivity is not None:
@@ -149,12 +184,31 @@ class GrantCreate(BaseModel):
     capability: str     # read | write
 
 
+async def _own_namespace(session, namespace_id, user) -> VariableNamespaceModel:
+    """The namespace, if this caller's tenant may act on it (mig 202).
+
+    **Another tenant's namespace is NOT FOUND, never forbidden.** A 403 confirms
+    the row exists, which is precisely what a caller in another tenant must not
+    learn — the same reasoning the case surface was fixed under in September.
+    A PLATFORM namespace (tenant_id NULL) is reachable by anyone holding the
+    privilege, which is every namespace an install had before this migration.
+    """
+    ns = await session.get(VariableNamespaceModel, namespace_id)
+    if ns is None:
+        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
+    caller_tenant = getattr(user, "tenant_id", None)
+    if ns.tenant_id is not None and ns.tenant_id != caller_tenant:
+        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
+    return ns
+
+
 @router.get("/namespaces/{namespace_id}/grants")
 async def list_grants(
     namespace_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("variables.namespace.admin")),
 ):
+    await _own_namespace(session, namespace_id, user)
     rows = (await session.execute(
         select(NamespaceGrantModel).where(NamespaceGrantModel.namespace_id == namespace_id)
     )).scalars().all()
@@ -177,8 +231,7 @@ async def create_grant(
         raise HTTPException(400, "capability must be read | write")
     if body.grantee_type not in ("connector", "devconn", "rules", "module"):
         raise HTTPException(400, "invalid grantee_type")
-    if await session.get(VariableNamespaceModel, namespace_id) is None:
-        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
+    await _own_namespace(session, namespace_id, user)
     grant = NamespaceGrantModel(
         id=uuid.uuid4(), namespace_id=namespace_id,
         grantee_type=body.grantee_type, grantee_ref=body.grantee_ref,
@@ -202,6 +255,7 @@ async def delete_grant(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("variables.namespace.admin")),
 ):
+    await _own_namespace(session, namespace_id, user)
     g = await session.get(NamespaceGrantModel, grant_id)
     if g is None or g.namespace_id != namespace_id:
         raise coded(404, VAR_NOTFOUND_404, "Grant not found")
@@ -284,9 +338,11 @@ async def define_variable(
         raise HTTPException(400, "Variable name must match ^[a-z][a-z0-9_]{0,99}$")
     if body.var_type not in VAR_TYPES:
         raise HTTPException(400, f"var_type must be one of {sorted(VAR_TYPES)}")
-    ns = await session.get(VariableNamespaceModel, body.namespace_id)
-    if ns is None:
-        raise coded(404, VAR_NOTFOUND_404, "Namespace not found")
+    # Migration 202 made a namespace tenant-ownable, which made "define a
+    # variable in somebody else's namespace" expressible for the first time.
+    # `namespace_id` is caller-supplied, so it is checked here rather than
+    # trusted — the same gate the patch and grant routes use.
+    ns = await _own_namespace(session, body.namespace_id, user)
     if ns.name == "velaris":
         raise coded(400, VAR_RESERVED_400,
                     "velaris.* variables are virtual — they are the case's native fields")
@@ -418,6 +474,9 @@ async def promote_case_data_key(
             var_type=body.var_type,
             indexed=body.indexed,
             actor=user.user_id,
+            # Without this the target resolves to platform namespaces only, so a
+            # tenant could not promote into a namespace it registered itself.
+            tenant_id=getattr(user, "tenant_id", None),
         )
     except VariableError as e:
         raise coded(400, VAR_REJECTED_400, str(e))

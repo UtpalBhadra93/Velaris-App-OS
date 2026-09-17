@@ -192,17 +192,42 @@ async def update_gdpr_request(
     return {"status": "updated"}
 
 
+def _policy_refusal(exc: PermissionError) -> HTTPException:
+    """An HxArbiter refusal is a 403, not a 500.
+
+    `gdpr.export_user_data` raises `PermissionError` when the `export`
+    namespace is enforcing and policy refuses — and nothing caught it, so the
+    one path whose job is to refuse an export cleanly returned
+    `VEL-SYS-UNHANDLED-500` instead. Found only by promoting the namespace on
+    an isolated instance: in shadow the refusal never fires, which is why every
+    test and every live check had passed.
+
+    A 500 is wrong twice over here: it tells the caller the platform is broken
+    when it is working exactly as configured, and it is the status an operator
+    pages on.
+    """
+    return HTTPException(status_code=403, detail=str(exc))
+
+
 @router.get("/gdpr/lookup/{user_id}")
 async def lookup_user_data(
     user_id: str,
     session: AsyncSession = Depends(get_session),
+    # Added only so the HxArbiter export PEP can be told which tenant is
+    # asking. The router already gates every route here on
+    # `compliance.enterprise.access`, so this widens nothing.
+    actor: AuthenticatedUser = Depends(get_current_user),
 ):
     """Check whether a user has any data — summary counts only, no PII returned.
 
     Covers both internal operators (UserDirectory) and external
     portal/customer users referenced in cases, assignments, and audit logs.
     """
-    data = await gdpr.export_user_data(session, user_id)
+    try:
+        data = await gdpr.export_user_data(
+            session, user_id, tenant_id=getattr(actor, "tenant_id", None))
+    except PermissionError as exc:
+        raise _policy_refusal(exc) from exc
     counts = {
         "user_profile":       len(data.get("user_profile", [])),
         "cases_created":      len(data["cases_created"]),
@@ -234,7 +259,11 @@ async def export_user_data(
 
     Automatically logs and completes a GDPR export request record.
     """
-    data = await gdpr.export_user_data(session, user_id)
+    try:
+        data = await gdpr.export_user_data(
+            session, user_id, tenant_id=getattr(actor, "tenant_id", None))
+    except PermissionError as exc:
+        raise _policy_refusal(exc) from exc
 
     # Create and immediately complete the GDPR request record
     req_id = await gdpr.create_request(

@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
-import { VoiceInput, appendTranscript } from "@shared/components";
+import { Tabs, VoiceInput, appendTranscript } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/analytics";
@@ -31,9 +31,6 @@ const S: Record<string, React.CSSProperties> = {
   header:     { padding: "18px 24px 0", flexShrink: 0 },
   title:      { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:        { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabBar:     { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:        { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive:  { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:       { flex: 1, overflow: "auto", padding: "20px 28px" },
   card:       { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px 20px", marginBottom: 12 },
   metricCard: { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "16px 20px" as const },
@@ -504,12 +501,7 @@ export default function HxAnalytics() {
   ];
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-                  style={{ ...S.tab, ...(tab === t.key ? S.tabActive : {}) }}>{t.label}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxAnalytics" tabs={tabs} value={tab} onChange={setTab} />
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {tab === "dashboard" && <DashboardTab />}
         {tab === "query"     && <QueryTab />}

@@ -664,8 +664,31 @@ async def apply_bundle(
         except Exception:
             return None
 
-    def _map_or_new(source_id: str | None) -> uuid.UUID:
-        return _uuid(source_id) or uuid.uuid4()
+    async def _claim_id(model, source_id: str | None) -> uuid.UUID:
+        """Keep the source id when it is FREE here; otherwise allocate a new one.
+
+        Reusing the source id is what lets a promoted artifact keep its identity
+        across environments, and it is right whenever the id is unused in the
+        target. It is WRONG when the target already holds that id under a
+        different natural key — which is not exotic: every Velaris install runs
+        the same migrations, so the platform-seeded rows (`admin`, `staff`,
+        `viewer` access roles among them) carry the SAME fixed ids everywhere,
+        with a NULL tenant that no tenant-scoped lookup will ever match.
+
+        Found by the F-04 twin, which is a freshly migrated environment and so
+        hits this on the first import. It was never twin-specific: promoting
+        into any freshly seeded environment raised a primary-key violation, and
+        because the failure poisoned the session, the very next `select` in the
+        loop re-raised it during autoflush — so **one colliding row aborted the
+        whole bundle**, and the per-item `except` that looks like isolation gave
+        none.
+        """
+        wanted = _uuid(source_id)
+        if wanted is None:
+            return uuid.uuid4()
+        if await session.get(model, wanted) is not None:
+            return uuid.uuid4()
+        return wanted
 
     # ── 1. Data models ───────────────────────────────────────────────────
     for m in bundle.get("data_models", []):
@@ -681,7 +704,7 @@ async def apply_bundle(
                 dm_id_map[m["id"]] = ex.id
                 skipped += 1
             else:
-                local_id = _map_or_new(m.get("id"))
+                local_id = await _claim_id(DataModelModel, m.get("id"))
                 session.add(DataModelModel(id=local_id, name=m["name"], version=m["version"], definition_json=m["definition_json"]))
                 dm_id_map[m["id"]] = local_id
                 imported += 1
@@ -701,7 +724,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(BusinessCalendarModel(
-                    id=_map_or_new(c.get("id")), name=c["name"], timezone=c["timezone"],
+                    id=await _claim_id(BusinessCalendarModel, c.get("id")), name=c["name"], timezone=c["timezone"],
                     work_days=c["work_days"], work_start_hour=c["work_start_hour"],
                     work_end_hour=c["work_end_hour"], holidays=c["holidays"],
                     description=c.get("description", ""),
@@ -724,7 +747,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(AccessRoleModel(
-                    id=_map_or_new(r.get("id")), name=r["name"],
+                    id=await _claim_id(AccessRoleModel, r.get("id")), name=r["name"],
                     description=r.get("description", ""), privileges=r["privileges"],
                     tenant_id=target_tenant_id,
                 ))
@@ -747,7 +770,7 @@ async def apply_bundle(
                 portal_id_map[p["id"]] = ex.id
                 skipped += 1
             else:
-                local_id = _map_or_new(p.get("id"))
+                local_id = await _claim_id(PortalModel, p.get("id"))
                 session.add(PortalModel(
                     id=local_id, name=p["name"], portal_type=p["portal_type"],
                     modules=p["modules"], homepage=p["homepage"], theme=p["theme"],
@@ -773,7 +796,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(EmailTemplateModel(
-                    id=_map_or_new(t.get("id")), name=t["name"],
+                    id=await _claim_id(EmailTemplateModel, t.get("id")), name=t["name"],
                     description=t.get("description", ""), subject=t["subject"],
                     body_text=t["body_text"], body_html=t.get("body_html"),
                     engine=t.get("engine", "jinja2"), scope=t.get("scope", "global"),
@@ -804,7 +827,7 @@ async def apply_bundle(
                     ex.imap_password = ea["imap_password"]
                 skipped += 1
             else:
-                local_id = _map_or_new(ea.get("id"))
+                local_id = await _claim_id(EmailAccountModel, ea.get("id"))
                 session.add(EmailAccountModel(
                     id=local_id, name=ea["name"], address=ea["address"],
                     smtp_host=ea["smtp_host"], smtp_port=ea.get("smtp_port", 587),
@@ -842,7 +865,7 @@ async def apply_bundle(
                 connector_id_map[c["id"]] = ex.id
                 skipped += 1
             else:
-                local_id = _map_or_new(c.get("id"))
+                local_id = await _claim_id(ConnectorRegistryModel, c.get("id"))
                 session.add(ConnectorRegistryModel(
                     id=local_id, name=c["name"], connector_type=c["connector_type"],
                     description=c.get("description"), config_schema=c.get("config_schema", {}),
@@ -869,7 +892,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(ProcessDefinitionModel(
-                    id=_map_or_new(p.get("id")), name=p["name"], version=p["version"],
+                    id=await _claim_id(ProcessDefinitionModel, p.get("id")), name=p["name"], version=p["version"],
                     description=p.get("description"), bpmn_xml=p["bpmn_xml"],
                     case_type_id=p.get("case_type_id"), status=p.get("status", "active"),
                     tenant_id=target_tenant_id,
@@ -895,7 +918,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(FormDefinitionModel(
-                    id=_map_or_new(f.get("id")), name=f["name"], version=f["version"],
+                    id=await _claim_id(FormDefinitionModel, f.get("id")), name=f["name"], version=f["version"],
                     data_model_id=local_dm_id, definition_json=f["definition_json"],
                 ))
                 imported += 1
@@ -917,7 +940,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(RuleDefinitionModel(
-                    id=_map_or_new(r.get("id")), name=r["name"], version=r["version"],
+                    id=await _claim_id(RuleDefinitionModel, r.get("id")), name=r["name"], version=r["version"],
                     rule_type=r["rule_type"], scope=r.get("scope", "global"),
                     scope_target_id=r.get("scope_target_id"), definition_json=r["definition_json"],
                     enabled=r.get("enabled", True), priority=r.get("priority", 0),
@@ -1036,7 +1059,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(EscalationTreeModel(
-                    id=_map_or_new(e.get("id")), name=e["name"],
+                    id=await _claim_id(EscalationTreeModel, e.get("id")), name=e["name"],
                     description=e.get("description", ""), scope=e.get("scope", "global"),
                     case_type_id=local_ct, tenant_id=target_tenant_id,
                     tree_json=e["tree_json"], is_active=e.get("is_active", True),
@@ -1065,7 +1088,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(WebhookSubscriptionModel(
-                    id=_map_or_new(w.get("id")), name=w["name"], url=w["url"],
+                    id=await _claim_id(WebhookSubscriptionModel, w.get("id")), name=w["name"], url=w["url"],
                     secret=None,  # always null on import
                     events=w["events"], case_type_id=local_ct,
                     is_active=w.get("is_active", True), headers=w.get("headers", {}),
@@ -1093,7 +1116,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(OutboundConnectorRuleModel(
-                    id=_map_or_new(r.get("id")), tenant_id=target_tenant_id,
+                    id=await _claim_id(OutboundConnectorRuleModel, r.get("id")), tenant_id=target_tenant_id,
                     name=r["name"], trigger_event=r["trigger_event"],
                     case_type_id=local_ct, condition_expr=r.get("condition_expr"),
                     connector_id=local_conn, input_mapping=r.get("input_mapping", {}),
@@ -1122,7 +1145,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(WebhookReceiverRuleModel(
-                    id=_map_or_new(r.get("id")), tenant_id=target_tenant_id,
+                    id=await _claim_id(WebhookReceiverRuleModel, r.get("id")), tenant_id=target_tenant_id,
                     connector_id=local_conn, name=r["name"],
                     case_id_field=r.get("case_id_field"), match_case_field=r.get("match_case_field"),
                     match_payload_field=r.get("match_payload_field"),
@@ -1155,7 +1178,7 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(AccessGroupModel(
-                    id=_map_or_new(g.get("id")), name=g["name"],
+                    id=await _claim_id(AccessGroupModel, g.get("id")), name=g["name"],
                     description=g.get("description", ""), tenant_id=target_tenant_id,
                     portal_id=local_portal, role_ids=g.get("role_ids", []),
                     allowed_case_type_ids=g.get("allowed_case_type_ids", ["*"]),
@@ -1239,7 +1262,7 @@ async def apply_bundle(
                         "detail": f"changed by import ({', '.join(changed)}) — returned to draft",
                     })
             else:
-                local_id = _map_or_new(b.get("id"))
+                local_id = await _claim_id(BotDefinitionModel, b.get("id"))
                 row = BotDefinitionModel(
                     id=local_id, tenant_id=target_tenant_id,
                     created_by=imported_by, last_edited_by=imported_by,
@@ -1314,7 +1337,7 @@ async def apply_bundle(
                 local_id = ex.id
             else:
                 row = ScheduleModel(
-                    id=_map_or_new(sc.get("id")), tenant_id=target_tenant_id,
+                    id=await _claim_id(ScheduleModel, sc.get("id")), tenant_id=target_tenant_id,
                     created_by=imported_by, last_edited_by=imported_by,
                     status="draft", approved_by=None, approved_at=None,
                     next_run_at=None, **incoming,

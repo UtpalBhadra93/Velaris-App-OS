@@ -22,7 +22,7 @@ from velaris_shared.llm.guard import (
     wrap_user_input, wrap_document,
     validate_message_length,
 )
-from .text_extractor import extract_text
+from .text_extractor import extract_text, extract_text_async
 from velaris_shared.llm.factory import get_llm_backend
 from .vector_store import InMemoryVectorStore
 
@@ -63,6 +63,70 @@ async def next_best_action(
         return []
 
 
+# ── What a case's chunks are, when you go looking for them ────────────
+
+async def _tenant_spellings(session: AsyncSession, tenant_id) -> set[str]:
+    """Every string form the SAME tenant is stored as on a chunk row.
+
+    `hxnexus_document_chunks.tenant_id` is a VARCHAR written by two different
+    callers: the case-wide index route passes the case's tenant **GUID**, and
+    `POST /hxnexus/documents/upload` passes `user.tenant_id`, which is a
+    directory **slug** on most installs. One tenant, two spellings, and a
+    reader that filters on either one silently misses the other half of its own
+    documents — the same GUID-vs-slug fault that made costing answer "case not
+    found" to a case's own tenant.
+
+    Resolving both, rather than re-stamping the rows, is deliberate: an install
+    that upgrades keeps every chunk it has and starts finding all of them.
+    """
+    if tenant_id is None:
+        return set()
+    forms = {str(tenant_id).strip()}
+    try:
+        from velaris_shared.tenancy.identity import resolve_tenant
+
+        resolved = await resolve_tenant(session, tenant_id)
+        if resolved:
+            forms.update({str(resolved[0]), str(resolved[1])})
+    except Exception as exc:  # noqa: BLE001 — retrieval must not 500 on this
+        log.warning("chunk tenant resolution failed for %s: %s", tenant_id, exc)
+    return {f for f in forms if f}
+
+
+async def _case_chunk_filter(session: AsyncSession, case_id, tenant_id):
+    """The WHERE clause every reader of a case's chunks must use.
+
+    Two rules live here rather than at each call site:
+
+    * **tenant**, in any spelling it was written in, and a NULL tenant is kept —
+      chunks written before this platform had tenants belong to their case; and
+    * **the document must not be deleted.** Chunks are a derived copy of a
+      document's text. Deleting a document used to leave that copy behind, and
+      the RAG path answered from it and cited it — so "delete this document"
+      removed it from every screen and from none of the answers.
+    """
+    from velaris_shared.db.models import DocumentChunkModel, DocumentModel
+
+    clauses = [DocumentChunkModel.case_id == case_id]
+
+    forms = await _tenant_spellings(session, tenant_id)
+    if forms:
+        clauses.append(
+            DocumentChunkModel.tenant_id.is_(None)
+            | DocumentChunkModel.tenant_id.in_(sorted(forms))
+        )
+
+    # `~exists` rather than a join: a chunk from `/hxnexus/documents/upload`
+    # has no `documents` row at all, and it must still be found.
+    clauses.append(
+        ~select(DocumentModel.id).where(
+            DocumentModel.id == DocumentChunkModel.document_id,
+            DocumentModel.is_deleted.is_(True),
+        ).exists()
+    )
+    return clauses
+
+
 # ── Document indexing ─────────────────────────────────────────────────
 
 async def index_document(
@@ -79,15 +143,23 @@ async def index_document(
     from velaris_shared.db.models import DocumentChunkModel
 
     llm = backend or get_llm_backend()
-    vs = vector_store   # injected in tests; prod uses DbVectorStore
+    vs = vector_store   # injected in tests; production injects nothing and the
+                        # chunks are written straight to the database below
 
-    text = extract_text(data, content_type)
+    # OCR falls back in here when there is no text layer — a scanned page
+    # indexed as empty is a document nobody can search for.
+    text = await extract_text_async(data, content_type)
     if not text:
         log.info("HxNexus: no extractable text from document %s", document_id)
         return 0
 
     chunks = chunk_text(text)
     indexed = 0
+    # `hxnexus_document_chunks.tenant_id` is a VARCHAR while `cases.tenant_id`
+    # is a GUID, so the case-wide index route handed this a UUID object and
+    # every driver refused to bind it — a 500 on any TENANTED case, and green
+    # in every test because they all used untenanted ones.
+    tenant_id = str(tenant_id) if tenant_id is not None else None
     for i, chunk in enumerate(chunks):
         embedding = await llm.embed(chunk) if llm.available else []
         chunk_id = uuid.uuid4()
@@ -170,15 +242,19 @@ async def qa_over_documents(
     if vector_store is not None:
         chunks = await vector_store.query(
             q_embedding, top_k=top_k,
-            filter_metadata={"case_id": str(case_id), "tenant_id": tenant_id},
+            filter_metadata={"case_id": str(case_id),
+                             # str(): the route passes `case.tenant_id`, a UUID
+                             # object, and the store compares it to the string
+                             # the chunk carries.
+                             "tenant_id": str(tenant_id) if tenant_id else None},
         )
     else:
-        # DB-based retrieval (load all chunks for case, rank in-process)
+        # DB-based retrieval (load all chunks for case, rank in-process).
+        # See `_case_chunk_filter` for why the tenant clause is a set of
+        # spellings and why deleted documents are excluded here.
         rows = (await session.execute(
             select(DocumentChunkModel).where(
-                DocumentChunkModel.case_id == case_id,
-                DocumentChunkModel.tenant_id == tenant_id if tenant_id else True,
-            )
+                *await _case_chunk_filter(session, case_id, tenant_id))
         )).scalars().all()
 
         from .vector_store import _cosine

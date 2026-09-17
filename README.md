@@ -72,10 +72,20 @@
 
 ---
 
-## What's new in 2.5.0
+## What's new in 3.0.0
+
+- **A major, for one reason:** six case routes are replaced by one dispatcher, `POST /cases/{id}/actions/{action}`. Anything calling `/status`, `/priority`, `/resolve`, `/close`, `/reopen` or `/cancel` directly gets a 404 — move it before upgrading. Everything else is additive and ships off.
+- **HxArbiter** — one deterministic policy engine across every sovereignty and security control, with a tamper-evident decision log, policies drafted in plain English and approved by a person, and every enforcement point in shadow until you promote it.
+- **Governed AI, F-00 to F-12** — agents as first-class principals, a hash-chained ledger of every AI decision, cost per decision, re-derivable compliance proofs, a simulation gate and digital twin, an agent workforce, ambient case capture, a sovereign model marketplace, self-healing processes, agent-to-agent handoff, offline field operations (hub), intent-based execution and process-as-negotiation.
+- **Customer Engagement** — when someone calls, the rep sees the person, to the extent the caller is verified; floor analytics with stated definitions, suggested next actions a rep can disagree with on the record, and an AI recap in which every point cites its records.
+- **Case actions and statuses** — statuses are data a tenant authors; archive, soft delete, escalate, split and transfer; stage-level status and actions; bulk actions including a previewed bulk stage move; and moving a case between tenants with two-person approval and the destination's acceptance.
+- **Tenant isolation, audited** — cross-tenant reads of cases, documents and AI answers found and closed at the gate, not per route.
+- **Also** — audit streaming to a SIEM, HxShield responses, DMN import/export, local OCR, background document indexing with a queue screen, gateway rate limits on every path, and a Studio that loads six times less on a first visit.
+
+### 2.5.0
 
 - **Four services behind one gateway** — analytics, HxGraph and the migration domain each run on their own; client-facing prefixes are unchanged. The gateway is now the only *caller* as well as the only route: a process opening a service port directly is refused.
-- **People Calendar** — absence, availability and team meetings inside HxWork. Leave is a fact and working hours are an assumption: leave decides who owns work, both together answer "when shall we meet". A colleague sees busy, never why.
+- **People Calendar** — absence, availability and team meetings inside HxWork. Leave is a fact and working hours are an assumption: leave decides who owns work, both together answer "when shall we meet". A colleague sees busy, never why. Bring an existing calendar with you: upload an `.ics`, or subscribe to an Outlook/Google/Apple address that is re-read on a timetable — read-only, and only from hosts an administrator has allowed. Out-of-office arrives as a leave *request*, never as approved leave.
 - **HxDeploy promotion packages** — frozen, sealed packages promoted between environments with selectable scope, covering bots and schedules, gated by a two-person rule.
 - **Bot scheduler and definition editor** — bots configured in Studio, with fan-out schedules and per-bot allow-listed egress. A schedule does not fire until somebody who is not its author approves it.
 - **Sign in with Google and GitHub** — two more providers on the login page, with monochrome marks that invert cleanly in dark mode.

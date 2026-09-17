@@ -64,6 +64,30 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "velaris-case-queue"
 
+    # F-04 second slice — the simulation TWIN.
+    #
+    # Both empty means NO TWIN, which is the only safe default and the only
+    # behaviour an install taking this update may see: a simulation reports
+    # exactly what it reported before the twin existed. Nothing in Velaris
+    # starts the twin worker — the operator runs a second case-service worker
+    # with `VELARIS_CASE_TASK_QUEUE` set to the queue below and
+    # `VELARIS_CASE_DATABASE_URL` set to the database below.
+    #
+    # They are checked against production before a rehearsal runs, on
+    # (host, port, database) and on the queue name. A twin that is actually
+    # production would write synthetic cases into real data and clear a
+    # promotion with a rehearsal that damaged the thing it rehearsed.
+    twin_task_queue: str = ""
+    twin_database_url: str = ""
+    #: How many synthetic cases one rehearsal drives. Bounded here rather than
+    #: taken from the request: a caller who could ask for a million would be a
+    #: denial-of-service against the operator's own twin.
+    twin_max_cases: int = 200
+    #: Seconds one rehearsal may take before it is stopped and reported as
+    #: whatever it had reached. A rehearsal that runs forever blocks the
+    #: promotion it exists to inform.
+    twin_deadline_seconds: int = 300
+
     # Engine API (for deploying lifecycle processes)
     engine_api_url: str = "http://localhost:8100"
 
@@ -254,6 +278,47 @@ class Settings(BaseSettings):
     mcp_external_rate_per_min: int = Field(default=15, validation_alias="VELARIS_CASE_MCP_EXTERNAL_RATE_PER_MIN")
     mcp_token_default_ttl_minutes: int = Field(default=30, validation_alias="VELARIS_CASE_MCP_TOKEN_DEFAULT_TTL_MINUTES")
     mcp_token_max_ttl_minutes: int = Field(default=60, validation_alias="VELARIS_CASE_MCP_TOKEN_MAX_TTL_MINUTES")
+
+    # ── F-00 agent identity ───────────────────────────────────────────────
+    # Agent principals may always be created and inspected; what this switch
+    # gates is the minting and ACCEPTANCE of agent tokens. Default-off and a
+    # true kill switch, exactly like `mcp_external_tokens_enabled`: turning it
+    # off rejects every outstanding agent token on its next call, not merely
+    # new mints. An install taking the update has it off and nothing changes.
+    agent_tokens_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_AGENT_TOKENS_ENABLED")
+    agent_token_default_ttl_minutes: int = Field(default=15, validation_alias="VELARIS_CASE_AGENT_TOKEN_DEFAULT_TTL_MINUTES")
+    # Deliberately shorter than the MCP ceiling. An agent runs unattended, so a
+    # leaked token has nobody watching; the design's "≤ 24 h" is the outer bound
+    # for a case-scoped work order, not a sensible default for a worker.
+    agent_token_max_ttl_minutes: int = Field(default=60, validation_alias="VELARIS_CASE_AGENT_TOKEN_MAX_TTL_MINUTES")
+
+    # ── F-05 agent workforce: the scheduled scorecard sweep ───────────────
+    # Default OFF. The sweep only recomputes what `POST /agents/{id}/workforce/
+    # scorecard` already computes on demand, and it is inert on an install with
+    # an empty roster — which every install has, because enrolment is an
+    # explicit act. Off anyway: an update does not get to start a background
+    # writer on somebody's box, and an operator who wants nightly reviews turns
+    # them on and picks the cadence.
+    agent_scorecard_cron_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_AGENT_SCORECARD_CRON_ENABLED")
+    # Doubles as the de-duplication window: an agent whose newest scorecard is
+    # younger than this is skipped, so restarts cannot fill the table.
+    agent_scorecard_interval_hours: int = Field(default=24, validation_alias="VELARIS_CASE_AGENT_SCORECARD_INTERVAL_HOURS")
+    agent_scorecard_window_days: int = Field(default=7, validation_alias="VELARIS_CASE_AGENT_SCORECARD_WINDOW_DAYS")
+
+    # ── F-06 ambient capture: the automatic sweep ─────────────────────────
+    # Two switches, both off, and they are not redundant. THIS one is the
+    # operator's — whether this box runs a background reader of mail and
+    # meeting transcripts at all. The tenant's own
+    # `settings["capture"]["auto"]` decides whether their sources are read.
+    # A multi-tenant install needs both answers and neither implies the other.
+    capture_auto_enabled: bool = Field(default=False, validation_alias="VELARIS_CASE_CAPTURE_AUTO_ENABLED")
+    capture_auto_interval_seconds: int = Field(default=300, validation_alias="VELARIS_CASE_CAPTURE_AUTO_INTERVAL_SECONDS")
+    # The upgrade-safety property, not a performance one: without it the first
+    # cycle after somebody switches this on would read every inbound email ever
+    # threaded to a case. Turning capture on starts watching; it does not
+    # reprocess the archive.
+    capture_auto_lookback_hours: int = Field(default=24, validation_alias="VELARIS_CASE_CAPTURE_AUTO_LOOKBACK_HOURS")
+    capture_auto_max_per_cycle: int = Field(default=20, validation_alias="VELARIS_CASE_CAPTURE_AUTO_MAX_PER_CYCLE")
     # <<< HxNexus Operator (MCP) P1
 
     # >>> P32 scaling
@@ -491,6 +556,53 @@ class Settings(BaseSettings):
     bot_tenant_max_concurrent: int = Field(
         default=4, validation_alias="VELARIS_CASE_BOT_TENANT_MAX_CONCURRENT"
     )
+    # Calendar feed subscriptions ("add a calendar by URL"). A comma-separated
+    # allowlist of hosts this server may fetch a calendar from — an exact host,
+    # or a leading dot for a domain and its subdomains (`.google.com`).
+    #
+    # **Unset means no subscription can be created at all**, which is exactly
+    # today's behaviour on every existing install: the feature arrives off, and
+    # naming the hosts is an operator's decision, not an update's. It is an
+    # allowlist rather than a blocklist because the URL comes from a user and
+    # the fetch happens from inside the network — the shape of every SSRF.
+    calendar_feed_hosts: str = Field(
+        default="", validation_alias="VELARIS_CASE_CALENDAR_FEED_HOSTS")
+
+    # ── HxShield response layer (roadmap #25) ────────────────────────────
+    # OFF. With this unset, every response HxShield decides on is RECORDED and
+    # none is performed — an operator reads a week of "this is what would have
+    # happened" before anything acts. An automated response that surprises its
+    # operator is switched off permanently on its first false positive, so it
+    # has to earn the switch. Turning it on is an operator's decision and
+    # `update-velaris.sh` never makes it.
+    #
+    # Even ON, a DESTRUCTIVE response still waits for a person: this switch
+    # governs the automatic ones (notify, quarantine), never suspension or
+    # session revocation.
+    shield_response_enabled: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_SHIELD_RESPONSE_ENABLED")
+
+    # ── OCR (market gap A1) ──────────────────────────────────────────────
+    # "" or "stub" = no OCR, which is what this platform has always done: the
+    # only engine was a stub returning an empty string, so a SCANNED page
+    # yielded nothing and nothing said so. "tesseract" runs the local binary —
+    # the sovereignty-preserving choice, since OCR is the classic thing to send
+    # to somebody else's cloud.
+    #
+    # Off by default even where the binary is installed: switching it on changes
+    # what a document CONTAINS as far as search, HxPrivacy's scan and every AI
+    # path are concerned, and that is an operator's decision, not an update's.
+    ocr_engine: str = Field(
+        default="", validation_alias="VELARIS_CASE_OCR_ENGINE")
+    ocr_language: str = Field(
+        default="eng", validation_alias="VELARIS_CASE_OCR_LANGUAGE")
+    # A calendar, not a download. Bounds the read itself, so a host that streams
+    # forever cannot hold a worker open or fill memory.
+    calendar_feed_max_bytes: int = Field(
+        default=2_097_152, validation_alias="VELARIS_CASE_CALENDAR_FEED_MAX_BYTES")
+    calendar_feed_timeout_seconds: int = Field(
+        default=20, validation_alias="VELARIS_CASE_CALENDAR_FEED_TIMEOUT")
+
     # Max concurrent sandbox workspaces per developer (raise based on available RAM/CPU).
     marketplace_max_workspaces_per_user: int = 2
     # URL of the official Velaris index file (sources.json) — override to self-host.

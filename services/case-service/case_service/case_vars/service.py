@@ -70,9 +70,52 @@ class CallerContext:
     ref: uuid.UUID | None = None   # connector_registry.id for connector/devconn
     actor_id: str = "system"
     privileged: bool = False
+    #: Which tenant this caller belongs to, for namespace resolution (mig 202).
+    #:
+    #: **Optional, and unset means what it has always meant.** A namespace is
+    #: resolved by the caller's tenant FIRST and by the platform row second, so
+    #: a context built without a tenant — which is all nineteen of the existing
+    #: construction sites — reaches exactly the namespaces it reached before.
+    #: Threading a tenant into a site is therefore a per-site improvement, never
+    #: a prerequisite.
+    tenant_id: str | None = None
 
 
 # ── Namespace resolution (gate 1) ────────────────────────────────────
+
+
+async def resolve_namespace_by_name(
+    session: AsyncSession, name: str, tenant_id: str | None,
+) -> VariableNamespaceModel | None:
+    """The tenant's namespace of that name, or the platform one (mig 202).
+
+    **Tenant first, platform second, and never another tenant's.** A namespace
+    was globally unique before migration 202, so every row an install already
+    has is a platform row and every caller still finds it — which is what makes
+    this change invisible to an existing install. A tenant that registers its
+    own `crm` shadows the platform one for its own callers only.
+
+    Ordering is done in Python rather than in SQL: `ORDER BY tenant_key = :t`
+    is a boolean-expression sort that MySQL, MariaDB and PostgreSQL each render
+    differently, and this is a two-row decision.
+    """
+    rows = (await session.execute(
+        select(VariableNamespaceModel)
+        .where(VariableNamespaceModel.name == name)
+        .where(VariableNamespaceModel.tenant_key.in_(
+            [t for t in (tenant_id, "platform") if t]))
+    )).scalars().all()
+    if not rows:
+        return None
+    if tenant_id:
+        for row in rows:
+            if row.tenant_key == tenant_id:
+                return row
+    for row in rows:
+        if row.tenant_key == "platform":
+            return row
+    return None
+
 
 
 async def _resolve_write_namespace(
@@ -89,7 +132,14 @@ async def _resolve_write_namespace(
             "through the case lifecycle endpoints, not the variable store."
         )
     if ctx.kind in ("form", "portal"):
-        q = select(VariableNamespaceModel).where(VariableNamespaceModel.name == ctx.kind)
+        ns = await resolve_namespace_by_name(session, ctx.kind, ctx.tenant_id)
+        if ns is None:
+            raise VariableError(
+                "No registered namespace for this caller — register the "
+                "integration first.")
+        if ns.status == "retired":
+            raise VariableError(f"Namespace '{ns.name}' is retired — writes are closed.")
+        return ns
     elif ctx.kind in ("connector", "devconn"):
         if ctx.ref is None:
             raise VariableError("Connector callers must carry their connector id.")
@@ -261,10 +311,7 @@ async def set_granted(
     if ns_name in RESERVED_NAMESPACES:
         raise VariableError(f"'{ns_name}' is reserved — not a grantable write target.")
 
-    ns = (await session.execute(
-        select(VariableNamespaceModel)
-        .where(VariableNamespaceModel.name == ns_name).limit(1)
-    )).scalar_one_or_none()
+    ns = await resolve_namespace_by_name(session, ns_name, ctx.tenant_id)
     if ns is None:
         raise VariableError(f"Namespace '{ns_name}' is not registered.")
     if ns.status == "retired":
@@ -571,6 +618,7 @@ async def get_all_bulk(
 async def register_connector_namespace(
     session: AsyncSession, *, name: str, owner_type: str, owner_ref: uuid.UUID,
     created_by: str, sensitivity: str = "internal",
+    tenant_id: str | None = None,
 ) -> VariableNamespaceModel:
     """Register the namespace an integration will write to, at config time.
 
@@ -602,15 +650,24 @@ async def register_connector_namespace(
             f"({owned.status}) — one namespace per connector."
         )
 
+    # Scoped to this tenant AND to the platform (mig 202). Another tenant
+    # holding the name must not block this one — that global collision is the
+    # whole defect — but a PLATFORM namespace of that name still does, because
+    # every tenant resolves it and two rows answering one name would make the
+    # winner depend on who asked.
+    tenant_key = tenant_id or "platform"
     taken = (await session.execute(
         select(VariableNamespaceModel)
-        .where(VariableNamespaceModel.name == name).limit(1)
+        .where(VariableNamespaceModel.name == name)
+        .where(VariableNamespaceModel.tenant_key.in_({tenant_key, "platform"}))
+        .limit(1)
     )).scalar_one_or_none()
     if taken is not None:
         raise VariableError(f"Namespace '{name}' is already registered to another owner.")
 
     ns = VariableNamespaceModel(
-        id=uuid.uuid4(), name=name, owner_type=owner_type, owner_ref=owner_ref,
+        id=uuid.uuid4(), name=name, tenant_id=tenant_id, tenant_key=tenant_key,
+        owner_type=owner_type, owner_ref=owner_ref,
         sensitivity=sensitivity, created_by=created_by,
     )
     session.add(ns)
@@ -737,6 +794,7 @@ async def promote_blob_key(
     var_type: str | None = None,
     indexed: bool = False,
     actor: str = "admin",
+    tenant_id: str | None = None,
 ) -> dict:
     """Promote one bare case.data key into a typed variable (Phase 4).
 
@@ -761,19 +819,13 @@ async def promote_blob_key(
         )
 
     if target_namespace == "legacy":
-        ns = (await session.execute(
-            select(VariableNamespaceModel)
-            .where(VariableNamespaceModel.name == "legacy").limit(1)
-        )).scalar_one_or_none()
+        ns = await resolve_namespace_by_name(session, "legacy", tenant_id)
         if ns is None:
             raise VariableError("Reserved 'legacy' namespace missing — run migration 087.")
     else:
         if target_namespace in RESERVED_NAMESPACES:
             raise VariableError(f"'{target_namespace}' is reserved — promote to 'legacy' or a registered namespace.")
-        ns = (await session.execute(
-            select(VariableNamespaceModel)
-            .where(VariableNamespaceModel.name == target_namespace).limit(1)
-        )).scalar_one_or_none()
+        ns = await resolve_namespace_by_name(session, target_namespace, tenant_id)
         if ns is None:
             raise VariableError(f"Namespace '{target_namespace}' is not registered.")
         if ns.status == "retired":

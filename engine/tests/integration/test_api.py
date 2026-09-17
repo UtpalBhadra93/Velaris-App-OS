@@ -205,8 +205,14 @@ class TestCancelInstance:
         start_resp = client.post("/processes/test_process/start", json={})
         instance_id = start_resp.json()["instance_id"]
 
-        # Manually set status to running (process may complete instantly)
-        client.app.state.store.update_instance(instance_id, status=InstanceStatus.RUNNING)
+        # Force it back to running: with Temporal connected the workflow finishes
+        # before the cancel arrives, and this test is about cancelling a RUNNING
+        # instance. The previous line called the async `update_instance` without
+        # awaiting it, so it never ran and the test passed only on a machine with
+        # no Temporal (2026-09-17).
+        stored = client.app.state.store._instances[instance_id]
+        stored.status = InstanceStatus.RUNNING
+        stored.completed_at = None
 
         resp = client.post(
             f"/processes/test_process/instances/{instance_id}/cancel"
@@ -218,3 +224,25 @@ class TestCancelInstance:
         client.post("/processes/deploy", json={"bpmn_xml": SIMPLE_BPMN})
         resp = client.post("/processes/test_process/instances/fake/cancel")
         assert resp.status_code == 404
+
+
+class TestReadiness:
+    """`/ready` must ANSWER 503 when the engine has no database — a Kubernetes
+    readiness probe reads the status code, and until 2026-09-17 this route
+    returned 200 with the word "unavailable" in the body, so an engine running on
+    the in-memory fallback reported itself ready and took traffic."""
+
+    def test_ready_is_503_without_a_database(self, client: TestClient):
+        import helix_engine.main as engine_main
+
+        resp = client.get("/ready")
+        body = resp.json()
+        if body["database"] == "connected":
+            assert resp.status_code == 200
+        else:
+            assert resp.status_code == 503, body
+
+    def test_health_stays_200_whatever_the_database_is_doing(self, client: TestClient):
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "healthy"

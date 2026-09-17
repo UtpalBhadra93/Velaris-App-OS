@@ -1,7 +1,11 @@
 """HxNexus — vector store implementations.
 
 InMemoryVectorStore: used in tests (no DB needed).
-DbVectorStore: reads chunks from DB, computes cosine similarity in-process
+DbVectorStore: reads chunks from DB, computes cosine similarity in-process.
+              **Nothing constructs it today** — `qa_over_documents` does the same
+              read inline when no store is injected. Kept because it is the seam
+              a real vector database would replace, and corrected alongside that
+              inline read so the dormant path cannot drift away from it.
                via numpy. Works on Postgres (JSONB) and SQLite (JSON). Scales
                to tens of thousands of chunks; swap for pgvector when needed.
 """
@@ -101,10 +105,22 @@ class DbVectorStore:
         async with self._session_factory() as session:
             q = select(DocumentChunkModel).where(DocumentChunkModel.embedding.isnot(None))
             if filter_metadata:
-                if filter_metadata.get("tenant_id"):
-                    q = q.where(DocumentChunkModel.tenant_id == filter_metadata["tenant_id"])
                 if filter_metadata.get("case_id"):
-                    q = q.where(DocumentChunkModel.case_id == uuid.UUID(str(filter_metadata["case_id"])))
+                    # The SAME rules the QA path uses — every spelling of the
+                    # tenant, and never a deleted document's text. This class has
+                    # no production caller today; wiring one up must not
+                    # reintroduce two defects that took an audit to find, and a
+                    # dormant path is exactly where they would come back.
+                    from case_service.hxnexus.service import _case_chunk_filter
+
+                    q = q.where(*await _case_chunk_filter(
+                        session,
+                        uuid.UUID(str(filter_metadata["case_id"])),
+                        filter_metadata.get("tenant_id"),
+                    ))
+                elif filter_metadata.get("tenant_id"):
+                    q = q.where(
+                        DocumentChunkModel.tenant_id == str(filter_metadata["tenant_id"]))
                 if filter_metadata.get("document_id"):
                     q = q.where(DocumentChunkModel.document_id == uuid.UUID(str(filter_metadata["document_id"])))
             rows = (await session.execute(q)).scalars().all()

@@ -5,7 +5,7 @@
  * shows an "install from Marketplace" notice instead (dark until activation).
  */
 import React, { useState, useEffect, useCallback } from "react";
-import { Button } from "@shared/components";
+import { Button, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/checkout";
@@ -19,10 +19,10 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page:    { padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" as const },
-  tabs:    { display: "flex", gap: 2, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border)" },
-  tab:     { padding: "8px 18px", fontSize: 13, fontWeight: 500, background: "none", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", color: "var(--text-muted)", marginBottom: -1 },
-  tabActive: { borderBottomColor: "var(--accent)", color: "var(--accent)", fontWeight: 700 },
+  page:    { display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" as const },
+  //: The page padding lives on the BODY now, not the page: the tab bar has to
+  //: reach both edges to sit flush under the app header, the way /help does.
+  body:    { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" as const },
   card:    { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
   label:   { fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" as const, letterSpacing: "0.05em", marginBottom: 4 },
   input:   { width: "100%", padding: "8px 10px", border: "1px solid var(--border-subtle)", borderRadius: 4, fontSize: 13, background: "var(--bg-input)", color: "var(--text-primary)", boxSizing: "border-box" as const, marginBottom: 10 },
@@ -216,16 +216,15 @@ export default function HxCheckout() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabs}>
-        {TABS.map(t => (
-          <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabActive : {}) }} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxCheckout"
+            tabs={TABS.map(t => ({ key: t, label: t }))} value={tab} onChange={setTab} />
+      <div style={S.body}>
       {installed === false && <NotInstalled />}
       {installed === true && tab === "Overview" && <OverviewTab />}
       {installed === true && tab === "Orders" && <OrdersTab />}
       {installed === true && tab === "API Keys" && <TokensTab />}
       {installed === true && tab === "Webhooks" && <WebhooksTab />}
+    </div>
     </div>
   );
 }

@@ -216,6 +216,37 @@ async def shred(session: AsyncSession, tenant_id) -> bool:
     After this the data encrypted under the DEK is permanently unrecoverable.
     """
     tid = _norm(tenant_id)
+
+    # ── HxArbiter PEP (ARB-C) ────────────────────────────────────────────────
+    # Shredding a DEK makes everything under it permanently unrecoverable. It is
+    # the single most destructive operation in the platform, and until now the
+    # only thing in front of it was the caller's own authorization. The engine
+    # gets asked here so a tenant can express "nobody shreds an EU tenant's key
+    # without X" as a rule rather than as a convention. Inert while `vault` sits
+    # at shadow; a promoted deny raises, because a shred that is refused must
+    # not return False — False means "there was no key", which is a different
+    # and reassuring answer.
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+
+        if not await _arb_pep.check(
+            session,
+            tenant_id=str(tid) if tid else "default",
+            action=_arb_pep.ACTION_VAULT_SHRED,
+            subject_id="hxvault",
+            resource_kind="tenant_dek",
+            resource_id=str(tid) if tid else None,
+            context={"purpose": "crypto_shred"},
+            legacy_allowed=True,
+            claimed_by="hxvault.keyring",
+        ):
+            raise PermissionError(
+                "VEL-ARB-VAULT-SHRED-DENIED-403: policy refuses this crypto-shred.")
+    except PermissionError:
+        raise
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning("HxVault: HxArbiter PEP unavailable for shred: %s", exc)
+
     stmt = select(TenantDekModel).where(
         TenantDekModel.tenant_id.is_(None) if tid is None else TenantDekModel.tenant_id == tid
     )

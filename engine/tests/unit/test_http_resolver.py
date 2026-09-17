@@ -18,6 +18,33 @@ from velaris_ir.models.process import ServiceTask, SendTask, UserTask
 from helix_engine.plugins.http_resolver import HttpTaskResolver
 
 
+# ── DNS, stubbed ──────────────────────────────────────────────────────
+#
+# The resolver's SSRF check resolves the hostname BEFORE the request is made, so
+# these tests depended on the machine having DNS and on `api.example.com`
+# resolving — 9 of them failed on a host without it, which is an answer about the
+# network rather than about the code. The lookup is stubbed to a fixed public
+# address; anything else still goes to the real resolver, so the tests that
+# assert a private or unresolvable host is BLOCKED keep meaning what they say.
+
+_PUBLIC = "93.184.216.34"          # a public address; must not be in a blocked range
+_STUBBED_HOSTS = {"api.example.com"}
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch):
+    import socket as _socket
+
+    real = _socket.getaddrinfo
+
+    def fake(host, port, *args, **kwargs):
+        if host in _STUBBED_HOSTS:
+            return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", (_PUBLIC, port or 0))]
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(_socket, "getaddrinfo", fake)
+
+
 # ── Mock HTTP transport ───────────────────────────────────────────────
 
 class MockTransport(httpx.AsyncBaseTransport):
@@ -210,11 +237,13 @@ class TestResolve:
             id="call",
             implementation="helix://unknown-service/endpoint",
         )
-        result = await resolver.resolve(task, {})
-
-        # Should fall back to localhost:8080
-        called_url = str(resolver._client._transport._calls[0].url)
-        assert "localhost:8080/endpoint" in called_url
+        # REFUSED, not defaulted. This used to fall back to localhost:8080, which
+        # turned a typo in a service name into a call to whatever listens on that
+        # port of the engine's own host. The refusal names the registry so the
+        # author can fix it; the test was still asserting the old fallback.
+        with pytest.raises(ValueError, match="Unknown helix:// service"):
+            await resolver.resolve(task, {})
+        assert resolver._client._transport._calls == []
 
     @pytest.mark.asyncio
     async def test_http_error_status(self):

@@ -359,8 +359,21 @@ async def list_pii_findings(
     ).limit(max(1, min(int(limit), 1000)))
     if status:
         q = q.where(PIIFindingModel.status == status)
-    if user.tenant_id and not hxguard.user_allows(user, "compliance.crosstenant.read"):
-        q = q.where(PIIFindingModel.tenant_id == str(user.tenant_id))
+    # Cross-tenant PII findings are a PLATFORM operator's view: which fields in
+    # every tenant's forms hold national ids, health and financial data. Until
+    # 2026-09-17 this was `user_allows(compliance.crosstenant.read)` — and
+    # `admin` seeds to a wildcard that passes every privilege, so every tenant's
+    # admin read every tenant's findings. Superadmin only now.
+    from case_service.tenancy.identity import is_superadmin as _is_superadmin
+    if not _is_superadmin(user):
+        if user.tenant_id:
+            q = q.where(PIIFindingModel.tenant_id == str(user.tenant_id))
+        else:
+            # No tenant claim = the default tenant, never every tenant (2026-09-17).
+            from sqlalchemy import or_ as _or
+            from case_service.tenancy.identity import default_tenant_tokens
+            q = q.where(_or(PIIFindingModel.tenant_id.is_(None),
+                            PIIFindingModel.tenant_id.in_(await default_tenant_tokens(session))))
 
     rows = (await session.execute(q)).scalars().all()
     return {
@@ -619,8 +632,17 @@ async def list_backups(
     )
     if region_id:
         q = q.where(BackupRecordModel.region_id == region_id)
-    if user.tenant_id and not hxguard.user_allows(user, "compliance.crosstenant.read"):
-        q = q.where(BackupRecordModel.tenant_id == str(user.tenant_id))
+    # Backup records name storage locations and recovery posture. Another
+    # tenant's are none of a tenant admin's business, and a PLATFORM backup (no
+    # tenant) describes the whole install's storage — so both are superadmin
+    # only. Until 2026-09-17 `admin`'s wildcard privilege passed the cross-tenant
+    # check and every tenant's admin read all of them.
+    from case_service.tenancy.identity import is_superadmin as _is_superadmin
+    if not _is_superadmin(user):
+        from case_service.tenancy.identity import default_tenant_tokens
+        mine = ([str(user.tenant_id)] if user.tenant_id
+                else await default_tenant_tokens(session))
+        q = q.where(BackupRecordModel.tenant_id.in_(mine))
 
     rows = (await session.execute(q)).scalars().all()
     return {

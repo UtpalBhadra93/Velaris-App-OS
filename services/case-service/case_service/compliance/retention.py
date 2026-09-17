@@ -152,7 +152,36 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
     for case in backfill:
         _strip_submitter_columns(case)
         session.add(case)
+
+    # The DERIVED copy of the documents, which anonymization never reached.
+    #
+    # `hxnexus_document_chunks` holds the extracted TEXT of a case's documents —
+    # a name, an address, a bank detail, whatever the PDF actually said — so an
+    # anonymized case went on carrying its own contents in a table nothing here
+    # touched, readable by anyone with case access and quotable by HxNexus. It
+    # is the same shape as the submitter columns above: the scrub was written
+    # when `case.data` was the only place personal data lived.
+    #
+    # Deleted, not blanked: a chunk is a searchable copy, and an empty one is
+    # noise in a vector index. The documents themselves are the document
+    # retention policy's business, not this one's — what goes here is only the
+    # copy this platform made for the AI.
+    await _delete_chunks_for(session, [c.id for c in pending + backfill])
+
     return len(pending) + len(backfill)
+
+
+async def _delete_chunks_for(session: AsyncSession, case_ids: Sequence) -> int:
+    """Remove the AI's derived copy of a case's document text."""
+    from velaris_shared.db.models import DocumentChunkModel
+
+    if not case_ids:
+        return 0
+    result = await session.execute(
+        delete(DocumentChunkModel).where(DocumentChunkModel.case_id.in_(list(case_ids)))
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
 
 
 def _strip_submitter_columns(case) -> None:

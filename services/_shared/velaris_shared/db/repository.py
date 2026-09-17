@@ -128,6 +128,17 @@ async def get_case_instance(
     load_sla: bool = False,
     load_audit: bool = False,
 ) -> CaseInstanceModel | None:
+    """Load one case by id.
+
+    **Deliberately does NOT filter soft-deleted rows.** This is the primary-key
+    read used by the dispatcher, by every internal helper and by the restore
+    path itself, all of which need to see a deleted case in order to act on it
+    or to refuse. The hiding is done where a case is SHOWN — `_get_case_or_404`
+    on the API surface and the `is_deleted` clause in `search_case_instances` —
+    which is the same division the tenant clause uses, and for the same reason:
+    a helper that silently returned None for a row that exists would turn every
+    "not found" into a guess.
+    """
     stmt = select(CaseInstanceModel).where(
         CaseInstanceModel.id == case_id
     )
@@ -171,6 +182,9 @@ async def search_case_instances(
     limit: int = 50,
     variable_filters: list[tuple[str, str]] | None = None,
     accessible_to_user: tuple[str, list] | None = None,
+    tenant_id: Any = None,
+    include_untenanted: bool = True,
+    include_deleted: bool = False,
 ) -> tuple[list[CaseInstanceModel], int]:
     """Search cases with simple equality filters on top-level columns.
 
@@ -184,9 +198,46 @@ async def search_case_instances(
     allowed_case_type_ids) — restricts results to owner OR relationship
     tuple OR allowed case types. None = unrestricted (admin/manager, "*"
     scope, or shadow/off mode).
+
+    ``tenant_id`` scopes the search to one tenant. **None means unscoped, which
+    is what every release up to now did** — this function had no tenant clause
+    at all, so `GET /cases` returned every tenant's cases to every caller.
+    Callers that know their tenant pass it; the default is unchanged behaviour
+    so no internal caller changes meaning by upgrading.
+
+    ``include_untenanted`` decides whether rows with a NULL tenant come back
+    too. It defaults to True because a NULL tenant has always meant
+    "platform-shared", and flipping that silently would hide every legacy case
+    from everybody. It is set False only by an operator who has run the
+    197 backfill and turned `VELARIS_CASE_TENANT_STRICT_READS` on.
     """
     base = select(CaseInstanceModel)
     count_base = select(func.count()).select_from(CaseInstanceModel)
+
+    # 199 — soft-deleted cases are absent from every list, and from the COUNT.
+    #
+    # Applied to both for the same reason the tenant scope is: a count that
+    # ignores the filter reports a total the caller cannot page to, which makes
+    # pagination lie and tells them how many hidden cases there are.
+    #
+    # `include_deleted` exists for exactly one caller — the restore path, which
+    # has to be able to find what it is restoring. Everything else gets the
+    # filter whether it asks or not, because a soft delete that any query can
+    # forget is not a delete.
+    if not include_deleted:
+        base = base.where(CaseInstanceModel.is_deleted.is_(False))
+        count_base = count_base.where(CaseInstanceModel.is_deleted.is_(False))
+
+    # Tenant scope. Applied to BOTH the page and the count — a count that
+    # ignores the filter reports a total the caller may not read, which is a
+    # smaller leak of the same kind and makes pagination lie.
+    if tenant_id is not None:
+        from sqlalchemy import or_ as _or
+        scope = CaseInstanceModel.tenant_id == tenant_id
+        if include_untenanted:
+            scope = _or(scope, CaseInstanceModel.tenant_id.is_(None))
+        base = base.where(scope)
+        count_base = count_base.where(scope)
 
     for key, val in filters.items():
         if hasattr(CaseInstanceModel, key):
@@ -201,6 +252,11 @@ async def search_case_instances(
         from sqlalchemy import exists, or_
         from velaris_shared.db.models import HxGuardTupleModel as _HXT
         uid, allowed_type_ids = accessible_to_user
+        from sqlalchemy import String as _Str, cast as _cast
+        from velaris_shared.db.models import (
+            AccessGroupModel as _AG, OperatorAccessGroupModel as _OAG,
+        )
+
         clauses = [
             CaseInstanceModel.created_by == uid,
             exists().where(
@@ -209,6 +265,38 @@ async def search_case_instances(
                 _HXT.subject_type == "user",
                 _HXT.subject_id == uid,
                 _HXT.relation.in_(("assignee", "viewer", "editor")),
+            ),
+            # A tuple against an ACCESS GROUP this operator actively belongs to.
+            #
+            # This clause is why the comment above says "mirrors
+            # RebacBackend.evaluate" and still means it. `transfer` (2026-09-08)
+            # can hand a case to a group and the backend resolves that through
+            # membership — so without this the case would be readable BY ID and
+            # ABSENT FROM THE LIST, which is the worst of both: the operator is
+            # told the case does not exist right up until somebody sends them a
+            # link to it.
+            #
+            # `cast(_AG.id, String)` is load-bearing, not tidiness.
+            # `hxguard_tuples.subject_id` is a `String(255)` — it holds user
+            # ids, group ids and anything else a subject may be — while
+            # `access_groups.id` is a `GUID`. On PostgreSQL an uncast
+            # `varchar IN (SELECT uuid)` is a type error; on SQLite it silently
+            # matches nothing, which is the worse of the two because the feature
+            # would look built and quietly grant nobody anything. This is the
+            # THIRD form of the same mismatch in this codebase — after
+            # `costing._authorized_case` (GUID vs slug) and the access-group
+            # tenant check earlier today.
+            exists().where(
+                _HXT.object_type == "case",
+                _HXT.object_id == CaseInstanceModel.id,
+                _HXT.subject_type == "access_group",
+                _HXT.relation.in_(("assignee", "viewer", "editor")),
+                _HXT.subject_id.in_(
+                    select(_cast(_AG.id, _Str))
+                    .join(_OAG, _OAG.access_group_id == _AG.id)
+                    .where(_OAG.operator_id == uid)
+                    .where(_AG.is_active == True)  # noqa: E712
+                ),
             ),
         ]
         if allowed_type_ids:

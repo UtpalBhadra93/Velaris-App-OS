@@ -4,6 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from "react";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 function authHeaders(): Record<string, string> {
   const t = getAccessToken();
@@ -85,17 +86,9 @@ export default function HelpCenter() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-root)" }}>
 
-      {/* Tab bar */}
-      <div style={{ padding: "0 32px", borderBottom: "1px solid var(--border-subtle)", flexShrink: 0, display: "flex", gap: 2 }}>
-        {TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)} style={{
-            padding: "14px 20px", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500,
-            background: "none", color: tab === key ? "var(--accent)" : "var(--text-muted)",
-            borderBottom: tab === key ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1, transition: "color .15s",
-          }}>{label}</button>
-        ))}
-      </div>
+      {/* This bar is where the platform's tab geometry came from; it now uses
+          the shared component so the reference cannot drift from its copies. */}
+      <Tabs ariaLabel="Help centre" tabs={TABS} value={tab} onChange={setTab} />
 
       {/* Body */}
       <div style={{ flex: 1, overflow: "auto" }}>

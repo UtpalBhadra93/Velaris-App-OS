@@ -46,6 +46,19 @@
 # `is_superadmin.is_(False)` so the superadmin can never be listed as a
 # linkable account, which is kind 1. The scan has been red since that commit;
 # nothing about it was caused by the SP-key work that found it.
+# 2026-09-17 — `retry_index_job` joins `cancel_index_job`: the same
+# `_assert_case_access` gate, transitive, for the same reason.
+# 2026-09-10 — the document index queue added two `hxnexus.py` sites,
+# `list_index_jobs` and `cancel_index_job`, and the same day's audit added a
+# third, `upload_and_index`: that route had NO case check at all, so anyone
+# signed in could index text into any case's AI context. Giving it the check is
+# what put it on this list. Neither reads the identity model
+# itself: both call `_assert_case_access`, which is already on this list, and
+# the ledger's scan is transitive on purpose. Their authorization is that
+# helper — the tenant boundary first, then the case relationship — which is
+# exactly what the four hxnexus routes above it use. Recorded rather than
+# migrated for the same reason those four were.
+
 access_groups.py::list_access_groups
 access_groups.py::list_access_roles
 access_groups.py::list_portals
@@ -110,10 +123,14 @@ hxdbmanager.py::list_schema
 hxdraft.py::_apply_user
 hxdraft.py::apply_draft
 hxnexus.py::_assert_case_access
+hxnexus.py::cancel_index_job
 hxnexus.py::document_qa
 hxnexus.py::hxnexus_chat
 hxnexus.py::index_case_documents
+hxnexus.py::list_index_jobs
+hxnexus.py::retry_index_job
 hxnexus.py::suggest
+hxnexus.py::upload_and_index
 identity_admin.py::list_account_links
 payments.py::reveal_bank_reference
 releases.py::_require_superadmin

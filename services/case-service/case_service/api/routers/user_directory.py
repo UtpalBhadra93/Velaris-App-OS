@@ -90,8 +90,17 @@ async def list_entries(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("identity.directory.read")),
 ):
-    if user.tenant_id and "superadmin" not in (user.roles or []):
-        tenant_id = user.tenant_id
+    no_claim_scope = None
+    if "superadmin" not in (user.roles or []):
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        else:
+            # A caller with no tenant claim is the default tenant, never every
+            # tenant — and may not pick one with `?tenant_id=` either. Until
+            # 2026-09-17 both were open to any holder of the privilege.
+            from case_service.tenancy.identity import default_tenant_tokens
+            tenant_id = None
+            no_claim_scope = await default_tenant_tokens(session)
 
     # Superadmin accounts are hidden from the user directory
     hidden = await _superadmin_usernames(session)
@@ -103,6 +112,10 @@ async def list_entries(
         stmt = stmt.where(UserDirectoryModel.is_active.is_(True))
     if tenant_id:
         stmt = stmt.where(UserDirectoryModel.tenant_id == tenant_id)
+    elif no_claim_scope is not None:
+        from sqlalchemy import or_ as _or
+        stmt = stmt.where(_or(UserDirectoryModel.tenant_id.is_(None),
+                              UserDirectoryModel.tenant_id.in_(no_claim_scope)))
     if manager_user_id:
         stmt = stmt.where(UserDirectoryModel.manager_user_id == manager_user_id)
     if q:

@@ -52,7 +52,7 @@ class TestAuditLogSearch:
         case = await client.post("/api/v1/cases", json={
             "case_type_id": ct.json()["id"], "data": {},
         })
-        await client.post(f"/api/v1/cases/{case.json()['id']}/resolve", json={})
+        await client.post(f"/api/v1/cases/{case.json()['id']}/actions/resolve", json={"params": {}})
 
         resp = await client.get("/api/v1/admin/audit-log?action=resolved")
         assert resp.json()["total"] >= 1

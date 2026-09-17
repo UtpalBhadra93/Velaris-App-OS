@@ -520,6 +520,24 @@ async def approve_run(
             "started it."
         )
 
+    # ── F-04: the simulation gate ────────────────────────────────────────────
+    #
+    # Placed after the four-eyes check and before anything executes. It is
+    # SILENT unless an operator has configured and enabled a gate: no
+    # `simulation_gates` row means not enforced, which is what every install
+    # taking this update has. A deployment that approved yesterday approves
+    # today.
+    #
+    # It raises PermissionError, the same type the four-eyes rule above raises,
+    # so the router's existing handling maps it to the same status without a
+    # second code path.
+    from case_service.hxdeploy import simulation as _sim
+    from case_service.tenancy.identity import resolve_tenant
+
+    resolved = await resolve_tenant(session, run.tenant_id)
+    if resolved is not None:
+        await _sim.assert_gate_clear(session, run, tenant_uuid=resolved[0])
+
     run.approved_by = approved_by
     to_env = await session.get(EnvironmentRegistryModel, run.to_env_id) if run.to_env_id else None
     if to_env:

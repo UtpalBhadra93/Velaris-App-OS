@@ -79,7 +79,10 @@ async def get_board_cards(
     if not board.case_type_id:
         return {}
 
-    q = select(CaseInstanceModel).where(CaseInstanceModel.case_type_id == board.case_type_id)
+    # A deleted case leaves the board with everything else.
+    q = select(CaseInstanceModel).where(
+        CaseInstanceModel.case_type_id == board.case_type_id,
+        CaseInstanceModel.is_deleted.is_(False))
 
     if sprint_id:
         sprint_case_ids = (await session.execute(
@@ -185,10 +188,16 @@ async def complete_sprint(session: AsyncSession, sprint_id: uuid.UUID) -> HxWork
         select(HxWorkSprintCardModel).where(HxWorkSprintCardModel.sprint_id == sprint_id)
     )).scalars().all()
 
+    # Velocity counts a card as done when its case has ENDED, whatever the
+    # tenant calls that. The tuple this replaced also named `completed`, which
+    # is not a status this platform has ever had — so a sprint's velocity was
+    # being computed partly against a value nothing could set.
+    from case_service.case_actions import statuses as _st
+
     done_points = 0
     for sc in cards:
         case = await session.get(CaseInstanceModel, sc.case_id)
-        if case and case.status in ("resolved", "closed", "completed"):
+        if await _st.is_terminal_for_case(session, case):
             done_points += sc.story_points
 
     sprint.velocity = done_points
@@ -264,7 +273,9 @@ async def board_analytics(session: AsyncSession, board_id: uuid.UUID) -> dict:
         return {"total_cards": 0, "by_status": {}, "by_priority": {}, "total_sprints": len(sprints), "active_sprint": None, "velocity_history": []}
 
     cases = (await session.execute(
-        select(CaseInstanceModel).where(CaseInstanceModel.case_type_id == board.case_type_id)
+        select(CaseInstanceModel).where(
+            CaseInstanceModel.case_type_id == board.case_type_id,
+            CaseInstanceModel.is_deleted.is_(False))
     )).scalars().all()
 
     by_status: dict[str, int] = {}

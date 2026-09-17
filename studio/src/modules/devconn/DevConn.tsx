@@ -3,7 +3,7 @@
  * Tabs: Builder · Webhook Rules · Events · OpenAPI
  */
 import React, { useState, useEffect, useCallback } from "react";
-import { Button } from "@shared/components";
+import { Button, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/devconn";
@@ -19,13 +19,13 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
 // ── Shared styles ─────────────────────────────────────────────────────────────
 
 const S: Record<string, React.CSSProperties> = {
-  page:    { padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" as const },
+  page:    { display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" as const },
+  //: The page padding lives on the BODY now, not the page: the tab bar has to
+  //: reach both edges to sit flush under the app header, the way /help does.
+  body:    { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" as const },
   header:  { marginBottom: "var(--space-lg)" },
   title:   { fontSize: 24, fontWeight: 700, margin: 0, color: "var(--text-primary)" },
   sub:     { fontSize: 13, color: "var(--text-muted)", marginTop: 4 },
-  tabs:    { display: "flex", gap: 2, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border)" },
-  tab:     { padding: "8px 18px", fontSize: 13, fontWeight: 500, background: "none", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", color: "var(--text-muted)", marginBottom: -1 },
-  tabActive: { borderBottomColor: "var(--accent)", color: "var(--accent)", fontWeight: 700 },
   card:    { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
   label:   { fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" as const, letterSpacing: "0.05em", marginBottom: 4 },
   value:   { fontSize: 13, color: "var(--text-primary)", marginBottom: 12 },
@@ -539,16 +539,14 @@ export default function DevConn() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabs}>
-        {TABS.map(({ key, label }) => (
-          <button key={key} style={{ ...S.tab, ...(tab === key ? S.tabActive : {}) }} onClick={() => setTab(key)}>{label}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="Dev connectors" tabs={TABS} value={tab} onChange={setTab} />
+      <div style={S.body}>
 
       {tab === "builder"        && <BuilderTab />}
       {tab === "openapi"        && <OpenAPITab />}
       {tab === "inbound_rules"  && <WebhookRulesTab />}
       {tab === "outbound_rules" && <OutboundRulesTab />}
+    </div>
     </div>
   );
 }

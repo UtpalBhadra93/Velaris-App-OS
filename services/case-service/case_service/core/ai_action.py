@@ -47,6 +47,10 @@ _MAX_CONTEXT_CHARS = 1500
 
 VALID_DECISIONS = ("accept", "reject", "override")
 
+#: F-00 agent slug for this step type. One principal per AI path, named
+#: where the path lives so the registry and the caller cannot drift.
+AGENT_SLUG = "workflow.ai_action"
+
 
 class AIActionError(Exception):
     """The step is misconfigured — a definition problem, not a runtime one."""
@@ -138,11 +142,22 @@ async def execute(
         prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     )
 
+    backend = None
     try:
-        from velaris_shared.llm.factory import active_model, generate_json
+        from velaris_shared.llm.factory import (
+            active_model, generate_json, get_llm_backend)
 
-        parsed = await generate_json(prompt, temperature=0.1, max_tokens=500)
-        ident = active_model()
+        # The backend is built HERE and kept, rather than left to
+        # `generate_json` to create and discard. Two things depend on holding
+        # it: `active_model(backend)` reports the model that actually answered
+        # — called with no argument it resolves a *fresh* backend that has
+        # replied to nothing, and reports whatever is configured — and F-02
+        # reads `last_usage` off it to price the call from the token counts the
+        # chokepoint measured.
+        backend = get_llm_backend()
+        parsed = await generate_json(prompt, temperature=0.1, max_tokens=500,
+                                     llm=backend)
+        ident = active_model(backend)
         proposal.provider, proposal.model = ident["provider"], ident["model"]
 
         if not isinstance(parsed, dict) or "value" not in parsed:
@@ -162,6 +177,26 @@ async def execute(
 
     session.add(proposal)
     await session.flush()
+
+    # ── F-01: the ledger row ─────────────────────────────────────────────────
+    #
+    # The proposal row and the ledger row are two views of one event, and the
+    # ledger is the one an auditor reads: it is hash-chained, it names the
+    # agent, and it covers every AI path rather than this step type alone.
+    #
+    # `prompt_sha256` is reused as the input commitment rather than re-hashing
+    # the prompt — the prompt is still in scope here, but passing the hash keeps
+    # ONE definition of what was committed to. If the two ever disagreed, the
+    # proposal and its ledger row would be evidence about different inputs.
+    #
+    # Never fatal. A ledger failure must not turn a working step into a failed
+    # one; the proposal is the operational record and stands on its own.
+    try:
+        await _record_in_ledger(session, case_id, proposal, step_id,
+                                usage=getattr(backend, "last_usage", None))
+    except Exception:                                          # noqa: BLE001
+        logger.warning("ai_action: ledger record not written for proposal %s",
+                       proposal.id, exc_info=True)
 
     applied = False
     if proposal.status == "pending" and not require_approval:
@@ -185,6 +220,67 @@ async def execute(
         "proposed": proposal.proposed,
         "error": proposal.error,
     }
+
+
+async def _record_in_ledger(
+    session: AsyncSession, case_id: uuid.UUID,
+    proposal: AIActionProposalModel, step_id: str,
+    usage: dict[str, Any] | None = None,
+) -> None:
+    """Write the F-01 ledger row for a proposal, and link the two.
+
+    Split out so the failure is contained: everything here is evidence, and
+    evidence that cannot be written must not take the operational path down
+    with it.
+    """
+    from velaris_shared.db.models import CaseInstanceModel
+
+    from case_service.agents import attribution as _attr
+    from case_service.ledger import records as _ledger
+
+    case = await session.get(CaseInstanceModel, case_id)
+    if case is None or not case.tenant_id:
+        # No tenant, no ledger row: the ledger is tenant-scoped because a
+        # crypto-shred has to be able to reach it. A row with a guessed tenant
+        # would be worse than an absent one.
+        return
+
+    model_id = f"{proposal.provider or 'unknown'}/{proposal.model or 'unknown'}"
+    agent_id = await _attr.internal_agent_id(case.tenant_id, AGENT_SLUG)
+    row = await _ledger.record(
+        session,
+        tenant_id=(await _tenant_uuid(session, case.tenant_id)),
+        purpose="ai_action",
+        model_id=model_id,
+        agent_id=agent_id,
+        agent_slug=AGENT_SLUG,
+        agent_kind="internal",
+        case_id=case_id,
+        step_id=step_id,
+        input_sha256=proposal.prompt_sha256,
+        output_text=json.dumps(proposal.proposed, sort_keys=True, default=str)
+        if proposal.proposed else None,
+    )
+    proposal.ledger_record_id = row.id
+    await session.flush()
+
+    # F-02: price it from what the chokepoint measured. `usage` is None when
+    # the call did not go through the guarded backend — a stubbed backend in a
+    # test — and then NO cost line is written, rather than a zero one that would
+    # claim the decision was free.
+    from case_service.costing import decisions as _costing
+
+    await _costing.price_from_usage(session, row, usage)
+
+
+async def _tenant_uuid(session: AsyncSession, token: Any) -> uuid.UUID:
+    """`case.tenant_id` may be a slug or a UUID depending on the writer."""
+    from case_service.tenancy.identity import resolve_tenant
+
+    resolved = await resolve_tenant(session, token)
+    if resolved is None:
+        raise ValueError(f"tenant {token!r} does not resolve")
+    return resolved[0]
 
 
 async def decide(
@@ -225,6 +321,34 @@ async def decide(
                        "override": "overridden"}[decision]
     proposal.decided_by = actor_id
     proposal.decided_at = datetime.now(timezone.utc)
+
+    # ── F-01: the human's answer, appended to the ledger ─────────────────────
+    #
+    # `overridden` maps to `edited`, not to a fourth verdict word. The ledger's
+    # vocabulary is closed and shared across every AI path, and "the human
+    # changed the answer" is the same fact whether it arrived through this step
+    # type or another. A per-caller synonym would make override rates
+    # incomparable between them, which is the number this table exists to
+    # produce.
+    #
+    # Never fatal, for the same reason as the record itself: a human's decision
+    # must land even if its evidence copy cannot.
+    if proposal.ledger_record_id is not None:
+        try:
+            from case_service.ledger import records as _ledger
+
+            await _ledger.record_verdict(
+                session,
+                record_id=proposal.ledger_record_id,
+                verdict={"accept": "accepted", "reject": "rejected",
+                         "override": "edited"}[decision],
+                decided_by=actor_id,
+                diff_text=(json.dumps({"value": value}, sort_keys=True, default=str)
+                           if decision == "override" else None),
+            )
+        except Exception:                                      # noqa: BLE001
+            logger.warning("ai_action: verdict not recorded in the ledger for "
+                           "proposal %s", proposal.id, exc_info=True)
 
     await _audit(session, proposal.case_id, proposal, action="ai_action_decided")
     return {

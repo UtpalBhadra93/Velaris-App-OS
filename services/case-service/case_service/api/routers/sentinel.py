@@ -245,6 +245,9 @@ async def list_unlabelled(
         .where(
             CaseInstanceModel.status.in_(("closed", "resolved", "cancelled")),
             CaseInstanceModel.id.notin_(labelled),
+            # A deleted case is not offered up for labelling — it is hidden,
+            # and asking a human to review it would surface it again.
+            CaseInstanceModel.is_deleted.is_(False),
             or_(*tenant_pred),
         )
         # NULLS LAST is Postgres-only ANSI syntax (SQLAlchemy renders it literally and

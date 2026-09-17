@@ -209,6 +209,48 @@ async def _external_truncate_all() -> None:
             await conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
 
 
+#: The platform status set migration 198 seeds. Every test runs against it,
+#: because every INSTALL runs against it: the table is created by `create_all`
+#: but seeded by the migration, so a suite that skipped the seed would be
+#: testing the fallback set — eight statuses instead of thirteen — and would
+#: pass while a real install refused `in_progress`.
+_SEED_STATUSES = (
+    ("new",              "New",              "open",     False, True,  10),
+    ("open",             "Open",             "open",     False, False, 20),
+    ("in_progress",      "In Progress",      "working",  False, False, 30),
+    ("pending",          "Pending",          "waiting",  False, False, 40),
+    ("pending_external", "Pending External", "waiting",  False, False, 42),
+    ("pending_subcase",  "Pending Subcase",  "waiting",  False, False, 44),
+    ("on_hold",          "On Hold",          "waiting",  False, False, 50),
+    ("escalated",        "Escalated",        "working",  False, False, 60),
+    ("resolved",         "Resolved",         "terminal", True,  False, 70),
+    ("closed",           "Closed",           "terminal", True,  False, 80),
+    ("reopened",         "Reopened",         "open",     False, False, 90),
+    ("cancelled",        "Cancelled",        "terminal", True,  False, 100),
+    ("archived",         "Archived",         "terminal", True,  False, 110),
+)
+
+
+async def _seed_case_statuses() -> None:
+    """Insert the platform status set, as migration 198 does on a real install."""
+    import uuid as _uuid
+    from sqlalchemy import select as _select
+    from velaris_shared.db.models import CaseStatusModel as _CS
+
+    async with TestSessionFactory() as db:
+        existing = (await db.execute(
+            _select(_CS.name).where(_CS.scope_key == "platform:any")
+        )).scalars().all()
+        if existing:
+            return
+        for name, label, cat, term, default, order in _SEED_STATUSES:
+            db.add(_CS(id=_uuid.uuid4(), tenant_id=None, case_type_id=None,
+                       scope_key="platform:any", name=name, label=label,
+                       category=cat, is_terminal=term, is_default=default,
+                       allowed_from=[], sort_order=order, enabled=True))
+        await db.commit()
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     """Isolate each test's data.
@@ -241,10 +283,12 @@ async def setup_db():
             _external_schema_ready = True
         else:
             await _external_truncate_all()
+        await _seed_case_statuses()
         yield
         return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _seed_case_statuses()
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

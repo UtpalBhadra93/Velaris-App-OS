@@ -53,7 +53,7 @@ const levelsToGraph = (levels: TreeLevel[]) => {
       id: "start", type: "input",
       data: { label: "SLA Started" },
       position: { x: 0, y: 0 },
-      style: { background: "#2a7", color: "white", padding: 10, borderRadius: 6, border: "none" },
+      style: { background: "var(--status-completed)", color: "white", padding: 10, borderRadius: 6, border: "none" },
     },
   ];
   const edges: Edge[] = [];
@@ -68,12 +68,12 @@ const levelsToGraph = (levels: TreeLevel[]) => {
       data: { label: (
         <div style={{ textAlign: "left" }}>
           <strong>L{lvl.level}: {lvl.name}</strong>
-          <div style={{ fontSize: 11, color: "#666" }}>Trigger: {triggerLabel}</div>
-          <div style={{ fontSize: 11, color: "#666" }}>Actions: {lvl.actions.length}</div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Trigger: {triggerLabel}</div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Actions: {lvl.actions.length}</div>
         </div>
       ) },
       position: { x: 0, y: (i + 1) * 130 },
-      style: { background: "#fff", border: "2px solid #4a6cf7", borderRadius: 6, padding: 10, width: 240 },
+      style: { background: "var(--bg-card)", color: "var(--text-primary)", border: "2px solid var(--accent)", borderRadius: 6, padding: 10, width: 240 },
     });
     edges.push({
       id: `e-${i}`,
@@ -286,7 +286,7 @@ export default function EscalationEditor() {
   }
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", width: "100%", height: "100%", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
+    <div style={{ fontFamily: "system-ui, sans-serif", color: "var(--text-primary)", background: "var(--bg-root)", width: "100%", height: "100%", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
       {branchMode.isBranchMode && (
         <BranchModeBanner
           branch={branchMode.branch}
@@ -298,7 +298,7 @@ export default function EscalationEditor() {
         />
       )}
       <div style={{ padding: 20, flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      {error && <div style={{ color: "#c33", marginBottom: 12, flexShrink: 0 }}>⚠ {error}</div>}
+      {error && <div style={{ color: "var(--status-failed)", marginBottom: 12, flexShrink: 0 }}>⚠ {error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 320px", gap: 16, flex: 1, minHeight: 0 }}>
         {/* Left: tree list */}
@@ -311,46 +311,46 @@ export default function EscalationEditor() {
             <div key={t.id} style={{ marginBottom: 6 }}>
               <div onClick={() => setCurrent(t)}
                 style={{
-                  padding: 10, border: "1px solid #eee", borderRadius: 4, cursor: "pointer",
-                  background: current?.id === t.id ? "#eef3ff" : "#fff",
+                  padding: 10, border: "1px solid var(--border-subtle)", borderRadius: 4, cursor: "pointer",
+                  background: current?.id === t.id ? "var(--accent-dim)" : "var(--bg-card)",
                   display: "flex", alignItems: "flex-start", gap: 6,
                 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{t.name}</div>
-                  <div style={{ fontSize: 11, color: "#666" }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
                     {t.scope} · {t.tree_json.levels.length} levels · {t.is_active ? "active" : "inactive"}
                   </div>
                 </div>
                 <button
                   onClick={e => { e.stopPropagation(); openBranchForm(t); }}
-                  style={{ background: "none", border: "1px solid #ccc", borderRadius: 3, cursor: "pointer", fontSize: 10, padding: "2px 5px", color: "#666", flexShrink: 0 }}
+                  style={{ background: "none", border: "1px solid var(--border-default)", borderRadius: 3, cursor: "pointer", fontSize: 10, padding: "2px 5px", color: "var(--text-secondary)", flexShrink: 0 }}
                   title="Create branch">⎇</button>
               </div>
               {branchingId === t.id && (
-                <div style={{ padding: 8, background: "#f8f8fb", border: "1px solid #eee", borderRadius: 4, marginTop: 2, fontSize: 11 }}>
+                <div style={{ padding: 8, background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: 4, marginTop: 2, fontSize: 11 }}>
                   {branchCreated ? (
                     <>
-                      <div style={{ padding: "4px 8px", background: "#dcfce7", color: "#16a34a", borderRadius: 4, marginBottom: 6 }}>
+                      <div style={{ padding: "4px 8px", background: "rgba(13,148,136,0.15)", color: "var(--status-completed)", borderRadius: 4, marginBottom: 6 }}>
                         ✓ Branch <b>{branchCreated.name}</b> created
                       </div>
                       <div style={{ display: "flex", gap: 6 }}>
                         <button
                           onClick={() => navigate(`/escalation?branch=${branchCreated.id}`)}
-                          style={{ padding: "4px 8px", fontSize: 11, fontWeight: 600, background: "#4a6cf7", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer" }}>
+                          style={{ padding: "4px 8px", fontSize: 11, fontWeight: 600, background: "var(--accent)", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer" }}>
                           Open in Editor →
                         </button>
                         <button
                           onClick={() => setBranchingId(null)}
-                          style={{ padding: "4px 8px", fontSize: 11, background: "none", border: "1px solid #ccc", borderRadius: 3, cursor: "pointer", color: "#666" }}>
+                          style={{ padding: "4px 8px", fontSize: 11, background: "none", border: "1px solid var(--border-default)", borderRadius: 3, cursor: "pointer", color: "var(--text-secondary)" }}>
                           Close
                         </button>
                       </div>
                     </>
                   ) : (
                     <>
-                      {branchErr && <div style={{ color: "#ef4444", marginBottom: 4 }}>✗ {branchErr}</div>}
+                      {branchErr && <div style={{ color: "var(--status-failed)", marginBottom: 4 }}>✗ {branchErr}</div>}
                       <input
-                        style={{ width: "100%", padding: "4px 6px", border: "1px solid #ccc", borderRadius: 3, fontSize: 11, fontFamily: "monospace", marginBottom: 4, boxSizing: "border-box" as const }}
+                        style={{ width: "100%", padding: "4px 6px", border: "1px solid var(--border-default)", borderRadius: 3, fontSize: 11, fontFamily: "monospace", marginBottom: 4, boxSizing: "border-box" as const, background: "var(--bg-input)", color: "var(--text-primary)" }}
                         placeholder="branch name"
                         value={branchName}
                         onChange={e => setBranchName(e.target.value)}
@@ -368,12 +368,12 @@ export default function EscalationEditor() {
                         <button
                           disabled={branchBusy || !branchName.trim()}
                           onClick={e => { e.stopPropagation(); handleBranchCreate(t.id, t.name); }}
-                          style={{ flex: 1, padding: "4px 0", fontSize: 11, fontWeight: 600, background: "#4a6cf7", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer", opacity: (branchBusy || !branchName.trim()) ? 0.6 : 1 }}>
+                          style={{ flex: 1, padding: "4px 0", fontSize: 11, fontWeight: 600, background: "var(--accent)", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer", opacity: (branchBusy || !branchName.trim()) ? 0.6 : 1 }}>
                           {branchBusy ? "…" : "Create Branch"}
                         </button>
                         <button
                           onClick={e => { e.stopPropagation(); setBranchingId(null); }}
-                          style={{ padding: "4px 6px", fontSize: 11, background: "none", border: "1px solid #ccc", borderRadius: 3, cursor: "pointer", color: "#666" }}>
+                          style={{ padding: "4px 6px", fontSize: 11, background: "none", border: "1px solid var(--border-default)", borderRadius: 3, cursor: "pointer", color: "var(--text-secondary)" }}>
                           ✕
                         </button>
                       </div>
@@ -392,13 +392,13 @@ export default function EscalationEditor() {
             fitView style={{ width: "100%", height: "100%" }}>
             <Background />
             <Controls />
-            <MiniMap />
+            <MiniMap style={{ background: "var(--bg-panel)" }} maskColor="var(--bg-overlay)" nodeColor="var(--accent)" nodeStrokeColor="var(--border-default)" />
           </ReactFlow>
         </div>
 
         {/* Right: property panel */}
         <div style={{ ...card, overflow: "auto" }}>
-          {!current && <div style={{ color: "#888" }}>Select or create a tree.</div>}
+          {!current && <div style={{ color: "var(--text-muted)" }}>Select or create a tree.</div>}
           {current && (
             <>
               <h2 style={h2}>{current.name}</h2>
@@ -413,16 +413,16 @@ export default function EscalationEditor() {
                 Active
               </label>
 
-              <hr style={{ border: "none", borderTop: "1px solid #eee", margin: "12px 0" }} />
+              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "12px 0" }} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <strong style={{ fontSize: 13 }}>Levels</strong>
                 <button onClick={addLevel} style={btn()}>+ Add</button>
               </div>
               {current.tree_json.levels.sort((a, b) => a.level - b.level).map(lvl => (
-                <div key={lvl.level} style={{ border: "1px solid #eee", borderRadius: 4, padding: 8, marginTop: 8 }}>
+                <div key={lvl.level} style={{ border: "1px solid var(--border-subtle)", borderRadius: 4, padding: 8, marginTop: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <strong>L{lvl.level}</strong>
-                    <button onClick={() => removeLevel(lvl.level)} style={{ ...btn(), color: "#c33", padding: "2px 6px" }}>✕</button>
+                    <button onClick={() => removeLevel(lvl.level)} style={{ ...btn(), color: "var(--status-failed)", padding: "2px 6px" }}>✕</button>
                   </div>
                   <input style={inp} value={lvl.name}
                     onChange={e => updateLevel(lvl.level, { name: e.target.value })} />
@@ -440,17 +440,17 @@ export default function EscalationEditor() {
                         onChange={e => updateLevel(lvl.level, { trigger: { ...lvl.trigger, value: e.target.value } })} />
                     )}
                   </div>
-                  <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 4 }}>
                     {lvl.actions.length} action(s) — edit via JSON (see docs)
                   </div>
                 </div>
               ))}
 
               {restoreBanner && (
-                <div style={{ marginTop: 10, padding: "7px 10px", background: "#fefce8", border: "1px solid #fde047", borderRadius: 4, fontSize: 11, color: "#854d0e" }}>
+                <div style={{ marginTop: 10, padding: "7px 10px", background: "rgba(247,183,49,0.12)", border: "1px solid rgba(247,183,49,0.45)", borderRadius: 4, fontSize: 11, color: "var(--status-running)" }}>
                   ↩ {restoreBanner}
                   <button onClick={() => { setCurrent(savedCurrent); setRestoreBanner(null); }}
-                    style={{ marginLeft: 8, background: "none", border: "1px solid #ca8a04", borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", color: "#854d0e" }}>
+                    style={{ marginLeft: 8, background: "none", border: "1px solid rgba(247,183,49,0.55)", borderRadius: 3, padding: "1px 7px", fontSize: 10, cursor: "pointer", color: "var(--status-running)" }}>
                     Discard
                   </button>
                 </div>
@@ -459,18 +459,18 @@ export default function EscalationEditor() {
               <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
                 <button
                   onClick={saveCurrent}
-                  style={{ ...btn(), flex: 1, background: "#4a6cf7", color: "white", opacity: (busy || commitSaving || branchMode.isLocked || branchMode.isReadOnly) ? 0.6 : 1 }}
+                  style={{ ...btn(), flex: 1, background: "var(--accent)", color: "white", opacity: (busy || commitSaving || branchMode.isLocked || branchMode.isReadOnly) ? 0.6 : 1 }}
                   disabled={busy || commitSaving || branchMode.saving || branchMode.isLocked || branchMode.isReadOnly}>
                   {(branchMode.saving || commitSaving) ? "Saving…" : branchMode.isLocked ? "Locked" : branchMode.isReadOnly ? "Read Only" : branchMode.isBranchMode ? "Save to Branch" : "Commit"}
                 </button>
                 {!branchMode.isBranchMode && current && (
-                  <button onClick={() => setHistoryOpen(h => !h)} style={{ ...btn(), color: historyOpen ? "#4a6cf7" : undefined }}>
+                  <button onClick={() => setHistoryOpen(h => !h)} style={{ ...btn(), color: historyOpen ? "var(--accent)" : undefined }}>
                     🕐 History
                   </button>
                 )}
               </div>
 
-              <hr style={{ border: "none", borderTop: "1px solid #eee", margin: "12px 0" }} />
+              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "12px 0" }} />
               <h3 style={{ fontSize: 13, margin: "8px 0" }}>Preview schedule</h3>
               <label style={lbl}>Goal duration (ISO 8601)</label>
               <input style={inp} value={previewGoal} onChange={e => setPreviewGoal(e.target.value)} />
@@ -478,7 +478,7 @@ export default function EscalationEditor() {
               <input style={inp} value={previewDeadline} onChange={e => setPreviewDeadline(e.target.value)} />
               <button onClick={runPreview} style={{ ...btn(), marginTop: 6, width: "100%" }}>Compute firing times</button>
               {previewResult && (
-                <pre style={{ background: "#f5f5f5", padding: 8, marginTop: 8, fontSize: 10, maxHeight: 200, overflow: "auto" }}>
+                <pre style={{ background: "var(--bg-elevated)", padding: 8, marginTop: 8, fontSize: 10, maxHeight: 200, overflow: "auto" }}>
                   {JSON.stringify(previewResult.schedule, null, 2)}
                 </pre>
               )}
@@ -492,15 +492,15 @@ export default function EscalationEditor() {
       {historyOpen && current && (
         <div style={{
           position: "fixed", right: 0, top: 0, bottom: 0, width: 380, zIndex: 200,
-          background: "var(--bg-panel, #fff)", borderLeft: "1px solid #e3e3e8",
+          background: "var(--bg-panel)", borderLeft: "1px solid var(--border-default)",
           display: "flex", flexDirection: "column", boxShadow: "-4px 0 20px rgba(0,0,0,0.08)",
         }}>
-          <div style={{ padding: "14px 16px", borderBottom: "1px solid #e3e3e8", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border-default)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14 }}>History</div>
-              <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>{current.name}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace" }}>{current.name}</div>
             </div>
-            <button onClick={() => setHistoryOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "#888" }}>✕</button>
+            <button onClick={() => setHistoryOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--text-muted)" }}>✕</button>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "12px 16px" }}>
             <CommitHistory
@@ -524,10 +524,10 @@ export default function EscalationEditor() {
   );
 }
 
-const card: React.CSSProperties = { background: "#fff", border: "1px solid #e3e3e8", borderRadius: 8, padding: 14 };
-const h2: React.CSSProperties = { margin: 0, fontSize: 14, color: "#333" };
-const lbl: React.CSSProperties = { fontSize: 11, color: "#666", display: "block", marginTop: 8 };
-const inp: React.CSSProperties = { width: "100%", padding: "5px 8px", fontSize: 12, border: "1px solid #ccc", borderRadius: 3, marginTop: 2 };
+const card: React.CSSProperties = { background: "var(--bg-card)", border: "1px solid var(--border-default)", borderRadius: 8, padding: 14 };
+const h2: React.CSSProperties = { margin: 0, fontSize: 14, color: "var(--text-primary)" };
+const lbl: React.CSSProperties = { fontSize: 11, color: "var(--text-secondary)", display: "block", marginTop: 8 };
+const inp: React.CSSProperties = { width: "100%", padding: "5px 8px", fontSize: 12, border: "1px solid var(--border-default)", borderRadius: 3, marginTop: 2, background: "var(--bg-input)", color: "var(--text-primary)" };
 function btn(): React.CSSProperties {
-  return { padding: "5px 10px", border: "1px solid #ccc", borderRadius: 3, background: "#fafafa", fontSize: 12, cursor: "pointer" };
+  return { padding: "5px 10px", border: "1px solid var(--border-default)", borderRadius: 3, background: "var(--bg-elevated)", fontSize: 12, cursor: "pointer" };
 }

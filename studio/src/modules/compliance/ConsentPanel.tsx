@@ -83,7 +83,7 @@ export default function ConsentPanel() {
             {busy === "load" ? "Loading…" : "Look up"}
           </button>
         </div>
-        <div style={{ fontSize: 11, color: "#888", marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
           Subjects match case-insensitively. A subject with no record is not a refusal —
           it means no basis was ever recorded, and processing is treated as unlawful.
         </div>
@@ -116,8 +116,8 @@ export default function ConsentPanel() {
                     <td style={{ ...td, ...mono }}>{p.purpose}</td>
                     <td style={td}>
                       {p.granted
-                        ? <span style={{ color: "#2a7" }}>✓ yes</span>
-                        : <span style={{ color: "#c33" }}>✗ no</span>}
+                        ? <span style={{ color: "var(--status-completed)" }}>✓ yes</span>
+                        : <span style={{ color: "var(--status-failed)" }}>✗ no</span>}
                     </td>
                     <td style={td}>{p.basis}</td>
                     <td style={td}>{p.source}</td>
@@ -164,7 +164,7 @@ export default function ConsentPanel() {
             and is never implied by a broader grant.
           </Banner>
         )}
-        <div style={{ fontSize: 11, color: "#888", marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
           The ledger is append-only. A withdrawal adds a row; it never edits the grant it supersedes.
         </div>
       </section>
@@ -184,15 +184,15 @@ export default function ConsentPanel() {
             </thead>
             <tbody>
               {state.ledger.length === 0 && (
-                <tr><td colSpan={5} style={{ ...td, color: "#888" }}>No entries.</td></tr>
+                <tr><td colSpan={5} style={{ ...td, color: "var(--text-muted)" }}>No entries.</td></tr>
               )}
               {state.ledger.map(e => (
                 <tr key={e.id}>
                   <td style={td}>{when(e.recorded_at)}</td>
                   <td style={td}>
                     {e.action === "granted"
-                      ? <span style={{ color: "#2a7" }}>granted</span>
-                      : <span style={{ color: "#c33" }}>withdrawn</span>}
+                      ? <span style={{ color: "var(--status-completed)" }}>granted</span>
+                      : <span style={{ color: "var(--status-failed)" }}>withdrawn</span>}
                   </td>
                   <td style={{ ...td, ...mono }}>{e.purpose}</td>
                   <td style={td}>{e.basis}</td>

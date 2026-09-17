@@ -52,6 +52,44 @@ class RuleListResponse(BaseModel):
     page_size: int
 
 
+class DmnImportRequest(BaseModel):
+    """A DMN file, and what to do with the tables in it.
+
+    ``dry_run`` defaults to **True**: an import previews first and creates
+    nothing, so the second click confirms something that has been read. The
+    calendar's `.ics` import settled this shape and a decision table deserves it
+    more — these rows decide money and eligibility.
+    """
+
+    xml: str
+    dry_run: bool = True
+    scope: str = "global"
+    scope_target_id: str | None = None
+    version: str = "1.0.0"
+    #: New rules land DISABLED unless this says otherwise. An imported table
+    #: that starts deciding the moment the file lands is an operator's decision
+    #: nobody made.
+    enabled: bool = False
+
+
+class DmnImportedTable(BaseModel):
+    name: str
+    rule_type: str
+    hit_policy: str
+    input_count: int
+    output_count: int
+    row_count: int
+    notes: list[str] = []
+    #: Present only once the rules exist — a preview creates nothing.
+    rule_id: UUID | None = None
+
+
+class DmnImportResponse(BaseModel):
+    dry_run: bool
+    tables: list[DmnImportedTable]
+    created: int
+
+
 class RuleEvaluateRequest(BaseModel):
     """Request body for evaluating a rule against context."""
     context: dict[str, Any]

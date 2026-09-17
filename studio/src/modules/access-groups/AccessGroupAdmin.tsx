@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import UserDirectory from "@modules/user-directory/UserDirectory";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -88,31 +89,25 @@ export default function AccessGroupAdmin() {
   const [tab, setTab] = useState<Tab>("groups");
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
-      {/* Tab bar — always visible, consistent styling */}
-      <div style={{
-        display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)",
-        border: "1px solid var(--border-subtle)", marginBottom: "var(--space-xl)", flexShrink: 0,
-      }}>
-        {(["groups", "roles", "users", "portals", "platform"] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "8px 18px", fontSize: 12, fontWeight: 500,
-            fontFamily: "var(--font-mono)", textTransform: "uppercase",
-            letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)",
-            background: tab === t ? "var(--accent-dim)" : "transparent",
-            borderRadius: "var(--radius-sm)",
-          }}>
-            {TAB_LABELS[t]}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Access directory"
+        tabs={(["groups", "roles", "users", "portals", "platform"] as Tab[])
+          .map(t => ({ key: t, label: TAB_LABELS[t] }))}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "groups"  && <GroupsTab />}
       {tab === "roles"   && <RolesTab />}
       {tab === "users"   && <UserDirectory embedded />}
       {tab === "portals" && <PortalsTab />}
       {tab === "platform" && <PlatformRolesTab />}
+    </div>
     </div>
   );
 }

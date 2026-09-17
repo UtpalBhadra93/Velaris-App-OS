@@ -19,6 +19,7 @@ from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from case_service.costing import service as costing
+from case_service.tenancy.identity import same_tenant
 from velaris_shared.db import repository as repo
 from velaris_shared.config import get_settings
 from velaris_shared.db.session import get_session
@@ -74,7 +75,14 @@ async def case_time(
     except ValueError:
         raise HTTPException(404, "Case not found")
     case = await repo.get_case_instance(session, cid)
-    if case is None or (case.tenant_id is not None and case.tenant_id != _tenant(user)):
+    # `case.tenant_id` is a GUID and `_tenant(user)` is a SLUG, so this compare
+    # was never equal for a tenant-owned case and every one of them answered
+    # "Case not found" — to its OWN tenant. Proven on 2026-09-06: the `default`
+    # user could not read the time recorded on the `default` tenant's own case.
+    # It failed closed, so it was never an exposure, but time tracking and
+    # billing were simply unavailable on every tenanted case. `same_tenant`
+    # accepts both conventions and is what the rest of the platform uses.
+    if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
         raise HTTPException(404, "Case not found")
     await hxguard.require_case(session, user, "case.read", cid)
     return await costing.case_time_rollup(session, cid)
@@ -90,7 +98,14 @@ async def _authorized_case(session, user, case_id: str, action: str) -> uuid.UUI
     except ValueError:
         raise HTTPException(404, "Case not found")
     case = await repo.get_case_instance(session, cid)
-    if case is None or (case.tenant_id is not None and case.tenant_id != _tenant(user)):
+    # `case.tenant_id` is a GUID and `_tenant(user)` is a SLUG, so this compare
+    # was never equal for a tenant-owned case and every one of them answered
+    # "Case not found" — to its OWN tenant. Proven on 2026-09-06: the `default`
+    # user could not read the time recorded on the `default` tenant's own case.
+    # It failed closed, so it was never an exposure, but time tracking and
+    # billing were simply unavailable on every tenanted case. `same_tenant`
+    # accepts both conventions and is what the rest of the platform uses.
+    if case is None or not await same_tenant(session, case.tenant_id, user.tenant_id):
         raise HTTPException(404, "Case not found")
     await hxguard.require_case(session, user, action, cid)
     return cid
@@ -249,3 +264,132 @@ async def export_billing(
             ",".join("" if l[c] is None else str(l[c]) for c in cols) for l in lines]
         return PlainTextResponse("\n".join(rows) + "\n", media_type="text/csv")
     return {"window_days": days, "lines": lines, "count": len(lines)}
+
+
+# ══ F-02 — explainable cost per decision ════════════════════════════════════
+#
+# Appended to this router rather than given its own, because it is the same
+# subject: what work costs. The rate card above prices human hours; these price
+# model tokens, and `/cases/{id}/cost` is the one place the two are reconciled.
+#
+# The gates differ from the ones above, deliberately. `costing.rates.access` is
+# about the LABOUR rate; setting what a model is charged at is its own action,
+# because on a shared install the platform-wide default row reaches every tenant
+# that has not priced that model for itself.
+
+async def _tenant_uuid_for_costing(session: AsyncSession, user: AuthenticatedUser):
+    """The tenant's UUID. `_tenant()` above returns the SLUG — `rate_cards` keys
+    on it — while the F-02 tables key on the id, because they cascade with the
+    tenant row and sit beside the ledger."""
+    from case_service.tenancy.identity import resolve_tenant
+
+    resolved = await resolve_tenant(session, _tenant(user))
+    if resolved is None:
+        raise HTTPException(403, "VEL-COST-TENANT-UNRESOLVED-403")
+    return resolved[0]
+
+
+class ModelRateBody(BaseModel):
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    model_id: str = Field(min_length=1, max_length=255)
+    input_per_mtok: float = Field(ge=0, le=1_000_000)
+    output_per_mtok: float = Field(ge=0, le=1_000_000)
+    currency: str = Field(default="USD", min_length=1, max_length=8)
+    #: Set a PLATFORM default that every unpriced tenant inherits. Reserved to a
+    #: platform operator below — one tenant's admin must not be able to price
+    #: models for the whole box.
+    platform: bool = False
+
+
+@router.get("/model-rates")
+async def list_model_rates(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("costing.model_rates.access")),
+):
+    """Every model rate that applies here, with inherited defaults marked."""
+    from case_service.costing import decisions as dcost
+
+    tenant = await _tenant_uuid_for_costing(session, user)
+    return {"rates": await dcost.list_rates(session, tenant_id=tenant)}
+
+
+@router.put("/model-rates")
+async def put_model_rate(
+    body: ModelRateBody,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("costing.model_rates.access")),
+):
+    from case_service.costing import decisions as dcost
+    from case_service.tenancy.identity import actor_uuid, is_superadmin
+
+    if body.platform and not is_superadmin(user):
+        # The same guard HxArbiter puts on a platform-scoped policy, for the
+        # same reason: on a shared install "admin" is a TENANT admin, and a
+        # platform default row is inherited by every tenant that has not priced
+        # that model itself.
+        raise HTTPException(
+            403,
+            "VEL-COST-PLATFORM-SCOPE-403: a platform rate is inherited by "
+            "every tenant and is reserved to a platform operator.")
+
+    tenant = None if body.platform else await _tenant_uuid_for_costing(session, user)
+    try:
+        from case_service.costing import decisions as dcost
+        row = await dcost.upsert_rate(
+            session, tenant_id=tenant, model_id=body.model_id,
+            input_per_mtok=body.input_per_mtok,
+            output_per_mtok=body.output_per_mtok,
+            currency=body.currency,
+            # `model_rate_cards.created_by` is a GUID and `user.user_id` is a
+            # username for an SSO or service principal, so the raw value made
+            # this route answer 422 for everybody who did not sign in with a
+            # password. Resolve both forms; an unknown principal is absent.
+            created_by=await actor_uuid(session, user))
+    except dcost.CostingError as exc:
+        raise HTTPException(422, f"VEL-COST-INVALID-422: {exc}") from exc
+    await session.commit()
+    return {
+        "model_id": row.model_id,
+        "input_per_mtok": float(row.input_per_mtok),
+        "output_per_mtok": float(row.output_per_mtok),
+        "currency": row.currency,
+        "scope": "platform" if body.platform else "tenant",
+    }
+
+
+@router.get("/cases/{case_id}/cost")
+async def case_cost(
+    case_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("costing.decisions.read")),
+):
+    """What one case cost, as line items that add up to the total.
+
+    Both halves: the AI lines are stored, the labour line is derived from the
+    recorded durations and the tenant's hourly rate. `labour_included` says so
+    rather than leaving a reader to assume.
+    """
+    from case_service.costing import decisions as dcost
+
+    tenant = await _tenant_uuid_for_costing(session, user)
+    return await dcost.case_breakdown(
+        session, tenant_id=tenant, case_id=case_id, tenant_slug=_tenant(user))
+
+
+@router.get("/rollup")
+async def cost_rollup(
+    days: int = 30,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("costing.decisions.read")),
+):
+    """Cost by model and by kind across the tenant."""
+    from datetime import datetime, timedelta, timezone
+
+    from case_service.costing import decisions as dcost
+
+    days = max(1, min(int(days), 3650))
+    tenant = await _tenant_uuid_for_costing(session, user)
+    return await dcost.tenant_rollup(
+        session, tenant_id=tenant,
+        since=datetime.now(timezone.utc) - timedelta(days=days))

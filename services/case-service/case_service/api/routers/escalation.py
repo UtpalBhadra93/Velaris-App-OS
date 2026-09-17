@@ -68,9 +68,21 @@ async def list_trees(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    if user.tenant_id and "superadmin" not in (user.roles or []):
-        tenant_id = user.tenant_id
+    no_claim_scope = None
+    if "superadmin" not in (user.roles or []):
+        if user.tenant_id:
+            tenant_id = user.tenant_id
+        else:
+            # A caller with no tenant claim is the default tenant, never every
+            # tenant, and may not choose one with `?tenant_id=` (2026-09-17).
+            from case_service.tenancy.identity import default_tenant_tokens
+            tenant_id = None
+            no_claim_scope = await default_tenant_tokens(session)
     q = select(EscalationTreeModel)
+    if no_claim_scope is not None:
+        from sqlalchemy import or_ as _or
+        q = q.where(_or(EscalationTreeModel.tenant_id.is_(None),
+                        EscalationTreeModel.tenant_id.in_(no_claim_scope)))
     if scope:
         q = q.where(EscalationTreeModel.scope == scope)
     if case_type_id:

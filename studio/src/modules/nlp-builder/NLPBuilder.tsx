@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useApi } from "@shared/hooks";
 import { getNLPStatus, generateCaseTypeFromText, generateFullCaseType } from "@shared/api/client";
-import { Card, Button, Spinner } from "@shared/components";
+import { Button, Card, Spinner, Tabs } from "@shared/components";
 import { useNavigate } from "react-router-dom";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
 
@@ -286,22 +286,17 @@ export default function NLPBuilder() {
 
               {/* Tab bar — only shown in full mode results */}
               {isFullResult && (
-                <div style={{ display: "flex", gap: 4, marginBottom: "var(--space-md)",
-                  borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0 }}>
-                  {(["stages", "sla", "variables", "notifications"] as const).map(t => (
-                    <button key={t} onClick={() => setActiveTab(t)} style={{
-                      padding: "5px 14px", border: "none", background: "none", cursor: "pointer",
-                      fontSize: 12, fontWeight: 500,
-                      borderBottom: `2px solid ${activeTab === t ? "var(--accent)" : "transparent"}`,
-                      color: activeTab === t ? "var(--accent)" : "var(--text-secondary)",
-                    }}>
-                      {t === "stages" && `Stages (${result.stages?.length ?? 0})`}
-                      {t === "sla" && `SLAs (${result.sla_policies?.length ?? 0})`}
-                      {t === "variables" && `Variables (${result.variables?.length ?? 0})`}
-                      {t === "notifications" && `Notifications (${result.notifications?.length ?? 0})`}
-                    </button>
-                  ))}
-                </div>
+                <Tabs
+                  ariaLabel="Generated definition"
+                  tabs={[
+                    { key: "stages"        as const, label: "Stages",        badge: result.stages?.length ?? 0 },
+                    { key: "sla"           as const, label: "SLAs",          badge: result.sla_policies?.length ?? 0 },
+                    { key: "variables"     as const, label: "Variables",     badge: result.variables?.length ?? 0 },
+                    { key: "notifications" as const, label: "Notifications", badge: result.notifications?.length ?? 0 },
+                  ]}
+                  value={activeTab}
+                  onChange={setActiveTab}
+                />
               )}
 
               {/* Stages panel — always shown when no tabs, or when stages tab active */}

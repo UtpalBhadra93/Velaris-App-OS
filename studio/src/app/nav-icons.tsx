@@ -83,6 +83,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
 
   // Development
   "/case-designer":  CaseDesignerIcon,
+  "/case-config":    CaseConfigIcon,
   "/form-builder":   FormBuilderIcon,
   "/nlp-builder":    withSparkleBox(NLPBuilderIcon),
   "/modeler":        ModelerIcon,
@@ -120,6 +121,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
 
   // Security
   "/hxshield":      withSparkleBox(HxShieldIcon),
+  "/arbiter":       withSparkleBox(HxArbiterIcon),
   "/hxstream":      withSparkleBox(HxStreamIcon),
   "/hxlogs":        withSparkleBox(HxLogsIcon),
   "/hxdbmanager":   withSparkleBox(HxDBManagerIcon),
@@ -135,6 +137,15 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/email-admin":      EmailAdminIcon,
   "/push-admin":       PushAdminIcon,
   "/hxglobal":         withSparkleBox(HxGlobalIcon),
+
+  // Operations
+  "/workforce":        withSparkleBox(WorkforceIcon),
+  "/model-market":     withSparkleBox(ModelMarketIcon),
+  "/rep-desk":         RepDeskIcon,
+  "/healing":          withSparkleBox(HealingIcon),
+  "/field-ops":        FieldOpsIcon,
+  "/intent":           withSparkleBox(IntentIcon),
+  "/joint-contracts":  ContractIcon,
 
   // Status
   "/hxstatus":         StatusRingIcon,
@@ -154,6 +165,119 @@ function DefaultIcon({ active, size = 16 }: NavIconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
       <rect x="2" y="2" width="12" height="12" rx="2" stroke={c} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/** Agent Workforce — a worker figure beside a boxed one: the same queue, two
+ *  kinds of worker. Sparkle-boxed, because one of them is an AI. */
+/** A headset: the rep is on a call, and the call is the whole feature. */
+function RepDeskIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <path d="M3 9V7.5a5 5 0 0 1 10 0V9" stroke={c} strokeWidth="1.5"
+            strokeLinecap="round" />
+      <rect x="1.6" y="8.6" width="2.8" height="4.2" rx="1.2" stroke={c}
+            strokeWidth="1.4" />
+      <rect x="11.6" y="8.6" width="2.8" height="4.2" rx="1.2" stroke={c}
+            strokeWidth="1.4" />
+      <path d="M13 12.8v.4a1.8 1.8 0 0 1-1.8 1.8H9" stroke={c} strokeWidth="1.3"
+            strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A process mending itself — a broken line closing up. */
+function HealingIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <path d="M2 8h3.4M10.6 8H14" stroke={c} strokeWidth="1.5"
+            strokeLinecap="round" />
+      <path d="M6.4 5.6 8 8l-1.6 2.4" stroke={c} strokeWidth="1.4"
+            strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="0.9" fill={c} />
+      <path d="M9.6 5.6 8 8l1.6 2.4" stroke={c} strokeWidth="1.4"
+            strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
+    </svg>
+  );
+}
+
+/** A node off on its own, with a link back to the hub. */
+function FieldOpsIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <circle cx="3.4" cy="8" r="2.1" stroke={c} strokeWidth="1.4" />
+      <rect x="10" y="4.4" width="5" height="7.2" rx="1.2" stroke={c}
+            strokeWidth="1.4" />
+      <path d="M5.8 8h3.4" stroke={c} strokeWidth="1.3" strokeLinecap="round"
+            strokeDasharray="1.4 1.4" />
+      <path d="M11.6 6.6h1.8M11.6 8.6h1.2" stroke={c} strokeWidth="1.1"
+            strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A target reached by an assembled path. */
+function IntentIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <circle cx="11.4" cy="4.8" r="2.6" stroke={c} strokeWidth="1.4" />
+      <circle cx="11.4" cy="4.8" r="0.9" fill={c} />
+      <path d="M2 13.2c0-2 1.4-3 2.8-3s2.2 1 3.4 1 2-0.7 2-0.7" stroke={c}
+            strokeWidth="1.4" strokeLinecap="round" />
+      <rect x="1.4" y="6.6" width="3.2" height="3.2" rx="0.9" stroke={c}
+            strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+/** Two parties, one seam between them. */
+function ContractIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <rect x="1.4" y="3.4" width="5" height="9.2" rx="1.1" stroke={c}
+            strokeWidth="1.4" />
+      <rect x="9.6" y="3.4" width="5" height="9.2" rx="1.1" stroke={c}
+            strokeWidth="1.4" />
+      <path d="M6.6 8h2.8" stroke={c} strokeWidth="1.4" strokeLinecap="round"
+            strokeDasharray="1.2 1.2" />
+      <path d="M2.9 6h2M11.1 6h2" stroke={c} strokeWidth="1.1"
+            strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A box of weights leaving on an arrow — what travels is the parameters. */
+function ModelMarketIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="5" width="7" height="7" rx="1.2" stroke={c} strokeWidth="1.4" />
+      <path d="M3.4 7.6h3.2M3.4 9.6h2" stroke={c} strokeWidth="1.2"
+            strokeLinecap="round" />
+      <path d="M10 8.5h4.2M12.4 6.6l1.9 1.9-1.9 1.9" stroke={c} strokeWidth="1.4"
+            strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12.6" cy="3.2" r="1.4" stroke={c} strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+function WorkforceIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <circle cx="5" cy="5" r="2.2" stroke={c} strokeWidth="1.5" />
+      <path d="M1.5 14c0-2.2 1.6-3.6 3.5-3.6S8.5 11.8 8.5 14" stroke={c}
+            strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="9.5" y="3" width="5.5" height="5" rx="1.2" stroke={c} strokeWidth="1.4" />
+      <path d="M11.2 5.2h2.1" stroke={c} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M9.8 14c0-1.9 1.2-3.1 2.5-3.1s2.5 1.2 2.5 3.1" stroke={c}
+            strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }
@@ -591,6 +715,34 @@ function EscalationIcon({ active, size = 16 }: NavIconProps) {
   );
 }
 
+// 198 — Case Configuration. The eight-tooth settings cog the user picked,
+// redrawn to match: tapered teeth (tip narrower than base), real arcs for the
+// root gaps rather than straight chords, and a large hollow centre.
+//
+// Redrawn as inline SVG rather than shipped as the source PNG for the reason
+// every icon in this file is inline: the stroke recolours to `var(--accent)`
+// when the route is active and `var(--text-muted)` when it is not. A raster
+// cannot do that, and a 447px thumbnail rendered at 16px is muddy besides.
+function CaseConfigIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" overflow="visible">
+      <path
+        d="M6.96 1.03 A7.05 7.05 0 0 1 9.04 1.03 L9.05 3.06 A5.05 5.05 0 0 1 10.75 3.76
+           L12.19 2.33 A7.05 7.05 0 0 1 13.67 3.81 L12.24 5.25 A5.05 5.05 0 0 1 12.94
+           6.95 L14.97 6.96 A7.05 7.05 0 0 1 14.97 9.04 L12.94 9.05 A5.05 5.05 0 0 1
+           12.24 10.75 L13.67 12.19 A7.05 7.05 0 0 1 12.19 13.67 L10.75 12.24 A5.05 5.05
+           0 0 1 9.05 12.94 L9.04 14.97 A7.05 7.05 0 0 1 6.96 14.97 L6.95 12.94 A5.05
+           5.05 0 0 1 5.25 12.24 L3.81 13.67 A7.05 7.05 0 0 1 2.33 12.19 L3.76 10.75
+           A5.05 5.05 0 0 1 3.06 9.05 L1.03 9.04 A7.05 7.05 0 0 1 1.03 6.96 L3.06 6.95
+           A5.05 5.05 0 0 1 3.76 5.25 L2.33 3.81 A7.05 7.05 0 0 1 3.81 2.33 L5.25 3.76
+           A5.05 5.05 0 0 1 6.95 3.06 Z"
+        stroke={c} strokeWidth="1.15" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="3.4" stroke={c} strokeWidth="1.15" />
+    </svg>
+  );
+}
+
 // ── DevOps ────────────────────────────────────────────────────────────────────
 
 function HxDeployIcon({ active, size = 16 }: NavIconProps) {
@@ -776,6 +928,26 @@ function HxShieldIcon({ active, size = 16 }: NavIconProps) {
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
       <path d="M8 2L2.5 4.5v4c0 3 2.5 5 5.5 5.5C11 13.5 13.5 11.5 13.5 8.5v-4L8 2z" stroke={c} strokeWidth="1.3" strokeLinejoin="round" />
       <path d="M5.5 8l1.8 2L10.5 6" stroke={c} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function HxArbiterIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      {/* Shield — sovereignty boundary */}
+      <path d="M8 2L2.5 4.5v4c0 3 2.5 5 5.5 5.5C11 13.5 13.5 11.5 13.5 8.5v-4L8 2z" stroke={c} strokeWidth="1.3" strokeLinejoin="round" />
+      {/* Gear inside — the deterministic evaluator */}
+      <circle cx="8" cy="8.3" r="1.5" stroke={c} strokeWidth="1.2" />
+      <g stroke={c} strokeWidth="1.2" strokeLinecap="round">
+        <path d="M9.9 8.3h0.8" />
+        <path d="M8.95 9.94l0.4 0.7" />
+        <path d="M7.05 9.94l-0.4 0.7" />
+        <path d="M6.1 8.3H5.3" />
+        <path d="M7.05 6.66l-0.4-0.7" />
+        <path d="M8.95 6.66l0.4-0.7" />
+      </g>
     </svg>
   );
 }

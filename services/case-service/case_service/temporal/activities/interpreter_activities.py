@@ -37,8 +37,30 @@ from velaris_shared.db.session import get_session_factory
 
 logger = logging.getLogger(__name__)
 
-#: Statuses at which the interpreter stops driving a case.
+#: Fallback only — see `case_actions/statuses.py`. Which statuses END a case is
+#: DATA since migration 198, and a tenant may define its own. Unlike the
+#: workflow, an ACTIVITY may do I/O, so this module resolves the real set and
+#: this tuple is only what a failed lookup falls back to. It names the three
+#: statuses that were terminal before 198, so a fallback behaves as before.
 TERMINAL_STATUSES = ("resolved", "closed", "cancelled")
+
+
+async def _is_terminal(session, case) -> bool:
+    """Terminal per the case's own configured status set, not per a tuple.
+
+    Falls back to the pre-198 tuple if the set cannot be read: an interpreter
+    that treated every status as non-terminal on a database hiccup would keep
+    driving a closed case, and one that treated every status as terminal would
+    abandon an open one. The fallback is the behaviour this module had before
+    the set existed.
+    """
+    try:
+        from case_service.case_actions.statuses import is_terminal
+        return await is_terminal(session, case.status,
+                                 tenant_id=None, case_type_id=case.case_type_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("terminal-status lookup failed for case %s: %s", case.id, exc)
+        return case.status in TERMINAL_STATUSES
 
 
 def _ordered_stage_ids(definition: dict[str, Any]) -> list[str]:
@@ -72,7 +94,7 @@ async def load_case_plan(case_id: str) -> dict[str, Any]:
         return {
             "exists": True,
             "status": case.status,
-            "terminal": case.status in TERMINAL_STATUSES,
+            "terminal": await _is_terminal(session, case),
             "current_stage_id": (
                 str(case.current_stage_id) if case.current_stage_id else None
             ),
@@ -157,7 +179,7 @@ async def case_status(case_id: str) -> dict[str, Any]:
         return {
             "exists": True,
             "status": case.status,
-            "terminal": case.status in TERMINAL_STATUSES,
+            "terminal": await _is_terminal(session, case),
             "current_stage_id": (
                 str(case.current_stage_id) if case.current_stage_id else None
             ),

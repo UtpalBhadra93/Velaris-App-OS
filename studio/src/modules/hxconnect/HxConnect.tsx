@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/payments";
 
@@ -50,15 +51,12 @@ const S: Record<string, React.CSSProperties> = {
   header:     { padding: "18px 24px 0", flexShrink: 0 },
   title:      { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:        { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabs:       { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:        { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive:  { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:       { flex: 1, overflow: "hidden", display: "flex" },
   sidebar:    { width: 270, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-surface)", flexShrink: 0 },
   sideHead:   { padding: "12px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8, flexShrink: 0, fontSize: 12, fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase" },
   list:       { flex: 1, overflow: "auto" },
   detail:     { flex: 1, overflow: "auto", padding: "24px 28px" },
-  btn:        { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 },
+  btn:        { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700, background: "transparent", color: "var(--text-primary)" },
   btnPrimary: { background: "var(--accent)", color: "#fff" },
   btnSecond:  { background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-secondary)" },
   row:        { padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 },
@@ -1065,11 +1063,7 @@ export default function HxConnect() {
 
   return (
     <div style={S.page}>
-      <div style={S.tabs}>
-        {TABS.map(({ key, label }) => (
-          <button key={key} style={{ ...S.tab, ...(tab === key ? S.tabActive : {}) }} onClick={() => setTab(key)}>{label}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxConnect" tabs={TABS} value={tab} onChange={setTab} />
 
       {tab === "connectors" && <ConnectorsTab />}
       {tab === "payments"   && <PaymentsTab />}

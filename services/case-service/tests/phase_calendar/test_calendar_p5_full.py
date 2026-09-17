@@ -25,7 +25,23 @@ from velaris_shared.db.models import (
 
 from tests.conftest import client, session  # type: ignore[attr-defined]
 
-WED = datetime(2026, 9, 2, tzinfo=timezone.utc)
+# Computed, not pinned — see `tests/phase_calendar/__init__.py`. This was
+# `datetime(2026, 9, 2)` until that date passed and took twenty-four tests in
+# this file red at once: the scheduling routes correctly refuse a start time in
+# the past, so the tests were asserting the past rather than the behaviour.
+from tests.phase_calendar import next_wednesday
+
+WED = next_wednesday()
+
+
+def _day(offset_days: int = 0) -> str:
+    """`2026-09-09`-shaped date, `offset_days` from the anchor.
+
+    Every occurrence date below is derived through this rather than written out,
+    so a moving anchor cannot leave a literal behind — which is exactly how this
+    file came to hold four dates that were true only in one week of one year.
+    """
+    return (WED + timedelta(days=offset_days)).date().isoformat()
 
 
 def _headers_for(roles: list[str], user_id: str | None = None,
@@ -77,7 +93,7 @@ async def test_a_weekly_meeting_is_one_row_expanded_on_read(client: AsyncClient)
     assert len(mine) == 4, [r["starts_at"] for r in mine]
     assert all(r["is_recurring"] for r in mine)
     assert {r["occurrence_date"] for r in mine} == {
-        "2026-09-02", "2026-09-09", "2026-09-16", "2026-09-23"}
+        _day(0), _day(7), _day(14), _day(21)}
 
 
 @pytest.mark.asyncio
@@ -98,20 +114,20 @@ async def test_a_series_that_began_before_the_window_still_shows(client: AsyncCl
 async def test_one_occurrence_can_be_skipped_without_losing_the_series(client: AsyncClient):
     ev = await _make_event(client, recurrence={"freq": "weekly", "interval": 1})
     r = await client.post(f"/api/v1/calendar/events/{ev['id']}/skip",
-                          params={"on": "2026-09-09"})
-    assert r.status_code == 200 and r.json()["excluded_dates"] == ["2026-09-09"]
+                          params={"on": _day(7)})
+    assert r.status_code == 200 and r.json()["excluded_dates"] == [_day(7)]
 
     rows = (await client.get("/api/v1/calendar/events", params={
         "start": WED.isoformat(), "end": (WED + timedelta(days=21)).isoformat()})).json()
     dates = {x["occurrence_date"] for x in rows if x["id"] == ev["id"]}
-    assert "2026-09-09" not in dates and "2026-09-16" in dates
+    assert _day(7) not in dates and _day(14) in dates
 
 
 @pytest.mark.asyncio
 async def test_skipping_a_one_off_is_refused(client: AsyncClient):
     ev = await _make_event(client)
     r = await client.post(f"/api/v1/calendar/events/{ev['id']}/skip",
-                          params={"on": "2026-09-02"})
+                          params={"on": _day(0)})
     assert r.status_code == 400 and "one-off" in r.json()["detail"]
 
 
@@ -167,7 +183,7 @@ async def test_a_meeting_can_be_moved(client: AsyncClient):
         "title": "Moved", "starts_at": WED.replace(hour=14).isoformat(),
         "ends_at": WED.replace(hour=15).isoformat()})
     assert r.status_code == 200
-    assert r.json()["title"] == "Moved" and r.json()["starts_at"].startswith("2026-09-02T14")
+    assert r.json()["title"] == "Moved" and r.json()["starts_at"].startswith(f"{_day(0)}T14")
 
 
 @pytest.mark.asyncio

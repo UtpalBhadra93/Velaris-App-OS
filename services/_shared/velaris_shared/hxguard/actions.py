@@ -60,6 +60,12 @@ def _reg(a: ActionDef) -> None:
 # ── endpoint actions ──────────────────────────────────────────────
 _reg(_a("ai.metrics.read", "endpoint", ['admin'],
         "Per-call AI cost and volume. Commercially sensitive."))
+# 2026-09-17: the tenant-wide window on the document index queue (mig 203). The
+# per-case listing stays on case access; this one spans every case in the
+# tenant and names their documents, so it is an administrator's view.
+_reg(_a("ai.index_queue.read", "endpoint", ['admin'],
+        "See the whole document index queue for the tenant: pending, failed, and why."))
+
 _reg(_a("compliance.audit.seal", "endpoint", ['admin'],
         "Anchors the chain externally."))
 _reg(_a("compliance.consent.read", "endpoint", ['admin', 'security'],
@@ -110,6 +116,23 @@ _reg(_a("calendar.events.read", "endpoint", ['admin', 'manager', 'case_worker', 
         "Team events, and when everybody named is free."))
 _reg(_a("calendar.events.write", "endpoint", ['admin', 'manager', 'case_worker', 'developer'],
         "Schedules or cancels a team event."))
+# Importing is its own action, not `events.write`. An upload writes many rows at
+# once from a file this platform did not produce, and it can request leave —
+# a tenant may reasonably allow typing a meeting and refuse bulk import.
+# Three segments deliberately: a two-segment name cannot be granted from data
+# (`_crosses_into_platform_namespace`), which is roadmap 3c's whole point.
+_reg(_a("calendar.imports.write", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Imports an .ics export into a person's calendar. Never approves leave."))
+# Subscribing makes this SERVER fetch a URL a user chose, so it is separated
+# from reading the list: the allowlist bounds where, and this bounds who.
+_reg(_a("calendar.subscriptions.read", "endpoint",
+        ['admin', 'manager', 'case_worker', 'developer'],
+        "Which external calendars are subscribed to. The URL is a capability "
+        "and is shown only to whoever may see the detail."))
+_reg(_a("calendar.subscriptions.write", "endpoint",
+        ['admin', 'manager', 'case_worker'],
+        "Subscribes to a calendar published elsewhere, and refreshes it. "
+        "Read-only against the feed; never writes back."))
 
 # HxDeploy + App Registry. Neither router had a privilege gate of any kind — 21
 # and 13 endpoints behind a bare `get_current_user`, so any authenticated user
@@ -133,6 +156,19 @@ _reg(_a("deploy.runs.promote", "endpoint", ['admin', 'devops'],
         "Queues a package for an environment."))
 _reg(_a("deploy.runs.approve", "endpoint", ['admin'],
         "Releases a run into the target. The review gate — never the initiator."))
+# F-04 — the simulation gate. Three actions, and the split is the point.
+#
+# RUNNING a rehearsal is ordinary devops work. CONFIGURING the gate decides what
+# every future promotion must clear, so it is admin-only. And OVERRIDING a
+# failed gate is the one control that lets a change through after its rehearsal
+# said not to — it is separated from `deploy.runs.approve` deliberately, so that
+# bypassing the gate and approving the deployment are two grants, not one.
+_reg(_a("deploy.simulation.run", "endpoint", ['admin', 'devops', 'developer'],
+        "Rehearses a promotion by replaying recorded cases through the candidate rules."))
+_reg(_a("deploy.simulation.configure", "endpoint", ['admin'],
+        "Sets the thresholds every promotion must clear. Off until somebody turns it on."))
+_reg(_a("deploy.simulation.override", "endpoint", ['admin'],
+        "Lets a promotion past a FAILED rehearsal. Signed, reasoned and permanent."))
 _reg(_a("deploy.windows.read", "endpoint", ['admin', 'devops', 'developer'],
         "When deployments are allowed to run."))
 _reg(_a("deploy.windows.write", "endpoint", ['admin', 'devops'],
@@ -409,8 +445,12 @@ _reg(_a("integration.connectors.rotate", "endpoint", ['admin', 'integration'],
         "Rotate stored connector credentials, and apply a drafted connector change."))
 _reg(_a("variables.operator.elevated", "endpoint", ['admin'],
         "Operator context that bypasses case-variable visibility scoping."))
+# 2026-09-17: no longer consulted by the routes. `admin` seeds to a wildcard, so
+# this privilege could never keep a TENANT admin out; cross-tenant PII findings
+# and backup records are now superadmin-only in `compliance.py`. Kept registered
+# so existing grants and the parity oracle do not break.
 _reg(_a("compliance.crosstenant.read", "endpoint", ['admin'],
-        "See PII findings and backup records beyond your own tenant."))
+        "Unused since 2026-09-17 — cross-tenant PII findings and backups are superadmin-only."))
 
 # ── 2026-08-15 verification: routes that had NO gate at all ───────
 # Every phase so far migrated the gates that EXISTED. Nothing ever inventoried
@@ -466,6 +506,19 @@ _reg(_a("risk.taxonomy.write", "endpoint", ['admin'],
         "Outcome vocabulary - tenant-wide."))
 _reg(_a("rules.definitions.write", "endpoint", ['admin', 'designer'],
         "Rule definition CRUD - gates automation behaviour."))
+# Audit streaming (market gap A3). Three segments so a privilege can be granted
+# from data. Read is separate from write because the endpoint and its state are
+# something a security reviewer should be able to see without being able to
+# point the platform's audit somewhere else.
+_reg(_a("audit.stream.read", "endpoint", ['admin'],
+        "See where security events are streamed, and whether it is working."))
+_reg(_a("audit.stream.write", "endpoint", ['admin'],
+        "Set the SIEM this platform ships its security events to."))
+# HxShield's response layer (roadmap #25). Separate from `security.shield.access`
+# because seeing that the platform wants to suspend somebody and being able to
+# suspend them are different jobs on most floors.
+_reg(_a("security.shield.respond", "endpoint", ['admin'],
+        "Approve or decline a HxShield response - suspends accounts, kills sessions."))
 _reg(_a("variables.namespace.admin", "endpoint", ['admin'],
         "Create or administer a case-variable namespace."))
 _reg(_a("variables.blobkeys.promote", "endpoint", ['admin'],
@@ -629,6 +682,393 @@ MIGRATED_ROUTERS: frozenset[str] = frozenset({
 ACTION_BY_GATE: dict[str, str] = {
     gate: action for action, gates in ACTION_GATES.items() for gate in gates
 }
+
+# HxArbiter — the sovereignty & security policy engine.
+#
+# `decide` is separated from everything else because it is called by SERVICES,
+# not by people: the engine, workers and marketplace connectors ask it on the
+# hot path, while a human never does. Giving it the same action as reading
+# policy would mean every service that enforces could also rewrite the rules.
+#
+# Three segments throughout, deliberately — a two-segment name cannot be granted
+# from data (`_crosses_into_platform_namespace`), and the point of this engine is
+# that its own governance is expressible.
+_reg(_a("arbiter.policies.read", "endpoint", ['admin', 'security', 'developer'],
+        "Reads policies, versions and the attribute catalogue. Changes nothing."))
+_reg(_a("arbiter.policies.write", "endpoint", ['admin'],
+        "Creates a policy or appends a version. Never activates one."))
+# Activation is its own action, not `policies.write`. Writing a version is a
+# draft; activating it is the moment the platform starts answering differently,
+# and the four-eyes rule has nothing to attach to if the two are one privilege.
+_reg(_a("arbiter.policies.activate", "endpoint", ['admin'],
+        "Puts a version into effect, or retires a policy. Never for a version you wrote alone."))
+# Raising a namespace ceiling is what turns shadow into enforcement across a
+# whole class of actions at once. It is the single most consequential control
+# here and is admin-only for that reason.
+_reg(_a("arbiter.namespaces.promote", "endpoint", ['admin'],
+        "Raises or lowers a namespace's rollout ceiling. Shadow to enforce lives here."))
+_reg(_a("arbiter.decisions.read", "endpoint", ['admin', 'security'],
+        "Reads the decision log and verifies its seal. The audit surface."))
+_reg(_a("arbiter.decisions.evaluate", "endpoint", ['admin', 'security'],
+        "Asks the engine for a decision. Called by services on the hot path, never by a person."))
+_reg(_a("arbiter.simulate.run", "endpoint", ['admin', 'security', 'developer'],
+        "What-if against supplied attributes. Writes a simulated decision, enforces nothing."))
+# Parity is what earns a promotion (ARB-B, §8), so reading it is separated from
+# reading policy: a security reviewer signs off on the evidence, and that is a
+# different job from authoring the rule the evidence is about.
+_reg(_a("arbiter.parity.read", "endpoint", ['admin', 'security'],
+        "Agreement between the engine and the control it shadows. The promotion evidence."))
+# Regenerating a mirror rewrites the ORACLE the parity report is measured
+# against, which is why it is not `policies.write`.
+_reg(_a("arbiter.bridge.sync", "endpoint", ['admin'],
+        "Regenerates the read-only policies that mirror the legacy controls."))
+# Authoring a draft is separated from approving one, and not for tidiness: the
+# four-eyes rule has nothing to attach to if one privilege covers both.
+_reg(_a("arbiter.drafts.write", "endpoint", ['admin', 'security'],
+        "Describes a policy in words and has one drafted. Enacts nothing."))
+_reg(_a("arbiter.drafts.approve", "endpoint", ['admin'],
+        "Signs off a draft's readback. Never for a draft you wrote, without a cooling-off wait."))
+# Upkeep reads the policy set and the decision log and writes NOTHING — it is
+# the one arbiter action that cannot change any answer. It is not folded into
+# `policies.read` because it also reads decision counts, and it is not folded
+# into `decisions.read` because a developer holding neither still needs to be
+# told their own policies stopped compiling.
+_reg(_a("arbiter.upkeep.read", "endpoint", ['admin', 'security'],
+        "Maintenance findings over the live policy set, and HxNexus' reading of them. Changes nothing."))
+
+# F-00 — managing agent principals.
+#
+# `agents.*` (plural) governs who may MANAGE an agent. It is deliberately not
+# `agent.*`, which is the HxArbiter namespace for what an agent may DO. One
+# letter apart and on opposite sides of the trust boundary: an agent holds
+# `agent.read_case`; the human who created it holds `agents.registry.write`.
+# Spelling them the same would make an agent's own capability grantable through
+# the platform action catalogue, which is exactly backwards.
+_reg(_a("agents.registry.read", "endpoint", ['admin', 'security', 'developer'],
+        "Lists agent principals, their kind, model binding and capability ceiling."))
+_reg(_a("agents.registry.write", "endpoint", ['admin'],
+        "Creates an agent principal and sets its capability ceiling."))
+# Suspension is the kill switch: it invalidates every outstanding token for that
+# agent on the next call. It is separated from `registry.write` so an incident
+# responder can stop an agent without also being able to create one or widen a
+# ceiling — the two jobs are minutes apart and should not need the same power.
+_reg(_a("agents.status.change", "endpoint", ['admin', 'security'],
+        "Suspends, resumes or retires an agent. Suspension kills its live tokens at once."))
+# Minting is the privileged half. A token is authority handed to a non-human
+# that will act unattended, so it is admin-only and never inherited from
+# `registry.read`.
+_reg(_a("agents.tokens.issue", "endpoint", ['admin'],
+        "Mints a short-lived, capability-scoped token for an agent."))
+_reg(_a("agents.tokens.revoke", "endpoint", ['admin', 'security'],
+        "Revokes an outstanding agent token. Takes effect on the agent's next call."))
+
+# F-05 — agents as workers. Three actions, split the way the work splits.
+#
+# Reading the roster is supervision. ENROLLING an agent decides that a
+# non-human may hold case work at all, which is a staffing decision and not a
+# configuration one. And approving a routing-weight change is separated from
+# both, because a system that adjusted its own routing from its own performance
+# data would be a feedback loop nobody is steering — the approval is the person
+# in that loop.
+_reg(_a("agents.workforce.read", "endpoint", ['admin', 'manager', 'security'],
+        "The mixed roster: which agents hold work, their load, and their scorecards."))
+_reg(_a("agents.workforce.write", "endpoint", ['admin'],
+        "Puts an agent on the roster, sets its caps, benches it. A staffing decision."))
+_reg(_a("agents.workforce.approve", "endpoint", ['admin', 'manager'],
+        "Approves a routing-weight change. The human in the loop, never the scorecard itself."))
+
+# F-01 — the AI decision ledger.
+#
+# Reading the ledger is separated from reading cases, and that is the whole
+# access design: an auditor establishes *how* decisions were made without
+# thereby being able to read what they were made about. The ledger stores
+# commitments (hashes) rather than content precisely so this separation is real
+# and not a promise.
+#
+# There is no new `ai_auditor` ROLE. Inventing one would mean seeding privileges
+# for it across the whole catalogue, and Phase 6 already put role → privilege
+# mapping in data: an operator who wants a read-only auditor grants exactly
+# `ai_ledger.records.read` to a role of their own naming, with no code change.
+_reg(_a("ai_ledger.records.read", "endpoint", ['admin', 'security'],
+        "Reads AI decision records and override rates. Governance data, not case content."))
+# Recording a verdict is CASE work, not governance work: the person who accepts
+# or rejects an AI proposal is the case worker looking at it. Holding
+# `records.read` must not imply it — an auditor who could also record verdicts
+# could manufacture the oversight they are auditing.
+_reg(_a("ai_ledger.verdicts.write", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Records what a human decided about one AI proposal. Append-only."))
+# Exporting is its own action AND passes through the HxArbiter `export.evidence`
+# enforcement point: an auditor download is itself a logged, policy-checked
+# decision, which is the property the pack claims about everything else.
+_reg(_a("ai_ledger.evidence.export", "endpoint", ['admin', 'security'],
+        "Generates an AI governance evidence pack. The Article 22 dossier."))
+_reg(_a("ai_ledger.chain.verify", "endpoint", ['admin', 'security'],
+        "Recomputes the ledger's seal. Answers whether the record has been edited."))
+
+# F-02 — explainable cost per decision.
+#
+# Model rates are commercially sensitive in the same way `costing.rates.access`
+# already is, and are a separate action from it for one reason: an operator who
+# may set the LABOUR rate is not automatically the one who may set what an AI
+# provider is charged at, and on a shared install the platform-wide default row
+# reaches every tenant that has not priced a model for itself.
+_reg(_a("costing.model_rates.access", "endpoint", ['admin'],
+        "Reads and sets per-model token prices. Commercially sensitive; the platform row reaches every tenant."))
+# Reading a cost breakdown is case-adjacent — it reveals how a case was worked,
+# which models touched it and how much human time it took — so it sits with the
+# people who already see case analytics rather than with the ledger auditor.
+_reg(_a("costing.decisions.read", "endpoint", ['admin', 'manager', 'finance'],
+        "Per-decision cost breakdown for a case, and the tenant rollup."))
+
+# F-03 — counterfactual compliance proofs.
+#
+# THREE segments, and in the `compliance` family: a two-segment name cannot be
+# granted from data at all (`_crosses_into_platform_namespace`), which is what
+# sent four `risk.*` actions back to be renamed. `proofs.generate` was written
+# that way first and the guard caught it.
+#
+# Generating is separated from reading, and not for tidiness: a proof replays a
+# candidate policy across the whole recorded caseload, which is the most
+# expensive read this platform offers, and its cohort definition is itself a
+# statement about what exists. Reading one back is an auditor's job; producing
+# one is an operator's.
+_reg(_a("compliance.proofs.generate", "endpoint", ['admin', 'security'],
+        "Replays a policy version across the whole recorded cohort and stores the proof."))
+_reg(_a("compliance.proofs.read", "endpoint", ['admin', 'security'],
+        "Reads a proof and re-derives it. The divergent list is filtered per viewer."))
+
+
+# F-07 — the sovereign model marketplace.
+#
+# In the `marketplace` family beside `marketplace.packages.publish`, because it
+# is the same trust question about a different payload — and a two-segment name
+# could not be granted from data at all.
+#
+# Publishing and installing are SEPARATE powers, and the separation is the
+# whole access story here. Publishing sends this tenant's learned aggregates
+# (per-feature means and standard deviations over real cases) outside the
+# install. Installing accepts a stranger's. An operator may very reasonably
+# want one and not the other, and a single `models.manage` would have made that
+# inexpressible.
+_reg(_a("marketplace.models.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads model packages, their canary results and their evaluations. What left here, and what we took in."))
+_reg(_a("marketplace.models.publish", "endpoint", ['admin'],
+        "Prepares, publishes and downloads a model package. Sends this tenant's learned aggregates outside."))
+_reg(_a("marketplace.models.install", "endpoint", ['admin'],
+        "Imports, evaluates, installs and uninstalls a third-party model. Never activates one."))
+
+
+# F-08 — self-healing processes.
+#
+# Three actions, and the split is the design. READING the episode log is
+# governance: an auditor establishes what the platform proposed to do to itself
+# and what it was allowed to do, without thereby being able to do any of it.
+#
+# APPROVING is the one human decision in the loop, and it APPLIES — the roadmap
+# asks for a one-approval deploy card, and a second "now really do it" step
+# would be either a second approval or a rubber stamp.
+#
+# ROLLING BACK is separate from approving because the person undoing a healing
+# change at 3 a.m. is usually not the person who approved it at 2 p.m. They need
+# no new authority over config: the bytes written back were pre-signed at
+# approval by a named human, which is the whole point of pre-signing them.
+_reg(_a("healing.episodes.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads healing episodes, their validation ladders and their outcomes. What the platform proposed to do to itself."))
+_reg(_a("healing.episodes.approve", "endpoint", ['admin'],
+        "Opens, rejects and APPROVES a healing episode. Approving applies the change to live config."))
+_reg(_a("healing.episodes.rollback", "endpoint", ['admin', 'security'],
+        "Undoes an applied healing change by replaying its pre-signed snapshot."))
+
+
+# F-09 — the agent-to-agent case handoff protocol.
+#
+# Four actions on OUR side. The counterparty's side has none of these: it is
+# authenticated by the work order token alone, which is the whole point — an
+# external party never holds a role in this platform's vocabulary.
+#
+# ENROLLING is separated from ISSUING because they are decisions of different
+# size. Enrolling pins an organisation's key and sets the ceiling it may EVER be
+# granted; issuing hands one case to an already-trusted party for a few hours. A
+# dispatcher who may do the second should not thereby be able to add a new
+# organisation to the list of who exists.
+_reg(_a("handoff.counterparties.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads the counterparty registry and the pinned key fingerprints."))
+_reg(_a("handoff.counterparties.write", "endpoint", ['admin', 'security'],
+        "Enrols or suspends a counterparty. Pins the key a handoff is authenticated against."))
+_reg(_a("handoff.orders.issue", "endpoint", ['admin', 'manager'],
+        "Hands one case to an enrolled counterparty for one window, and revokes it."))
+_reg(_a("handoff.orders.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads work orders and every action an external party took or was refused."))
+
+
+# F-10 — offline-sovereign field operations.
+#
+# DISPATCHING is separated from WRITING the node record, and the split follows
+# the blast radius. Registering a node pins a key and fixes the charter — what
+# that device may EVER hold; dispatching hands it the cases that charter already
+# admits. Ordering a shred sits with the write action, beside the decision that
+# created the node in the first place.
+#
+# RESOLVING a conflict is its own action because it is case work, not fleet
+# work: the person choosing between a field value and the hub's is the person
+# who understands the case, and they need no authority over nodes to do it.
+_reg(_a("field.nodes.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads the field-node registry, charters and staleness."))
+_reg(_a("field.nodes.write", "endpoint", ['admin', 'security'],
+        "Registers a node, pins its key and charter, and orders a remote shred."))
+_reg(_a("field.nodes.dispatch", "endpoint", ['admin', 'manager'],
+        "Hands a node its bundle and takes its stream back."))
+_reg(_a("field.conflicts.resolve", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Decides one field/hub conflict. Case work: nothing sensitive merges itself."))
+
+
+# F-11 — intent-based process execution.
+#
+# WRITING a fragment is separated from CONFIRMING a plan, and the gap is the
+# supply chain: a fragment is a building block every future plan may be composed
+# from, so publishing and verifying one is an authoring decision with a long
+# tail. Confirming a plan is a decision about one process, now.
+#
+# CREATING a plan is separated from confirming it because planning is cheap and
+# reversible — it composes, checks and shows — while confirming is the consent
+# that binds the hash of what will run.
+_reg(_a("intent.fragments.read", "endpoint", ['admin', 'developer', 'manager'],
+        "Reads the fragment library and the closed vocabulary a goal spec may name."))
+_reg(_a("intent.fragments.write", "endpoint", ['admin', 'developer'],
+        "Publishes and verifies a process fragment. Every future plan may be composed from it."))
+_reg(_a("intent.plans.read", "endpoint", ['admin', 'developer', 'manager'],
+        "Reads composed plans, their ladders and their refusals."))
+_reg(_a("intent.plans.create", "endpoint", ['admin', 'manager', 'case_worker'],
+        "States an intent and composes a plan. Composes and shows; changes nothing."))
+_reg(_a("intent.plans.confirm", "endpoint", ['admin', 'manager'],
+        "Confirms a plan and runs it. The confirmation binds the hash of the exact process."))
+
+
+# F-12 — process-as-negotiation.
+#
+# SUSPENDING is its own action, and that is the important split. The person
+# closing a seam during an incident is not necessarily the person who approved
+# the contract, and they must not need to be: a kill switch that requires the
+# approver's authority is a kill switch nobody can reach at 3 a.m.
+#
+# PROPOSING is separated from APPROVING for the ordinary reason — running the
+# matcher and exchanging signatures is negotiation, and agreeing to be bound by
+# the result is a decision.
+_reg(_a("negotiate.contracts.read", "endpoint", ['admin', 'security', 'manager'],
+        "Reads joint contracts, their resolved clauses and the anchor exchange."))
+_reg(_a("negotiate.contracts.propose", "endpoint", ['admin', 'manager'],
+        "Runs the matcher, exchanges signatures and records anchors."))
+_reg(_a("negotiate.contracts.approve", "endpoint", ['admin'],
+        "Approves a joint contract and moves it through shadow to enforced."))
+_reg(_a("negotiate.contracts.suspend", "endpoint", ['admin', 'security', 'manager'],
+        "Closes the seam unilaterally. Needs nothing from the counterparty."))
+
+
+# Item 12 — Customer Engagement (the rep desk).
+#
+# READING a profile is not READING A FIELD. The 360 shows a masked view; a
+# `reveal` unmasks one field with a reason and leaves a record, and it is its own
+# action because "may see that this person exists" and "may read their national
+# id" are different powers held by different people on most floors.
+#
+# MERGE is separated from WRITE because it is the one operation that changes what
+# a future call shows about somebody else: merging the wrong two people moves one
+# person's cases onto another's screen.
+#
+# `engage.actions.on_behalf` is separate again — typing a case on somebody's
+# behalf is an act of attribution, and a rep who may read a 360 is not
+# automatically a rep who may raise work in a customer's name.
+_reg(_a("engage.profile.read", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Reads a customer 360, masked, at the verification tier the call reached."))
+_reg(_a("engage.profile.write", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Creates profiles, identifiers and party relations."))
+_reg(_a("engage.profile.reveal", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Unmasks ONE field with a reason. Every reveal is a record; there is no bulk unmask."))
+_reg(_a("engage.profile.merge", "endpoint", ['admin', 'manager'],
+        "Merges two profiles, reversibly. Moves one person's history onto another's screen."))
+_reg(_a("engage.interactions.read", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Reads the interaction record — what a call was, and what was promised."))
+_reg(_a("engage.interactions.write", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Opens a screen-pop, records verification, transfers and wraps up a contact."))
+_reg(_a("engage.actions.on_behalf", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Raises work in a customer's name, attributed to the rep and stamped with the tier."))
+# 2026-09-17: item 12 P5. Analytics reads every rep's handling time and wrap-up
+# mix, which is a supervisor's view of the floor rather than case work; naming
+# the tenant's wrap-up codes changes what every rep may record, so it is admin.
+_reg(_a("engage.analytics.read", "endpoint", ['admin', 'manager'],
+        "Contact-centre numbers for the tenant: handling time, wrap-up mix, repeat contact, FCR."))
+_reg(_a("engage.config.write", "endpoint", ['admin'],
+        "Names the tenant's wrap-up codes; unset keeps free text."))
+
+
+# ── 198: case actions ────────────────────────────────────────────────────────
+#
+# One privilege per action GROUP, not one per action: `close`, `resolve` and
+# `cancel` all end a case and there is no coherent grant that permits one and
+# refuses the others. Three segments so each is grantable from data rather than
+# tied to a role name.
+#
+# `legacy_roles` is the parity oracle, and it is the roles the routes these
+# replace actually required — every one of them gated on `case.update`, whose
+# legacy set is what these carry. Widening it here would grant, on upgrade,
+# something no route granted before.
+_reg(_a("case.actions.update", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Move a case's status or priority. The everyday action."))
+_reg(_a("case.actions.close", "endpoint", ['admin', 'manager', 'case_worker'],
+        "End a case — close, resolve or cancel. Reversible by reopen."))
+_reg(_a("case.actions.reopen", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Reopen a terminal case and restart its lifecycle workflow."))
+_reg(_a("case.actions.assign", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Assign or reassign the work on a case."))
+_reg(_a("case.actions.note", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Append an internal note to the case thread."))
+_reg(_a("case.actions.configure", "endpoint", ['admin'],
+        "Author the status set and the action configuration a case type runs on."))
+
+# ── §7 answered 2026-09-08: the rest of the vocabulary ───────────────────────
+#
+# Four more groups, and the splits follow blast radius rather than workflow.
+#
+# `archive` is separated from `close` because it is the one action after which
+# nothing else may happen to the case — an operator who may end a case has not
+# thereby been given the power to seal it. `delete` is separated from both and
+# is the only DESTRUCTIVE action in the set; it is soft, and it still hides the
+# case from everyone. `escalate` is separated because it reaches OUTSIDE the
+# case — it fires a tree and notifies people who are not working it, which is
+# an act with an audience. `split` CREATES a case, and creating work is not
+# implied by being allowed to change some. `transfer` moves who holds the case,
+# which is the assign question, so it carries the assign roles.
+_reg(_a("case.actions.archive", "endpoint", ['admin', 'manager'],
+        "Seal a finished case. After this, nothing further may be done to it."))
+_reg(_a("case.actions.delete", "endpoint", ['admin'],
+        "Soft-delete a case: hidden from every list and read, history retained."))
+_reg(_a("case.actions.escalate", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Raise a case up its escalation tree and notify the people it names."))
+_reg(_a("case.actions.split", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Split part of a case into a new child case."))
+_reg(_a("case.actions.transfer", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Hand a case to another queue or access group."))
+
+# ── 2026-09-17: bulk STAGE transition ────────────────────────────────────────
+#
+# Its own privilege, and deliberately NOT `case.actions.update`. Moving one case
+# into a stage fires that stage's SLA, its `on_enter_status` and the workflow
+# signals for one case; moving five hundred does it five hundred times, and none
+# of it is undone by moving them back. The single-case route keeps its gate
+# (`case.update` on the case) and is untouched. Admin and manager only: a new
+# capability, so no install gains it on upgrade except through these two roles,
+# and a case worker who needs it is granted it from data.
+_reg(_a("case.actions.bulk_stage", "endpoint", ['admin', 'manager'],
+        "Move many cases into a stage at once, after a server-checked preview."))
+
+# ── 2026-09-17: moving a case between tenants ────────────────────────────────
+#
+# Not `case.actions.transfer`, which every case worker holds and which moves who
+# WORKS a case. This moves the case into another company's data. Admin only, and
+# holding it is still not enough: a request needs a second holder in the source
+# tenant to approve it, and a holder in the destination to accept it.
+_reg(_a("case.actions.transfer_tenant", "endpoint", ['admin'],
+        "Request, approve, accept or refuse moving a case into another tenant."))
 
 
 def resource_of(action: str) -> str:

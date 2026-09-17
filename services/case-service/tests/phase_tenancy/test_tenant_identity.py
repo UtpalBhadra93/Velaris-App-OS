@@ -123,3 +123,91 @@ class TestEnforcementDefault:
         advisory, including meet.recording.view."""
         from velaris_shared.config import Settings
         assert Settings.model_fields["hxguard_case_enforcement"].default == "enforce"
+
+
+class TestActorIdentity:
+    """The same two-conventions problem, one column over (Sep item 39).
+
+    Fifteen `GUID` columns record *who did this*, and `user.user_id` is a UUID
+    only for a password login — an SSO or service principal carries a username
+    there. Passing it through raised *"...is not a valid id"*, so `POST /agents`
+    and `PUT /costing/model-rates` answered 422 to a request that was correct in
+    every respect; HxArbiter, which already met this, stored NULL and lost the
+    author instead.
+    """
+
+    @staticmethod
+    async def _user(db, username="jo.smith", email="jo.smith@example.test"):
+        from velaris_shared.db.models import HelixUserModel
+        row = HelixUserModel(username=username, email=email)
+        db.add(row)
+        await db.commit()
+        return row
+
+    class _Caller:
+        def __init__(self, user_id=None, username=None, email=None):
+            self.user_id, self.username, self.email = user_id, username, email
+
+    @pytest.fixture(autouse=True)
+    def _clear_actor_cache(self):
+        identity.clear_actor_cache()
+        yield
+        identity.clear_actor_cache()
+
+    async def test_a_uuid_is_returned_untouched(self):
+        """The load-bearing compatibility claim: an install that works today
+        keeps storing exactly the value it stores today. No query, no lookup —
+        not even a check that the user row exists, because the call sites did
+        not make one before this function existed."""
+        async with TestSessionFactory() as db:
+            known = uuid.uuid4()
+            caller = self._Caller(user_id=str(known))
+            assert await identity.actor_uuid(db, caller) == known
+
+    async def test_a_username_resolves_to_the_user_row(self):
+        async with TestSessionFactory() as db:
+            row = await self._user(db)
+            caller = self._Caller(user_id="jo.smith")
+            assert await identity.actor_uuid(db, caller) == row.id
+
+    async def test_an_email_resolves_to_the_user_row(self):
+        async with TestSessionFactory() as db:
+            row = await self._user(db)
+            caller = self._Caller(user_id="jo.smith@example.test")
+            assert await identity.actor_uuid(db, caller) == row.id
+
+    async def test_username_on_the_user_object_is_tried_too(self):
+        """An SSO login puts an opaque subject in `user_id` and the real name in
+        `username`; both are legitimate places for the identifier to arrive."""
+        async with TestSessionFactory() as db:
+            row = await self._user(db)
+            caller = self._Caller(user_id="sso|opaque-subject", username="jo.smith")
+            assert await identity.actor_uuid(db, caller) == row.id
+
+    async def test_a_principal_with_no_user_row_is_absent_not_refused(self):
+        """The degrade, and it is deliberate. Every one of these columns is
+        nullable and already means "not recorded"; a made-up id on an audit row
+        is worse than an empty one. What must NOT happen is the 422."""
+        async with TestSessionFactory() as db:
+            await self._user(db)
+            assert await identity.actor_uuid(
+                db, self._Caller(user_id="intake_webhook")) is None
+            assert await identity.actor_uuid(db, self._Caller()) is None
+
+    async def test_identifiers_are_tried_in_precedence_not_merged(self):
+        """Merging them into one `IN (...)` hands one person's row to another
+        the moment a username equals somebody else's email. `user_id` wins."""
+        async with TestSessionFactory() as db:
+            mine = await self._user(db, "alex", "alex@example.test")
+            theirs = await self._user(db, "alex@example.test", "other@example.test")
+            caller = self._Caller(user_id="alex", email="alex@example.test")
+            assert await identity.actor_uuid(db, caller) == mine.id
+            assert mine.id != theirs.id
+
+    async def test_cache_is_dropped_on_demand(self):
+        async with TestSessionFactory() as db:
+            caller = self._Caller(user_id="jo.smith")
+            assert await identity.actor_uuid(db, caller) is None   # cached miss
+            row = await self._user(db)
+            identity.clear_actor_cache()
+            assert await identity.actor_uuid(db, caller) == row.id

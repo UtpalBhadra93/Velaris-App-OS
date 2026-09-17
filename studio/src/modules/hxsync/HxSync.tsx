@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from "react";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 const API = "/api/v1/sync";
 function _authHdr(): Record<string, string> {
@@ -48,9 +49,6 @@ const S: Record<string, React.CSSProperties> = {
   header:    { padding: "18px 24px 0", flexShrink: 0 },
   title:     { fontSize: 20, fontWeight: 700, margin: 0 },
   sub:       { fontSize: 13, color: "var(--text-secondary)", marginTop: 4 },
-  tabBar:    { display: "flex", gap: 4, padding: "14px 24px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  tab:       { padding: "8px 20px", border: "none", background: "none", fontSize: 13, cursor: "pointer", borderBottom: "2px solid transparent", fontWeight: 400, color: "var(--text-secondary)" },
-  tabActive: { borderBottom: "2px solid var(--accent)", color: "var(--accent)", fontWeight: 700 },
   body:      { flex: 1, overflow: "auto", padding: "20px 28px" },
   card:      { background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "16px 20px", marginBottom: 12 },
   btn:       { padding: "7px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 },
@@ -533,12 +531,7 @@ export default function HxSync() {
   ];
   return (
     <div style={S.page}>
-      <div style={S.tabBar}>
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            style={{ ...S.tab, ...(tab === t.key ? S.tabActive : {}) }}>{t.label}</button>
-        ))}
-      </div>
+      <Tabs ariaLabel="HxSync" tabs={tabs} value={tab} onChange={setTab} />
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {tab === "destinations" && <DestinationsTab />}
         {tab === "runs"         && <RunHistoryTab />}

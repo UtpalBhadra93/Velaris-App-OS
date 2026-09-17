@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import AIProposals from "./AIProposals";
+import BulkActionBar from "./BulkActionBar";
+import CapturedDigest from "./CapturedDigest";
 import CaseEventStream from "./CaseEventStream";
 import { useApi } from "@shared/hooks";
 import {
@@ -9,6 +11,7 @@ import {
   unshareCase,
   getCaseDetail,
   createCase,
+  caseActionCatalogue,
   changeCaseStatus,
   changeCasePriority,
   resolveCase,
@@ -55,17 +58,7 @@ import {
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 import type { MyTaskResult, CaseSession, MeetProvider } from "@shared/api/client";
 import FormRenderer from "@modules/form-builder/FormRenderer";
-import {
-  Card,
-  Button,
-  Spinner,
-  EmptyState,
-  TimeAgo,
-  Stat,
-  MeetRoom,
-  VoiceInput,
-  appendTranscript,
-} from "@shared/components";
+import { Button, Card, EmptyState, MeetRoom, Spinner, Stat, Tabs, TimeAgo, VoiceInput, appendTranscript } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 import type { CaseSummary, CaseAuditEntry, CaseStatus, CasePriority, SLAStatusInfo, CaseTypeSummary } from "@shared/types";
 
@@ -99,6 +92,17 @@ export default function CaseManager() {
   const [varFilter, setVarFilter] = useState<string>("");      // applied "ns.name:value"
   const [varFilterError, setVarFilterError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Multi-select for bulk actions. Kept separate from `selectedId` (which opens
+  // the detail panel) so ticking a row never yanks the panel out from under an
+  // operator who is reading one case while selecting others.
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const toggleChecked = useCallback((id: string) => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
   const [showCreate, setShowCreate] = useState(false);
   const [detailWidth, setDetailWidth] = useState(500);
   const [page, setPage] = useState(1);
@@ -201,8 +205,42 @@ export default function CaseManager() {
             action={<Button onClick={() => setShowCreate(true)}>+ New Case</Button>} />
         )}
 
+        {!error && cases.length > 0 && (
+          <div style={{ padding: "var(--space-sm) var(--space-lg) 0" }}>
+            <label style={{ fontSize: 12, color: "var(--text-muted)", display: "flex",
+                            alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={cases.length > 0 && cases.every(c => checked.has(c.id))}
+                onChange={(e) => setChecked(prev => {
+                  const next = new Set(prev);
+                  // Only THIS page. "Select all" across pages would act on cases
+                  // the operator has never seen.
+                  cases.forEach(c => e.target.checked ? next.add(c.id) : next.delete(c.id));
+                  return next;
+                })}
+              />
+              Select all on this page
+            </label>
+          </div>
+        )}
+
+        <BulkActionBar
+          selectedIds={[...checked]}
+          caseTypeIds={cases.filter((c) => checked.has(c.id)).map((c) => c.case_type_id)}
+          onClear={() => setChecked(new Set())}
+          onDone={() => { refetch(); }}
+        />
+
         {!error && cases.map((c) => (
-          <CaseRow key={c.id} case_={c} selected={selectedId === c.id} onClick={() => setSelectedId(c.id)} />
+          <CaseRow
+            key={c.id}
+            case_={c}
+            selected={selectedId === c.id}
+            checked={checked.has(c.id)}
+            onCheck={() => toggleChecked(c.id)}
+            onClick={() => setSelectedId(c.id)}
+          />
         ))}
 
         {/* Bottom pagination */}
@@ -245,7 +283,10 @@ export default function CaseManager() {
 
 /* ── Case Row ─────────────────────────────────────────────────── */
 
-function CaseRow({ case_, selected, onClick }: { case_: CaseSummary; selected: boolean; onClick: () => void }) {
+function CaseRow({ case_, selected, checked, onCheck, onClick }: {
+  case_: CaseSummary; selected: boolean; checked: boolean;
+  onCheck: () => void; onClick: () => void;
+}) {
   const statusColor = STATUS_COLORS[case_.status] || "var(--text-muted)";
   const priorityColor = PRIORITY_COLORS[case_.priority] || "var(--text-muted)";
 
@@ -262,6 +303,16 @@ function CaseRow({ case_, selected, onClick }: { case_: CaseSummary; selected: b
       onMouseEnter={(e) => !selected && (e.currentTarget.style.background = "var(--bg-card-hover)")}
       onMouseLeave={(e) => !selected && (e.currentTarget.style.background = "transparent")}
     >
+      {/* Ticking a row must not also open it — hence stopPropagation. */}
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onCheck}
+        onClick={(e) => e.stopPropagation()}
+        aria-label={`Select case ${(case_ as any).case_number ?? case_.id.slice(0, 8)}`}
+        style={{ flexShrink: 0, cursor: "pointer" }}
+      />
+
       {/* Status dot */}
       <span style={{ width: 8, height: 8, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
 
@@ -328,9 +379,27 @@ function CaseDetailPanel({
   // The task pane refetches after a claim/complete; re-reading the whole
   // aggregate is one request and keeps every pane consistent with it.
   const refetchMyTask = refetch;
-  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "events">("stages");
+  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "captured" | "events">("stages");
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [actionBusy, setActionBusy] = useState(false);
+
+  // Which actions this case's STAGE offers.
+  //
+  // `null` means "not known yet, or the catalogue could not be read", and it
+  // reads as *offer everything* — the behaviour of every install before a stage
+  // was ever configured. A failed lookup must not empty an operator's action
+  // bar; the dispatcher is the gate, this is only the courtesy of not showing a
+  // button that would be refused.
+  const [stageActions, setStageActions] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    setStageActions(null);
+    caseActionCatalogue(undefined, caseId)
+      .then(d => { if (live) setStageActions((d.actions ?? []).map(a => a.name)); })
+      .catch(() => { if (live) setStageActions(null); });
+    return () => { live = false; };
+  }, [caseId, detail?.case?.current_stage_id]);
+  const offers = (name: string) => stageActions === null || stageActions.includes(name);
 
   // Switch to "My Task" tab the first time a task loads for this case
   const switchedToTask = useRef(false);
@@ -396,33 +465,41 @@ function CaseDetailPanel({
 
         {/* Actions — Fix 6: confirmation before executing, busy state prevents double-click */}
         <div style={{ display: "flex", gap: "var(--space-xs)", marginTop: "var(--space-md)", flexWrap: "wrap" }}>
-          {caseData.status === "new" && (
+          {caseData.status === "new" && offers("open") && (
             <Button size="sm" disabled={actionBusy} onClick={() => requestConfirm("Open this case?", () => changeCaseStatus(caseId, "open"))}>
               Open
             </Button>
           )}
-          {["open", "reopened"].includes(caseData.status) && (
+          {["open", "reopened"].includes(caseData.status) && (offers("resolve") || offers("cancel")) && (
             <>
-              <Button size="sm" disabled={actionBusy} onClick={() => requestConfirm("Resolve this case?", () => resolveCase(caseId))}>
-                Resolve
-              </Button>
-              <Button size="sm" variant="danger" disabled={actionBusy} onClick={() => requestConfirm("Cancel this case?", () => cancelCase(caseId))}>
-                Cancel
-              </Button>
+              {offers("resolve") && (
+                <Button size="sm" disabled={actionBusy} onClick={() => requestConfirm("Resolve this case?", () => resolveCase(caseId))}>
+                  Resolve
+                </Button>
+              )}
+              {offers("cancel") && (
+                <Button size="sm" variant="danger" disabled={actionBusy} onClick={() => requestConfirm("Cancel this case?", () => cancelCase(caseId))}>
+                  Cancel
+                </Button>
+              )}
             </>
           )}
           {/* Fix 7: Reopen available from both resolved AND closed/cancelled */}
-          {caseData.status === "resolved" && (
+          {caseData.status === "resolved" && (offers("close") || offers("reopen")) && (
             <>
-              <Button size="sm" disabled={actionBusy} onClick={() => requestConfirm("Close this case?", () => closeCase(caseId))}>
-                Close
-              </Button>
-              <Button size="sm" variant="secondary" disabled={actionBusy} onClick={() => requestConfirm("Reopen this case?", () => reopenCase(caseId))}>
-                Reopen
-              </Button>
+              {offers("close") && (
+                <Button size="sm" disabled={actionBusy} onClick={() => requestConfirm("Close this case?", () => closeCase(caseId))}>
+                  Close
+                </Button>
+              )}
+              {offers("reopen") && (
+                <Button size="sm" variant="secondary" disabled={actionBusy} onClick={() => requestConfirm("Reopen this case?", () => reopenCase(caseId))}>
+                  Reopen
+                </Button>
+              )}
             </>
           )}
-          {["closed", "cancelled"].includes(caseData.status) && (
+          {["closed", "cancelled"].includes(caseData.status) && offers("reopen") && (
             <Button size="sm" variant="secondary" disabled={actionBusy} onClick={() => requestConfirm("Reopen this case?", () => reopenCase(caseId))}>
               Reopen
             </Button>
@@ -455,22 +532,26 @@ function CaseDetailPanel({
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)", flexShrink: 0, overflowX: "auto" }}>
-        {([
-          myTask ? "my-task" : null,
-          "stages", "details", "timeline", "sla", "risk", "ai", "events", "sharing", "sessions", "messages", "ask",
-        ].filter(Boolean) as Array<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "events">).map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            flex: 1, padding: "10px 8px", fontSize: 11, fontWeight: 500, fontFamily: "var(--font-mono)",
-            textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            whiteSpace: "nowrap",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-          }}>
-            {t === "my-task" ? "⚡ My Task" : t === "sessions" ? "HxMeet" : t === "ask" ? "✦ Ask" : t === "risk" ? "⚠ Risk" : t}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        ariaLabel="Case"
+        tabs={([
+          myTask ? { key: "my-task" as const,  label: "⚡ My Task" } : null,
+          { key: "stages"   as const, label: "Stages" },
+          { key: "details"  as const, label: "Details" },
+          { key: "timeline" as const, label: "Timeline" },
+          { key: "sla"      as const, label: "SLA" },
+          { key: "risk"     as const, label: "⚠ Risk" },
+          { key: "ai"       as const, label: "AI" },
+          { key: "captured" as const, label: "✦ Captured" },
+          { key: "events"   as const, label: "Events" },
+          { key: "sharing"  as const, label: "Sharing" },
+          { key: "sessions" as const, label: "HxMeet" },
+          { key: "messages" as const, label: "Messages" },
+          { key: "ask"      as const, label: "✦ Ask" },
+        ].filter(Boolean) as Array<{ key: typeof tab; label: string }>)}
+        value={tab}
+        onChange={setTab}
+      />
 
       {/* Tab content */}
       <div style={{ flex: 1, overflow: "auto", padding: "var(--space-lg)" }}>
@@ -518,6 +599,7 @@ function CaseDetailPanel({
         {tab === "risk" && <RiskTab caseId={caseId} onResolved={() => { refetch(); onUpdate(); }} />}
         {tab === "messages" && <MessagesTab caseId={caseId} />}
         {tab === "ai" && <AIProposals caseId={caseId} />}
+        {tab === "captured" && <CapturedDigest caseId={caseId} />}
         {tab === "events" && <CaseEventStream caseId={caseId} />}
       </div>
     </div>

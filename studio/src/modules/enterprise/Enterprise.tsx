@@ -7,37 +7,45 @@ import {
   listRetentionPolicies, updateRetentionPolicy,
   getEnterpriseSystemInfo, resolveGDPRRequest,
 } from "@shared/api/client";
-import { Card, Button, Spinner, Stat, EmptyState, TimeAgo } from "@shared/components";
+import { Button, Card, EmptyState, Spinner, Stat, Tabs, TimeAgo } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
+import AuditStreamTab from "./AuditStreamTab";
 
 /* ═══════════════════════════════════════════════════════════════════
    Enterprise — GDPR, Security Events, Retention (Phase 20)
    ═══════════════════════════════════════════════════════════════════ */
 
-type Tab = "overview" | "events" | "gdpr" | "retention";
+type Tab = "overview" | "events" | "audit-stream" | "gdpr" | "retention";
 
 export default function Enterprise() {
   const [tab, setTab] = useState<Tab>("overview");
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
-      <div style={{ display: "flex", gap: 2, marginBottom: "var(--space-xl)", borderBottom: "1px solid var(--border-subtle)" }}>
-        {(["overview", "events", "gdpr", "retention"] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)",
-            textTransform: "uppercase", letterSpacing: "0.04em", border: "none", cursor: "pointer",
-            color: tab === t ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent",
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1,
-          }}>{t}</button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Enterprise"
+        tabs={[
+          { key: "overview"  as Tab, label: "Overview" },
+          { key: "events"    as Tab, label: "Events" },
+          // Next to Events on purpose: this is where those same events LEAVE.
+          { key: "audit-stream" as Tab, label: "Audit stream" },
+          { key: "gdpr"      as Tab, label: "GDPR" },
+          { key: "retention" as Tab, label: "Retention" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "overview"  && <OverviewTab setTab={setTab} />}
       {tab === "events"    && <SecurityEventsTab />}
+      {tab === "audit-stream" && <AuditStreamTab />}
       {tab === "gdpr"      && <GDPRTab />}
       {tab === "retention" && <RetentionTab />}
+    </div>
     </div>
   );
 }

@@ -150,6 +150,32 @@ ACCEPTED = {
     # subject, so it is not an oracle for which identities exist here. Pinned by
     # anonymous-request tests in `tests/phase_identity/test_saml_sp_key.py`.
     "/api/v1/auth/saml/{tenant}/slo",
+    # The vendored D3 the HxGraph visualizer loads (2026-09-10). It is an
+    # unmodified copy of a public library, byte-for-byte what a CDN would have
+    # served until today, and it carries no data of any kind — the graph itself
+    # is behind `/graph/visualize`, which is gated.
+    #
+    # It also CANNOT be gated: the reader is an iframe's `<script src>`, which
+    # sends no Authorization header, and Studio authenticates with a bearer
+    # token rather than a cookie. Serving it ourselves is the point — the
+    # screen was dead on any install without internet, and a third party's
+    # server was a runtime dependency of a sovereignty-first product.
+    "/api/v1/graph/vendor/d3.js",
+    # F-09 agent-to-agent handoff, the COUNTERPARTY's four routes. Not
+    # unauthenticated — this sweep looks for `get_current_user`, and these wear
+    # `get_agent_caller`, which is a real credential dependency: no bearer token
+    # is a 401, and the token is resolved against the agent registry and, for a
+    # work order, against its own case. The asymmetry is deliberate and
+    # documented on that dependency — a surface built for an unattended actor
+    # must not quietly double as a human one, or its rate limits, its logging
+    # and its policy namespace all describe traffic they were not written for.
+    # `get_current_user` would refuse the only caller these routes exist for: an
+    # external party holds no role in this platform's vocabulary. All four are
+    # additionally rate-limited (`_agent_rl`).
+    "/api/v1/handoff/protocol/{order_id}/accept",
+    "/api/v1/handoff/protocol/{order_id}/case",
+    "/api/v1/handoff/protocol/{order_id}/propose",
+    "/api/v1/handoff/protocol/{order_id}/return",
     # Omnichannel inbound. The caller is Twilio or Meta and there is no token to
     # give them: the provider signature over the payload IS the credential, and
     # a missing header is refused exactly like a wrong one. Every failure —

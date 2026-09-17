@@ -68,6 +68,7 @@
   --canvas-bg: #0d0d10;
   --canvas-grid: #161620;
   --canvas-grid-major: #1c1c28;
+  --calendar-indicator-invert: 1;
 
   /* ── BPMN element colors ──────────────────────────────────────── */
   --bpmn-event-stroke: #0d9488;
@@ -78,6 +79,48 @@
   --bpmn-gateway-fill: rgba(247, 183, 49, 0.08);
   --bpmn-flow-stroke: #4a4a5c;
   --bpmn-selected: #0d9488;
+}
+
+/* ── Legacy token aliases ────────────────────────────────────────────
+   423 `var(--…)` references across 31 modules name tokens that were
+   never defined — `--border` alone 201 times. An undefined custom
+   property makes the whole declaration invalid, so those surfaces fell
+   back to the browser default and stayed light while the rest of the
+   page followed the theme.
+
+   These are aliases, not new colours: each resolves to a token that is
+   already redefined per theme, so one definition here serves both. They
+   are additive — every screen that already uses the canonical names is
+   untouched. Prefer the canonical name in new code; this block exists so
+   the existing 31 modules theme correctly without being rewritten.
+   ───────────────────────────────────────────────────────────────── */
+:root {
+  --border:          var(--border-default);
+  --bg-main:         var(--bg-root);
+  --bg-base:         var(--bg-root);
+  --bg-primary:      var(--bg-panel);
+  --bg-secondary:    var(--bg-panel);
+  --bg-surface:      var(--bg-card);
+  --surface:         var(--bg-card);
+  --surface-2:       var(--bg-elevated);
+  --bg-subtle:       var(--bg-elevated);
+  --bg-hover:        var(--bg-card-hover);
+  --text:            var(--text-primary);
+  --text-tertiary:   var(--text-muted);
+  --danger:          var(--status-failed);
+  --warning:         var(--status-running);
+  --color-warning:   var(--status-running);
+  --warning-bg:      var(--accent-dim);
+  --status-error:    var(--status-failed);
+  --status-success:  var(--status-completed);
+  --status-warning:  var(--status-running);
+  --status-pending:  var(--status-running);
+  --accent-light:    var(--accent-text);
+  --accent-muted:    var(--accent-dim);
+  --accent-soft:     var(--accent-dim);
+  --accent-subtle:   var(--accent-dim);
+  --ac-dim:          var(--accent-dim);
+  --radius:          var(--radius-md);
 }
 
 /* ── Light theme overrides ───────────────────────────────────────
@@ -122,6 +165,7 @@
   --canvas-bg:         #f8fafc;
   --canvas-grid:       #e9ecf1;
   --canvas-grid-major: #d5dae3;
+  --calendar-indicator-invert: 0;
 }
 
 /* ── Reset ──────────────────────────────────────────────────────── */
@@ -208,4 +252,53 @@ pre {
 /* Connection hover effect */
 .conn-line:hover .conn-hover {
   opacity: 0.3;
+}
+
+/* ── Form controls ──────────────────────────────────────────────────
+   Without this, an input with no explicit background renders in the
+   browser default (white on black text) and stays light while the rest
+   of the page follows the theme. Inline styles still win, so any screen
+   that already sets its own colours is untouched, and in light mode
+   --bg-input is #ffffff — the same value the browser was already using.
+   Checkboxes, radios, ranges and colour swatches keep their native
+   painting; overriding their background breaks the control itself.
+   ───────────────────────────────────────────────────────────────── */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+select,
+textarea {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.6;
+}
+
+/* The date/time picker indicator is a UA-painted black glyph — invisible
+   on a dark field. */
+input::-webkit-calendar-picker-indicator {
+  filter: invert(var(--calendar-indicator-invert, 1));
+}
+
+/* The file picker's button lives in the UA shadow tree and keeps its own
+   light chrome unless named directly. */
+input[type="file"]::file-selector-button {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  margin-right: 10px;
+  font: inherit;
+  cursor: pointer;
 }

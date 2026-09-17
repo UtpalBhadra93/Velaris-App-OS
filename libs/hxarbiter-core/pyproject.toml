@@ -1,0 +1,39 @@
+[project]
+name = "hxarbiter-core"
+version = "0.1.0"
+description = "A deterministic policy evaluator: closed condition AST, compiler, and evaluator. No I/O. A Velaris product."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "BSL-1.1"}
+authors = [{name = "Velaris Contributors"}]
+keywords = ["policy", "authorization", "pdp", "sovereignty", "abac", "governance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+
+# Deliberately one dependency. The moment this pulls SQLAlchemy, FastAPI or an
+# HTTP client it stops being embeddable, and "the evaluator is deterministic"
+# stops being inspectable — an evaluator that CAN reach a network is not one a
+# reader can rule out reaching one.
+dependencies = ["pydantic>=2.10,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/UtpalBhadra93/velaris"
+Velaris = "https://github.com/UtpalBhadra93/velaris"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hxarbiter_core"]
+
+[tool.hatch.build.targets.sdist]
+include = ["hxarbiter_core", "README.md", "LICENSE"]

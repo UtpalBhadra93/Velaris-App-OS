@@ -171,11 +171,17 @@ async def list_connectors(
         stmt = stmt.where(ConnectorRegistryModel.enabled == enabled)
 
     # Scope to user's tenant + global connectors (tenant_id IS NULL).
-    # Superadmin/no-tenant users see everything.
-    if user.tenant_id and "superadmin" not in (user.roles or []):
+    # Superadmin sees everything. A caller with NO tenant claim is the default
+    # tenant — until 2026-09-17 it too saw every tenant's connectors.
+    if "superadmin" not in (user.roles or []):
+        if user.tenant_id:
+            mine = [str(user.tenant_id)]
+        else:
+            from case_service.tenancy.identity import default_tenant_tokens
+            mine = await default_tenant_tokens(session)
         stmt = stmt.where(
             or_(
-                ConnectorRegistryModel.tenant_id == str(user.tenant_id),
+                ConnectorRegistryModel.tenant_id.in_(mine),
                 ConnectorRegistryModel.tenant_id.is_(None),
             )
         )

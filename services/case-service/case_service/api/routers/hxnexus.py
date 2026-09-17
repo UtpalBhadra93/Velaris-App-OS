@@ -4,6 +4,8 @@ Endpoints:
   GET    /hxnexus/status                              backend health + model info
   POST   /hxnexus/cases/{id}/suggest                  next-best-action
   POST   /hxnexus/cases/{id}/documents/index          index case documents
+  GET    /hxnexus/cases/{id}/documents/index-jobs     the background queue for a case
+  POST   /hxnexus/cases/{id}/documents/index-jobs/{job}/cancel   take one back out
   POST   /hxnexus/documents/upload                    upload + index a document directly
   POST   /hxnexus/cases/{id}/qa                       document Q&A (RAG)
   POST   /hxnexus/chat                                start or continue a conversation
@@ -20,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -35,6 +37,7 @@ from velaris_shared.db.models import (
 )
 from velaris_shared.db.session import get_session
 from case_service.tenancy.identity import same_tenant
+from case_service.agents.attribution import AgentRefused   # F-00: policy refusal is 403
 from velaris_shared.llm.factory import get_llm_backend, get_ai_info, check_ai_available
 from velaris_shared.llm.guard import (
     chat_rate_limiter, regen_rate_limiter, global_rate_limiter,
@@ -75,8 +78,27 @@ async def _assert_case_access(
     Admins and managers can access any case. Case workers must be assigned
     to the case or have created it.
     """
+    from case_service.tenancy.identity import case_visible_to, is_superadmin
+
     case = await session.get(CaseInstanceModel, case_id)
     if not case:
+        raise coded(404, LLM_NOTFOUND_404, "Case not found")
+
+    # The tenant boundary, FIRST — before any role can widen past it.
+    #
+    # "Admins and managers have platform-wide case access" was written when this
+    # platform had one tenant, and `platform-wide` quietly came to mean *across
+    # tenants*: on a shared install `admin` is a TENANT admin. Proven on
+    # 2026-09-06 — a `dev` admin asked HxNexus to summarise a case belonging to
+    # tenant `default` and got back its status, its priority and the contents of
+    # a note marked confidential. That is worse than reading the row, because an
+    # answer is not bounded by the fields a screen would have shown.
+    #
+    # A case in another tenant is 404 — the same answer as one that does not
+    # exist — and superadmin keeps the documented break-glass.
+    if not await case_visible_to(session, case.tenant_id,
+                                 getattr(user, "tenant_id", None),
+                                 is_superadmin_caller=is_superadmin(user)):
         raise coded(404, LLM_NOTFOUND_404, "Case not found")
 
     # Admins and managers have platform-wide case access
@@ -122,6 +144,12 @@ class ChatRequest(BaseModel):
 
 class IndexRequest(BaseModel):
     reindex: bool = False
+    #: Queue the work instead of doing it in this request (migration 203).
+    #: **Default False — the synchronous path, exactly as before.** With OCR
+    #: enabled, indexing a case full of scans holds the request for
+    #: `OCR_TIMEOUT_SECONDS` per document; `background: true` returns a job per
+    #: document instead, drained by a `document_index` schedule.
+    background: bool = False
 
 
 # ─── Status (real async liveness check) ──────────────────────────────
@@ -223,6 +251,30 @@ async def index_case_documents(
         select(DocumentModel).where(DocumentModel.case_id == case_id)
     )).scalars().all()
 
+    if body.background:
+        # Access was checked above, by the same `_assert_case_access` the
+        # synchronous path uses; the queue row carries the tenant and the
+        # requester, because the drain has no caller to ask.
+        from case_service.hxnexus import index_queue
+
+        queued, already = [], []
+        for doc in docs:
+            job, created = await index_queue.enqueue_document(
+                session,
+                document_id=doc.id,
+                case_id=case_id,
+                tenant_id=getattr(case, "tenant_id", None),
+                requested_by=current_user.user_id,
+                reindex=bool(body.reindex),
+            )
+            (queued if created else already).append(index_queue.as_dict(job))
+        return {
+            "case_id": str(case_id), "queued": len(queued),
+            "already_queued": len(already), "jobs": queued + already,
+            "note": ("Queued. These are indexed by a `document_index` schedule; "
+                     "without one, nothing drains the queue."),
+        }
+
     storage = get_storage_backend()
     total_chunks = 0
     results = []
@@ -251,14 +303,226 @@ async def index_case_documents(
             "total_chunks": total_chunks, "details": results}
 
 
+@router.get("/cases/{case_id}/documents/index-jobs")
+async def list_index_jobs(
+    case_id: uuid.UUID,
+    status: Optional[str] = Query(None, description="pending|running|done|failed|cancelled"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """What the queue is doing for this case.
+
+    A queue with no window on it is indistinguishable from a document that was
+    silently dropped — which is the failure a background path introduces and
+    this endpoint exists to prevent. Gated by the same case access as indexing:
+    a job row names a document on the case.
+    """
+    from velaris_shared.db.models import DocumentIndexJobModel
+    from case_service.hxnexus import index_queue
+
+    _check_global_rate(current_user)
+    await _assert_case_access(case_id, current_user, session)
+
+    query = (select(DocumentIndexJobModel)
+             .where(DocumentIndexJobModel.case_id == case_id)
+             .order_by(DocumentIndexJobModel.created_at.desc())
+             .limit(200))
+    if status:
+        query = query.where(DocumentIndexJobModel.status == status.strip().lower())
+    rows = (await session.execute(query)).scalars().all()
+    return {"case_id": str(case_id), "count": len(rows),
+            "jobs": [index_queue.as_dict(r) for r in rows]}
+
+
+@router.post("/cases/{case_id}/documents/index-jobs/{job_id}/cancel")
+async def cancel_index_job(
+    case_id: uuid.UUID,
+    job_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Take a queued job back out. Only a job that has not started yet."""
+    from velaris_shared.db.models import DocumentIndexJobModel
+
+    _check_global_rate(current_user)
+    await _assert_case_access(case_id, current_user, session)
+
+    # The case clause is the tenant boundary here: access to the case was just
+    # checked, and a job id from another case answers 404, never 403.
+    job = (await session.execute(
+        select(DocumentIndexJobModel).where(
+            DocumentIndexJobModel.id == job_id,
+            DocumentIndexJobModel.case_id == case_id,
+        )
+    )).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Index job not found")
+    if job.status != "pending":
+        raise HTTPException(409, f"Job is {job.status}, not pending")
+
+    job.status = "cancelled"
+    job.active_key = None          # frees the document to be queued again
+    job.finished_at = datetime.now(timezone.utc)
+    await session.commit()
+    from case_service.hxnexus import index_queue
+    return index_queue.as_dict(job)
+
+
+@router.post("/cases/{case_id}/documents/index-jobs/{job_id}/retry")
+async def retry_index_job(
+    case_id: uuid.UUID,
+    job_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Queue a failed or cancelled job's document again, as a NEW job.
+
+    A new row rather than resetting the old one: the failure and its
+    `last_error` are the record of what went wrong, and overwriting them is how
+    a document that fails every night starts looking like one that failed once.
+    Same access check as enqueuing, because this IS enqueuing.
+    """
+    from velaris_shared.db.models import DocumentIndexJobModel
+    from case_service.hxnexus import index_queue
+
+    _check_global_rate(current_user)
+    case = await _assert_case_access(case_id, current_user, session)
+
+    job = (await session.execute(
+        select(DocumentIndexJobModel).where(
+            DocumentIndexJobModel.id == job_id,
+            DocumentIndexJobModel.case_id == case_id,
+        )
+    )).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Index job not found")
+    if job.status not in ("failed", "cancelled"):
+        raise HTTPException(409, f"Job is {job.status}; only a failed or cancelled job is retried")
+
+    new, created = await index_queue.enqueue_document(
+        session, document_id=job.document_id, case_id=case_id,
+        tenant_id=getattr(case, "tenant_id", None),
+        requested_by=current_user.user_id, reindex=bool(job.reindex))
+    return {**index_queue.as_dict(new), "retry_of": str(job.id),
+            "already_queued": not created}
+
+
+@router.get("/documents/index-jobs")
+async def list_all_index_jobs(
+    status: Optional[str] = Query(None, description="pending|running|done|failed|cancelled"),
+    limit: int = Query(100, ge=1, le=500),
+    current_user: AuthenticatedUser = Depends(hxguard.guard("ai.index_queue.read")),
+    session: AsyncSession = Depends(get_session),
+):
+    """The whole queue for the caller's tenant — the operator's window on it.
+
+    The per-case listing answers "what happened to this case's documents"; this
+    answers "is the queue draining at all", which nobody looking at one case can
+    see. Scoped exactly as `GET /cases` is: the caller's tenant plus NULL-tenant
+    cases unless strict reads are on, superadmin unscoped. The scope is applied
+    through the CASE, not `document_index_jobs.tenant_id`, because the case is
+    the authority and a job row's copy is only what was true at enqueue.
+
+    `drain_scheduled` says whether an ACTIVE `document_index` schedule exists for
+    this tenant. Without one nothing drains the queue, and a screen that showed
+    forty pending jobs without saying so would look like a slow queue rather
+    than a missing one.
+    """
+    from sqlalchemy import func, or_
+
+    from velaris_shared.db.models import (
+        DocumentIndexJobModel, DocumentModel, ScheduleModel,
+    )
+    from case_service.hxnexus import index_queue
+    from case_service.tenancy.identity import (
+        is_superadmin, resolve_tenant, strict_case_reads,
+    )
+
+    _check_global_rate(current_user)
+
+    scope = None
+    tenant_slug = None
+    if not is_superadmin(current_user):
+        # A caller with no tenant claim is the platform-default tenant, never
+        # "every tenant" — the rule `is_superadmin` states. The first cut read a
+        # missing claim as unscoped, copied from `GET /cases`; found in the
+        # 2026-09-17 audit.
+        resolved = await resolve_tenant(
+            session, getattr(current_user, "tenant_id", None) or "default")
+        if resolved is None:
+            # An unknown tenant matches nothing rather than everything.
+            return {"count": 0, "counts": {}, "jobs": [], "drain_scheduled": False}
+        scope, tenant_slug = resolved[0], resolved[1]
+
+    def _scoped(q):
+        q = q.join(CaseInstanceModel, CaseInstanceModel.id == DocumentIndexJobModel.case_id)
+        if scope is not None:
+            clause = CaseInstanceModel.tenant_id == scope
+            if not strict_case_reads():
+                clause = or_(clause, CaseInstanceModel.tenant_id.is_(None))
+            q = q.where(clause)
+        return q
+
+    counts = {
+        st: n for st, n in (await session.execute(
+            _scoped(select(DocumentIndexJobModel.status, func.count()))
+            .group_by(DocumentIndexJobModel.status)
+        )).all()
+    }
+
+    q = _scoped(
+        select(DocumentIndexJobModel, DocumentModel.filename, CaseInstanceModel.case_number)
+        .outerjoin(DocumentModel, DocumentModel.id == DocumentIndexJobModel.document_id)
+    ).order_by(DocumentIndexJobModel.created_at.desc()).limit(limit)
+    if status:
+        q = q.where(DocumentIndexJobModel.status == status.strip().lower())
+    rows = (await session.execute(q)).all()
+
+    sched = select(func.count()).select_from(ScheduleModel).where(
+        ScheduleModel.action_kind == "document_index",
+        ScheduleModel.status == "active")
+    if scope is not None:
+        # `schedules.tenant_id` is a slug-or-id string; match both spellings.
+        sched = sched.where(ScheduleModel.tenant_id.in_(
+            [v for v in {str(scope), tenant_slug} if v]))
+    drain_scheduled = bool((await session.execute(sched)).scalar() or 0)
+
+    return {
+        "count": len(rows),
+        "counts": counts,
+        "drain_scheduled": drain_scheduled,
+        "jobs": [{**index_queue.as_dict(job), "filename": filename,
+                  "case_number": case_number}
+                 for job, filename, case_number in rows],
+    }
+
+
 @router.post("/documents/upload")
 async def upload_and_index(
     file: UploadFile = File(...),
     case_id: Optional[str] = Query(None),
+    #: The SAME field, in the multipart body. Studio has always sent it there —
+    #: `form.append("case_id", …)` — and the endpoint only ever read the query
+    #: string, so every upload from that screen was indexed with **no case at
+    #: all**: it reported "✓ Indexed N chunks" and the case's Q&A could never
+    #: find one of them. Accepting both keeps every existing caller working and
+    #: makes the one that was silently wrong right.
+    case_id_form: Optional[str] = Form(None, alias="case_id"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Upload a document (PDF, DOCX, TXT) and immediately index it for RAG."""
+    """Upload a document (PDF, DOCX, TXT) and immediately index it for RAG.
+
+    **`case_id` is checked, and it is the case that decides the tenant.**
+    Until 2026-09-10 this route took a case id from the query string, indexed
+    the file against it with no access check at all, and stamped the chunk with
+    the *caller's* tenant. So any authenticated user could put text of their own
+    choosing into another case's AI context — and a caller with no directory
+    tenant wrote it with a NULL tenant, which every reader of that case treats
+    as its own. That is a prompt-injection surface with an HTTP endpoint in
+    front of it: the planted text is quoted back to whoever asks the case a
+    question, as one of its documents.
+    """
     from velaris_shared.db.models import DocumentChunkModel
 
     data = await file.read()
@@ -273,11 +537,28 @@ async def upload_and_index(
     elif filename.endswith(".pdf"):
         content_type = "application/pdf"
 
-    cid = uuid.UUID(case_id) if case_id else None
+    _check_global_rate(current_user)
+
+    raw_case_id = (case_id or case_id_form or "").strip()
+    try:
+        cid = uuid.UUID(raw_case_id) if raw_case_id else None
+    except ValueError:
+        # A malformed id used to be a 500 out of `uuid.UUID`.
+        raise HTTPException(400, "case_id is not a valid id")
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if cid is not None:
+        # The same gate the case-wide index route uses: tenant boundary first,
+        # then the case relationship. A case the caller may not reach answers
+        # 404, exactly as it does everywhere else.
+        case = await _assert_case_access(cid, current_user, session)
+        # And the CASE's tenant, not the caller's — a chunk is part of the
+        # case's record, and stamping it with whoever happened to upload it is
+        # how one tenant's row ends up inside another tenant's answers.
+        tenant_id = getattr(case, "tenant_id", None)
+
     doc_id = uuid.uuid4()
     n = await index_document(
-        session, doc_id, cid, data, content_type,
-        getattr(current_user, "tenant_id", None),
+        session, doc_id, cid, data, content_type, tenant_id,
     )
     return {"document_id": str(doc_id), "filename": filename,
             "content_type": content_type, "chunks_indexed": n}
@@ -362,6 +643,12 @@ async def case_ask(
             f"Refused: the subject of this case has no lawful basis for "
             f"{e.purpose!r} ({e.reason}).",
         )
+    except AgentRefused as e:
+        # 403, not 400. The request was well-formed and the caller authorised;
+        # HxArbiter's `agent` namespace declined. Ordered before the
+        # PermissionError arm below because it subclasses it — reversing these
+        # two lines silently turns every policy refusal back into a 400.
+        raise HTTPException(403, str(e))
     except PermissionError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:

@@ -37,8 +37,12 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /app /app
 
-RUN groupadd -r velaris && useradd -r -g velaris -d /app velaris
-USER velaris
+# A NUMERIC uid, not just a name. Kubernetes cannot verify that a named user is
+# non-root — `runAsNonRoot: true` fails the pod with "image has non-numeric user"
+# before the container ever starts — so the uid is fixed here and the image says
+# so. Found by deploying the chart with pod hardening on (2026-09-17).
+RUN groupadd -r -g 10001 velaris && useradd -r -u 10001 -g velaris -d /app velaris
+USER 10001:10001
 
 EXPOSE 8204
 

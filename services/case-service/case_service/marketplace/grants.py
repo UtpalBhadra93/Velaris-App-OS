@@ -398,6 +398,71 @@ async def _egress_credentials(
     from case_service.marketplace import egress
     if not egress.egress_enabled():
         return None                    # provision will refuse with the clear message
+    # ── HxArbiter PEP (ARB-B) ────────────────────────────────────────────────
+    # The manifest's declared domains are, and stay, the control: this loop asks
+    # the policy engine the same question per host and records both answers, so
+    # parity can be measured before anything is promoted. While the `egress`
+    # namespace sits at `shadow` — where every namespace ships — `check()`
+    # returns the legacy answer and the granted set is byte-for-byte what it
+    # was. Only an operator promoting the namespace can narrow it.
+    #
+    # A host the engine refuses is DROPPED from the grant rather than failing
+    # the whole approval: a package declaring four domains where policy allows
+    # three should run with three, which is what the allowlist already means.
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+        from hxarbiter_core import SubjectKind as _SubjectKind
+        from case_service.agents import attribution as _attr, identity as _agents
+
+        # F-00: the subject is a registered agent, not a synthetic string.
+        #
+        # `subject_id` used to be `app-<container row id>` — invented here, tied
+        # to a container row that is replaced on every restart, and resolvable
+        # to nothing. Every egress decision a package ever made was therefore
+        # attributed to an identity that stopped existing when the container
+        # did. The agent below is keyed on the PACKAGE, so the trail survives
+        # restarts, re-approvals and re-pulls.
+        #
+        # It is registered with an EMPTY capability ceiling, deliberately: a
+        # marketplace container's authority comes from its capability grant and
+        # its allowlist, not from an agent token. An empty ceiling means this
+        # principal can be attributed and can be issued nothing — which is the
+        # correct amount of authority to hand a third party's code today.
+        _agent_id = await _agents.register_out_of_band(
+            tenant_id=grant.tenant_id,
+            slug=f"marketplace.{grant.package_id}",
+            kind="marketplace",
+            display_name=f"Marketplace package {grant.package_id}",
+            package_id=str(grant.package_id),
+        ) or f"app-{row.id}"      # unresolvable registry: the old shape, not nothing
+
+        allowed_domains: list[str] = []
+        for _domain in granted_domains:
+            if await _arb_pep.check(
+                session,
+                tenant_id=grant.tenant_id,
+                action="egress.http",
+                subject_id=_agent_id,
+                subject_kind=_SubjectKind.AGENT,
+                subject_attrs=_attr.subject_attrs("marketplace"),
+                resource_kind="package",
+                resource_id=str(grant.package_id),
+                context={"target_domain": str(_domain).lower(),
+                         "purpose": "connector_egress"},
+                legacy_allowed=True,   # the manifest already declared it
+                claimed_by="marketplace.grants",
+            ):
+                allowed_domains.append(_domain)
+        granted_domains = allowed_domains
+        if not granted_domains:
+            # Policy refused every declared host. Narrowing to none is the same
+            # state as a grant with no domains, and must clean up identically.
+            _remove_egress_entry(grant)
+            return None
+    except Exception as exc:                                    # noqa: BLE001
+        # Never let the observer break the observed.
+        logger.warning("marketplace: HxArbiter egress PEP unavailable: %s", exc)
+
     user = f"app-{row.id}"
     raw, token_hash = egress.mint_credentials()
     grant.granted = {**(grant.granted or {}),

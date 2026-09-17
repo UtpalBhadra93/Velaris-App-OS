@@ -143,13 +143,13 @@ export default function LedgerPanel() {
                   <td style={{ ...td, fontWeight: 600 }}>{cents(tb.total_credits_cents)}</td>
                   <td style={td}>
                     {tb.balanced
-                      ? <span style={{ color: "#2a7" }}>✓ balanced</span>
-                      : <span style={{ color: "#c33" }}>✗ out by {cents(tb.total_debits_cents - tb.total_credits_cents)}</span>}
+                      ? <span style={{ color: "var(--status-completed)" }}>✓ balanced</span>
+                      : <span style={{ color: "var(--status-failed)" }}>✗ out by {cents(tb.total_debits_cents - tb.total_credits_cents)}</span>}
                   </td>
                 </tr>
               </tfoot>
             </table>
-            <div style={{ fontSize: 11, color: "#888", marginTop: 10 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
               Balance sign follows account type — a debit increases an asset or expense, a credit
               increases a liability, income or equity.
             </div>

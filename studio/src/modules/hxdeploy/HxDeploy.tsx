@@ -3,7 +3,7 @@
  * Tabs: Environments · Promote · Runs · Change Windows
  */
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Button } from "@shared/components";
+import { Button, Tabs } from "@shared/components";
 import { PlatformRolloutPlans } from "@shared/components/PlatformRolloutPlans";
 import { useAuth } from "@/auth";
 import { codedFrom } from "@shared/api/client";
@@ -40,9 +40,6 @@ const DAYS_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const S: Record<string, React.CSSProperties> = {
   page:   { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" },
   body:   { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)" },
-  tabBar: { display: "flex", gap: 2, borderBottom: "1px solid var(--border-subtle)", marginBottom: "var(--space-lg)" },
-  tab:    { padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)", textTransform: "uppercase" as const, letterSpacing: "0.04em", border: "none", cursor: "pointer", color: "var(--text-muted)", background: "transparent", borderBottom: "2px solid transparent", marginBottom: -1 },
-  tabA:   { color: "var(--accent)", borderBottom: "2px solid var(--accent)" },  // full shorthand, not borderBottomColor: React warns when a rerender
           // mixes the two for one value, and the warning is right — the
           // shorthand below would win on a rerender.
   card:   { background: "var(--bg-card)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-md)", padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
@@ -1771,6 +1768,15 @@ export default function HxDeploy() {
 
   return (
     <div style={S.page}>
+      {/* Above the body, not inside it: the bar has to reach both edges to
+          sit flush under the app header, the way /help does. The environment
+          pills are a control and stay with the content. */}
+      <Tabs
+        ariaLabel="HxDeploy"
+        tabs={TABS}
+        value={tab}
+        onChange={setTab}
+      />
       <div style={S.body}>
         {/* Env switcher — built from registered environments, no hardcoding */}
         {envs.length > 0 && (
@@ -1794,14 +1800,6 @@ export default function HxDeploy() {
             )}
           </div>
         )}
-
-        <div style={S.tabBar}>
-          {TABS.map(({ key, label }) => (
-            <button key={key} style={{ ...S.tab, ...(tab === key ? S.tabA : {}) }} onClick={() => setTab(key)}>
-              {label}
-            </button>
-          ))}
-        </div>
         {tab === "environments" && <EnvironmentsTab activeEnv={activeEnv} onEnvsChanged={loadEnvs} />}
         {tab === "promote"      && <PromoteTab onDone={() => setTab("runs")} activeEnv={activeEnv} />}
         {tab === "runs"         && <RunsTab activeEnv={activeEnv} />}

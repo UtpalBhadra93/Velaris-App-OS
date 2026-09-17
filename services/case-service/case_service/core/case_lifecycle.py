@@ -218,6 +218,19 @@ async def on_stage_entered(
         case_type_def=case_type_def,
     )
 
+    # The stage's `on_enter_status`, on the workflow path as well as the two
+    # HTTP ones. Three places write `current_stage_id`, so a status effect wired
+    # to one of them would hold when an operator clicked and quietly not hold
+    # when the interpreter moved the case — which is the harder bug of the two
+    # to notice. Never raises: a configuration error must not wedge a workflow.
+    try:
+        from case_service.case_actions import stages as _stages
+
+        await _stages.apply_on_enter_status(
+            session, case_id=case_id, stage=stage, actor=None)
+    except Exception as exc:                                     # noqa: BLE001
+        logger.warning("stage on_enter_status failed for case %s: %s", case_id, exc)
+
     # Create assignments
     steps = stage.get("steps", [])
     assignments = await assignment_router.create_assignments_for_stage(
@@ -318,12 +331,36 @@ async def on_status_changed(
         data={"from": old_status, "to": new_status},
     )
 
+    # 198 — the THIRD copy of "which statuses end a case" lived here, and it
+    # was the one that mattered most: a terminal status this tuple did not name
+    # would leave the case's SLA clocks running forever on a closed case. Both
+    # questions now come from the configured status set, and the two remaining
+    # tuples below are only what an unreadable set falls back to.
+    #
+    # The pause is driven off the CATEGORY rather than off two hardcoded names,
+    # so a tenant that adds `awaiting_survey` as `waiting` gets the pause with
+    # no code change — which is the whole point of the category existing.
+    from case_service.case_actions.statuses import resolve_set
+
+    try:
+        _set = await resolve_set(session)
+        _new = _set.get(new_status)
+        _old = _set.get(old_status)
+        _is_terminal = bool(_new and _new.is_terminal)
+        _is_waiting = bool(_new and _new.category == "waiting")
+        _was_waiting = bool(_old and _old.category == "waiting")
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("status set unreadable in lifecycle: %s", _exc)
+        _is_terminal = new_status in ("resolved", "closed", "cancelled")
+        _is_waiting = new_status in ("pending_external", "pending_subcase")
+        _was_waiting = old_status in ("pending_external", "pending_subcase")
+
     # Terminal statuses: cancel all SLAs
-    if new_status in ("resolved", "closed", "cancelled"):
+    if _is_terminal:
         await sla_tracker.cancel_slas_for_case(session, case_id)
 
-    # Pending statuses: pause SLAs
-    elif new_status in ("pending_external", "pending_subcase"):
+    # Waiting statuses: pause SLAs
+    elif _is_waiting:
         sla_instances = await repo.get_sla_instances(session, case_id)
         for sla in sla_instances:
             if sla.status in ("on_track", "at_risk"):
@@ -333,11 +370,10 @@ async def on_status_changed(
                     sla_policy_id=sla.sla_policy_id,
                 )
 
-    # Resuming from pending: resume SLAs
-    elif new_status in ("open", "reopened") and old_status in (
-        "pending_external",
-        "pending_subcase",
-    ):
+    # Resuming from a wait: resume SLAs. Driven off the category on BOTH sides,
+    # so leaving a wait for any non-waiting, non-terminal status resumes — not
+    # only for the two statuses that used to be named here.
+    elif _was_waiting and not _is_waiting and not _is_terminal:
         sla_instances = await repo.get_sla_instances(session, case_id)
         for sla in sla_instances:
             if sla.status == "paused":

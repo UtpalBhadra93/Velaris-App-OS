@@ -4,6 +4,7 @@
 // reviewers who need attention. Read-only; gated `risk.scores.review`.
 import React, { useEffect, useState } from "react";
 import { apiFetch, errorFromResponse } from "@shared/api/client";
+import { Tabs } from "@shared/components";
 
 interface Reviewer {
   reviewer: string;
@@ -595,25 +596,24 @@ export default function RiskReview() {
   );
 
   return (
-    <div style={{ padding: "var(--space-xl)", maxWidth: 1000 }}>
-      <h2 style={{ margin: "0 0 10px" }}>Risk Review</h2>
-
-      <div style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border-subtle)", marginBottom: 16 }}>
-        {([
-          ["oversight", "Oversight"],
-          ["labelling", "Labelling"],
-          ["gate", "Verify gate"],
-          ["rules", "Rules"],
-        ] as const).map(([k, lbl]) => (
-          <button key={k} onClick={() => setTab(k)}
-            style={{ fontSize: 13, padding: "6px 14px", border: "none", background: "transparent",
-              cursor: "pointer", color: tab === k ? "var(--accent)" : "var(--text-muted)",
-              fontWeight: tab === k ? 600 : 400,
-              borderBottom: tab === k ? "2px solid var(--accent)" : "2px solid transparent" }}>
-            {lbl}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%",
+                  overflow: "hidden", boxSizing: "border-box" }}>
+      {/* The `<h2>Risk Review</h2>` that stood here is gone: AppLayout's
+          PageHeader already prints the module's name, so the page carried its
+          title twice and the tab bar sat below both. */}
+      <Tabs
+        ariaLabel="Risk review"
+        tabs={[
+          { key: "oversight" as const, label: "Oversight" },
+          { key: "labelling" as const, label: "Labelling" },
+          { key: "gate"      as const, label: "Verify gate" },
+          { key: "rules"     as const, label: "Rules" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-lg) var(--space-2xl)",
+                    maxWidth: 1000, boxSizing: "border-box" }}>
 
       {tab === "labelling" && <LabellingTab />}
       {tab === "gate" && <GateTab />}
@@ -809,6 +809,7 @@ export default function RiskReview() {
         {busy === "install" ? "Installing…" : "Install pack"}
       </button>
       </>)}
+    </div>
     </div>
   );
 }

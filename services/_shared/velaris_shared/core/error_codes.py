@@ -48,6 +48,7 @@ DOC_FILETYPE_400 = "VEL-DOC-FILETYPE-400"
 DOC_PREVIEW_415 = "VEL-DOC-PREVIEW-415"
 DOC_DELETE_403 = "VEL-DOC-DELETE-403"
 DOC_LASTVERSION_409 = "VEL-DOC-LASTVERSION-409"
+DOC_TENANT_403 = "VEL-DOC-TENANT-403"
 
 # ── Authentication ────────────────────────────────────────────────
 # The failures a user actually hits and cannot self-diagnose. Deliberately
@@ -96,6 +97,9 @@ CHANNEL_NOTFOUND_404 = "VEL-CHANNEL-NOTFOUND-404"
 # and the resolution is identical for all of them.
 CASE_NOTFOUND_404 = "VEL-CASE-NOTFOUND-404"
 CASE_GUARD_403 = "VEL-CASE-GUARD-403"
+#: The caller names a tenant this platform does not have. Refusing beats
+#: falling through to "no tenant", which stores or reads platform-wide.
+CASE_TENANT_403 = "VEL-CASE-TENANT-403"
 CASE_RULE_SCOPE_403 = "VEL-CASE-RULE-SCOPE-403"
 CASE_RULE_DISABLED_409 = "VEL-CASE-RULE-DISABLED-409"
 CASE_TYPED_VAR_400 = "VEL-CASE-TYPED-VAR-400"
@@ -103,6 +107,155 @@ CASE_VAR_FILTER_400 = "VEL-CASE-VAR-FILTER-400"
 CASE_AI_ACTION_400 = "VEL-CASE-AI-ACTION-400"
 CASE_PROCDEF_400 = "VEL-CASE-PROCDEF-400"
 CASE_SUBPROCESS_500 = "VEL-CASE-SUBPROCESS-500"
+
+# ── DMN interchange (market gap B5) ───────────────────────────────
+# Import refuses rather than approximates: a decision table that runs and
+# answers a slightly different question than the one it was written to answer
+# is worse than one that would not import.
+#: The bytes are not DMN — unparseable, too large, or entity-expanding.
+RULE_DMN_XML_400 = "VEL-RULE-DMN-XML-400"
+#: A hit policy this engine cannot honour (it returns one row, not several).
+RULE_DMN_HITPOLICY_422 = "VEL-RULE-DMN-HITPOLICY-422"
+#: A cell or input expression outside the FEEL unary-test subset that is read.
+RULE_DMN_EXPR_422 = "VEL-RULE-DMN-EXPR-422"
+#: Valid DMN, but holding no decision table at all.
+RULE_DMN_EMPTY_422 = "VEL-RULE-DMN-EMPTY-422"
+#: The stored rule holds something DMN's unary tests cannot express, so it can
+#: be evaluated here but not written out.
+RULE_DMN_EXPORT_409 = "VEL-RULE-DMN-EXPORT-409"
+
+# ── Audit streaming to a SIEM (market gap A3) ─────────────────────
+#: The endpoint is not a URL this platform will ship its audit to.
+AUDIT_STREAM_URL_400 = "VEL-AUDIT-STREAM-URL-400"
+#: A transport this platform does not speak.
+AUDIT_STREAM_KIND_400 = "VEL-AUDIT-STREAM-KIND-400"
+#: The stream is platform-wide and the caller has not said they know that.
+AUDIT_STREAM_SCOPE_400 = "VEL-AUDIT-STREAM-SCOPE-400"
+#: No such target.
+AUDIT_STREAM_404 = "VEL-AUDIT-STREAM-404"
+#: A duplicate name, or enabling a target that could not authenticate.
+AUDIT_STREAM_409 = "VEL-AUDIT-STREAM-409"
+
+# ── 198: case actions and the configured status set ───────────────
+# A status write that the resolved set refuses, split three ways because
+# "that did not work" is not something an operator can act on: the status is
+# not in the set at all, or it exists but is no longer offered, or the
+# transition graph refuses this particular move.
+CASE_STATUS_UNKNOWN_400 = "VEL-CASE-STATUS-UNKNOWN-400"
+CASE_STATUS_DISABLED_409 = "VEL-CASE-STATUS-DISABLED-409"
+CASE_STATUS_TRANSITION_409 = "VEL-CASE-STATUS-TRANSITION-409"
+#: A status a case is sitting on cannot be deleted — that strands the case.
+CASE_STATUS_INUSE_409 = "VEL-CASE-STATUS-INUSE-409"
+CASE_STATUS_NAME_400 = "VEL-CASE-STATUS-NAME-400"
+CASE_STATUS_CATEGORY_400 = "VEL-CASE-STATUS-CATEGORY-400"
+
+#: The action vocabulary is CLOSED. An unknown action is a refusal, never a
+#: guess at what the word might mean — the HxArbiter injection lesson.
+CASE_ACTION_UNKNOWN_404 = "VEL-CASE-ACTION-UNKNOWN-404"
+CASE_ACTION_PARAM_400 = "VEL-CASE-ACTION-PARAM-400"
+CASE_ACTION_DENIED_403 = "VEL-CASE-ACTION-DENIED-403"
+#: The tenant's own configuration says this action is not offered from the
+#: case's current status. Distinct from a privilege denial: the operator may
+#: hold the privilege and the case still be in the wrong state.
+CASE_ACTION_NOTALLOWED_409 = "VEL-CASE-ACTION-NOTALLOWED-409"
+CASE_ACTION_FAILED_500 = "VEL-CASE-ACTION-FAILED-500"
+CASE_ACTION_PRIV_400 = "VEL-CASE-ACTION-PRIV-400"
+#: HxArbiter refused the status transition. Distinct from a privilege denial:
+#: the caller may act on the case and the POLICY still refuse this move.
+CASE_ACTION_POLICY_403 = "VEL-CASE-ACTION-POLICY-403"
+#: The case's STAGE does not offer this action. Asked as well as the status
+#: rule, never instead of it — two stages can share a status, so neither rule
+#: can stand in for the other, and both can only narrow.
+CASE_ACTION_STAGE_409 = "VEL-CASE-ACTION-STAGE-409"
+#: The case is archived or soft-deleted, and nothing may act on it but the one
+#: action that reverses that state. Checked in the dispatcher rather than in each
+#: handler, so an action added later inherits the rule.
+CASE_ACTION_SEALED_409 = "VEL-CASE-ACTION-SEALED-409"
+#: A stage definition naming an action or a status that does not exist. Refused
+#: at authoring: the action vocabulary is closed and can never grow to match a
+#: typo, and a stage that sets a status nobody defined would move the case and
+#: change nothing.
+CASE_STAGE_CONFIG_400 = "VEL-CASE-STAGE-CONFIG-400"
+
+#: Refused, never truncated: acting on the first N of a larger selection and
+#: reporting success is the worse answer.
+CASE_BULK_CEILING_400 = "VEL-CASE-BULK-CEILING-400"
+CASE_BULK_EMPTY_400 = "VEL-CASE-BULK-EMPTY-400"
+CASE_BULK_DESTRUCTIVE_400 = "VEL-CASE-BULK-DESTRUCTIVE-400"
+
+#: Bulk STAGE transition (2026-09-17). A stage move fires SLAs, the stage's
+#: `on_enter_status` and workflow signals per case, none of which moving the case
+#: back undoes — so the run needs the server-checked confirmation a preview
+#: issues, bound to the operator, the target stage and the exact set of cases.
+CASE_BULK_STAGE_CONFIRM_409 = "VEL-CASE-BULK-STAGE-CONFIRM-409"
+#: The caller lacks `case.actions.bulk_stage`. Checked once, before any case is
+#: read: it is a question about the operator, and its answer is the same for
+#: every case in the request.
+CASE_BULK_STAGE_DENIED_403 = "VEL-CASE-BULK-STAGE-DENIED-403"
+#: Per case: the target stage is not a stage of this case's case type.
+CASE_BULK_STAGE_UNKNOWN_409 = "VEL-CASE-BULK-STAGE-UNKNOWN-409"
+#: Per case: an open HxSentinel risk verification holds the case where it is.
+CASE_STAGE_HELD_409 = "VEL-CASE-STAGE-HELD-409"
+
+#: Moving a case between tenants (mig 205). Distinct codes because "fix the
+#: data", "ask policy", "get a second person" and "it already moved on" are
+#: four different next steps.
+CASE_TENANT_TRANSFER_400 = "VEL-CASE-TENANT-TRANSFER-400"
+CASE_TENANT_TRANSFER_404 = "VEL-CASE-TENANT-TRANSFER-404"
+CASE_TENANT_TRANSFER_BLOCKED_409 = "VEL-CASE-TENANT-TRANSFER-BLOCKED-409"
+CASE_TENANT_TRANSFER_POLICY_403 = "VEL-CASE-TENANT-TRANSFER-POLICY-403"
+CASE_TENANT_TRANSFER_STATE_409 = "VEL-CASE-TENANT-TRANSFER-STATE-409"
+CASE_TENANT_TRANSFER_TWO_PERSON_403 = "VEL-CASE-TENANT-TRANSFER-TWO-PERSON-403"
+
+#: Configuration is authored per tenant. A caller resolving to no tenant would
+#: be writing the PLATFORM default set, changing every tenant at once.
+CASE_CONFIG_TENANT_400 = "VEL-CASE-CONFIG-TENANT-400"
+
+
+# ── HxArbiter (`VEL-ARB-`) ────────────────────────────────────────
+#
+# Registered 2026-09-08, and the delay is the point: all 23 were raised by
+# `api/routers/arbiter.py` and its PEPs from the day HxArbiter shipped, and all
+# 23 were written up in `error-catalog.md` — but none was ever a constant, so
+# `KNOWN_CODES` did not know them and `test_catalog_documents_no_code_the_app_
+# cannot_raise` had been failing on them ever since. A red test nobody can close
+# is a red test everybody learns to skip, which is how the next real drift would
+# have gone unnoticed.
+#
+# Two of them, `ARB_EXPORT_DENIED_403` and `ARB_VAULT_SHRED_DENIED_403`, gained
+# their `-403` on that day. They were emitted as `PermissionError` messages with
+# no HTTP suffix, which no code in this registry may have — the suffix is what
+# keeps `VEL-<SUBSYSTEM>-<SLUG>-<HTTP>` sortable. The new spelling is a strict
+# EXTENSION of the old one, so anything matching the old identifier as a prefix
+# or a substring — including this platform's own tests — still matches; only an
+# exact comparison against the whole detail string would notice, and that would
+# already break on any wording change. 403 is what the export refusal actually
+# returns (`enterprise._policy_refusal`); the shred has no HTTP surface today,
+# and 403 is what it would be given one.
+ARB_ANCHOR_502 = "VEL-ARB-ANCHOR-502"
+ARB_COMPILE_422 = "VEL-ARB-COMPILE-422"
+ARB_DRAFT_404 = "VEL-ARB-DRAFT-404"
+ARB_DRAFT_FAILED_422 = "VEL-ARB-DRAFT-FAILED-422"
+ARB_ELEVATE_DENIED_403 = "VEL-ARB-ELEVATE-DENIED-403"
+ARB_EXPORT_DENIED_403 = "VEL-ARB-EXPORT-DENIED-403"
+ARB_IMPORT_EMPTY_422 = "VEL-ARB-IMPORT-EMPTY-422"
+ARB_IMPORT_FORMAT_422 = "VEL-ARB-IMPORT-FORMAT-422"
+ARB_IMPORT_REJECTED_422 = "VEL-ARB-IMPORT-REJECTED-422"
+ARB_IMPORT_TOO_LARGE_422 = "VEL-ARB-IMPORT-TOO-LARGE-422"
+ARB_LIFECYCLE_409 = "VEL-ARB-LIFECYCLE-409"
+ARB_MOMENT_INVALID_422 = "VEL-ARB-MOMENT-INVALID-422"
+ARB_NAMESPACE_404 = "VEL-ARB-NAMESPACE-404"
+ARB_NO_PROVIDER_503 = "VEL-ARB-NO-PROVIDER-503"
+ARB_OVERRIDE_REASON_422 = "VEL-ARB-OVERRIDE-REASON-422"
+ARB_PARITY_409 = "VEL-ARB-PARITY-409"
+ARB_PLATFORM_SCOPE_403 = "VEL-ARB-PLATFORM-SCOPE-403"
+ARB_POLICY_404 = "VEL-ARB-POLICY-404"
+ARB_RULE_INVALID_422 = "VEL-ARB-RULE-INVALID-422"
+ARB_STAGE_DENIED_403 = "VEL-ARB-STAGE-DENIED-403"
+ARB_TENANT_UNRESOLVED_403 = "VEL-ARB-TENANT-UNRESOLVED-403"
+ARB_VAULT_SHRED_DENIED_403 = "VEL-ARB-VAULT-SHRED-DENIED-403"
+ARB_VERSION_404 = "VEL-ARB-VERSION-404"
+
 
 # ── Marketplace ───────────────────────────────────────────────────
 MKT_NOTFOUND_404 = "VEL-MKT-NOTFOUND-404"
@@ -415,16 +568,44 @@ SYS_GATEWAY_REQUIRED_403 = "VEL-SYS-GATEWAY-REQUIRED-403"
 KNOWN_CODES: frozenset[str] = frozenset({
     DOC_STORAGE_503, DOC_ENCRYPT_503, DOC_NOTFOUND_404, DOC_CASE_404,
     DOC_UUID_422, DOC_FILETYPE_400, DOC_PREVIEW_415, DOC_DELETE_403,
-    DOC_LASTVERSION_409, SYS_GATEWAY_REQUIRED_403,
+    DOC_LASTVERSION_409, DOC_TENANT_403, SYS_GATEWAY_REQUIRED_403,
     AUTH_CREDENTIALS_401, AUTH_DISABLED_403, AUTH_SSO_REQUIRED_400,
     AUTH_OTP_INVALID_400, AUTH_RATE_LIMIT_429, AUTH_DEVICE_MISMATCH_401,
     AUTH_SSO_UNCONFIGURED_404, AUTH_EMAIL_TAKEN_409,
     AUTH_SSO_STATE_400, AUTH_SSO_PROVISION_403, AUTH_SSO_UNVERIFIED_403,
     AUTH_SAML_ASSERTION_400, AUTH_SAML_PROVISION_403,
     CHANNEL_OPTED_OUT_403, CHANNEL_WINDOW_409, CHANNEL_NOTFOUND_404,
-    CASE_NOTFOUND_404, CASE_GUARD_403, CASE_RULE_SCOPE_403,
+    CASE_NOTFOUND_404, CASE_GUARD_403, CASE_TENANT_403, CASE_RULE_SCOPE_403,
     CASE_RULE_DISABLED_409, CASE_TYPED_VAR_400, CASE_VAR_FILTER_400,
     CASE_AI_ACTION_400, CASE_PROCDEF_400, CASE_SUBPROCESS_500,
+    RULE_DMN_XML_400, RULE_DMN_HITPOLICY_422, RULE_DMN_EXPR_422,
+    RULE_DMN_EMPTY_422, RULE_DMN_EXPORT_409,
+    AUDIT_STREAM_URL_400, AUDIT_STREAM_KIND_400, AUDIT_STREAM_SCOPE_400,
+    AUDIT_STREAM_404, AUDIT_STREAM_409,
+    # 198 — the configured status set and the closed action vocabulary.
+    CASE_STATUS_UNKNOWN_400, CASE_STATUS_DISABLED_409,
+    CASE_STATUS_TRANSITION_409, CASE_STATUS_INUSE_409,
+    CASE_STATUS_NAME_400, CASE_STATUS_CATEGORY_400,
+    CASE_ACTION_UNKNOWN_404, CASE_ACTION_PARAM_400, CASE_ACTION_DENIED_403,
+    CASE_ACTION_NOTALLOWED_409, CASE_ACTION_FAILED_500, CASE_ACTION_PRIV_400,
+    CASE_ACTION_POLICY_403, CASE_ACTION_STAGE_409, CASE_STAGE_CONFIG_400,
+    CASE_ACTION_SEALED_409,
+    CASE_BULK_CEILING_400, CASE_BULK_EMPTY_400, CASE_BULK_DESTRUCTIVE_400,
+    CASE_BULK_STAGE_CONFIRM_409, CASE_BULK_STAGE_DENIED_403,
+    CASE_BULK_STAGE_UNKNOWN_409, CASE_STAGE_HELD_409,
+    CASE_TENANT_TRANSFER_400, CASE_TENANT_TRANSFER_404,
+    CASE_TENANT_TRANSFER_BLOCKED_409, CASE_TENANT_TRANSFER_POLICY_403,
+    CASE_TENANT_TRANSFER_STATE_409, CASE_TENANT_TRANSFER_TWO_PERSON_403,
+    CASE_CONFIG_TENANT_400,
+    # HxArbiter — see the block above for the two that gained a `-403`.
+    ARB_ANCHOR_502, ARB_COMPILE_422, ARB_DRAFT_404,
+    ARB_DRAFT_FAILED_422, ARB_ELEVATE_DENIED_403, ARB_EXPORT_DENIED_403,
+    ARB_IMPORT_EMPTY_422, ARB_IMPORT_FORMAT_422, ARB_IMPORT_REJECTED_422,
+    ARB_IMPORT_TOO_LARGE_422, ARB_LIFECYCLE_409, ARB_MOMENT_INVALID_422,
+    ARB_NAMESPACE_404, ARB_NO_PROVIDER_503, ARB_OVERRIDE_REASON_422,
+    ARB_PARITY_409, ARB_PLATFORM_SCOPE_403, ARB_POLICY_404,
+    ARB_RULE_INVALID_422, ARB_STAGE_DENIED_403, ARB_TENANT_UNRESOLVED_403,
+    ARB_VAULT_SHRED_DENIED_403, ARB_VERSION_404,
     MKT_NOTFOUND_404, MKT_ACCESS_403, MKT_INSTALLED_409,
     MKT_STATE_400, MKT_OFFICIAL_400, MKT_VERIFY_502,
     MKT_DISABLED_404, MKT_BLOCKED_403, MKT_CONFORMANCE_422, MKT_SANDBOX_400,

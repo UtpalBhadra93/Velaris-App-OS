@@ -20,6 +20,11 @@ spec:
   template:
     metadata: { labels: { app: hxmigrate-service } }
     spec:
+      # Nothing here talks to the Kubernetes API, so the default token has no
+      # reader — and a mounted token is a credential an escaped process finds.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "helix.podSecurityContext" . | nindent 8 }}
       terminationGracePeriodSeconds: {{ add (.Values.terminationDrainSeconds | default 5) 25 }}
       containers:
         - name: hxmigrate-service
@@ -38,7 +43,10 @@ spec:
             - containerPort: {{ .Values.hxmigrateService.port }}
           env:
             - name: VELARIS_CASE_DATABASE_URL
-              value: {{ include "helix.databaseUrl" . | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "helix.dbSecretName" . }}
+                  key: {{ include "helix.dbSecretKey" . }}
             - name: VELARIS_CASE_DATABASE_BACKEND
               value: {{ include "helix.databaseBackend" . | quote }}
             - name: VELARIS_CASE_REDIS_URL
@@ -47,15 +55,25 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+          securityContext:
+            {{- include "helix.containerSecurityContext" . | nindent 12 }}
           resources:
             {{- toYaml .Values.hxmigrateService.resources | nindent 12 }}
+          # Startup probe: the boot budget lives HERE, not in a liveness
+          # `initialDelaySeconds` that has to guess. Liveness and readiness are
+          # held off until this passes, so a slow first boot (migrations, a cold
+          # model, a busy node) is waited out instead of being restarted in a
+          # loop — and once it passes, liveness reacts at its own quick period.
+          # 30 x 5s = up to 150s to come up; after that the pod is restarted.
+          startupProbe:
+            httpGet: { path: /health, port: {{ .Values.hxmigrateService.port }} }
+            periodSeconds: 5
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /ready, port: {{ .Values.hxmigrateService.port }} }
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet: { path: /health, port: {{ .Values.hxmigrateService.port }} }
-            initialDelaySeconds: 30
             periodSeconds: 20
 ---
 apiVersion: v1

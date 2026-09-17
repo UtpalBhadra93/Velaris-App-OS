@@ -330,8 +330,23 @@ class TestGraphAPI:
         finally:
             _clear()
         assert r.status_code == 200
-        assert "d3js.org" in r.text
         assert "HxGraph" in r.text
+        # The page must not reach a CDN for its renderer: the graph screen was
+        # dead on any install without internet, and a third party's server was
+        # a runtime dependency of a sovereignty-first product.
+        assert "d3js.org" not in r.text
+        assert "/api/v1/graph/vendor/d3.js" in r.text
+
+    async def test_the_vendored_d3_is_served_by_this_install(self, client):
+        """Unauthenticated on purpose — an iframe's `<script src>` sends no
+        Authorization header, and the file is an unmodified public library with
+        no data in it. What needs gating is /visualize, and that is gated."""
+        r = await client.get("/api/v1/graph/vendor/d3.js")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("application/javascript")
+        assert "immutable" in r.headers.get("cache-control", "")
+        assert r.text.startswith("// https://d3js.org")
+        assert "forceSimulation" in r.text
 
     async def test_path_endpoint(self, client, session, case_type):
         await sync_graph(session)

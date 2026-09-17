@@ -387,25 +387,13 @@ async def stage_insight(
         artifact_type, artifact_id = "rule", str(rule.id)
 
     elif i.proposal_kind in ("sla_duration", "routing", "reorder"):
-        if i.proposal_kind == "sla_duration":
-            clean = proposal.get("policy") or {}
-            pid = proposal.get("replaces_policy_id")
-            policies = [p for p in definition.get("sla_policies", [])
-                        if isinstance(p, dict)]
-            if not any(p.get("id") == pid for p in policies):
-                raise HTTPException(409, f"SLA policy {pid!r} no longer exists — "
-                                         f"re-scan")
-            remainder = [p for p in policies if p.get("id") != pid]
-            errors = sla_builder.validate_sla_draft(
-                {"policy": clean}, {**definition, "sla_policies": remainder})
-            patched = {**definition, "sla_policies": [*remainder, clean]}
-        elif i.proposal_kind == "routing":
-            errors = routing_builder.validate_routing_draft(proposal, definition)
-            patched = None if errors else routing_builder.patch_step_assignment(
-                definition, proposal)
-        else:  # reorder
-            patched = proposal.get("definition_json")
-            errors = gates.validate_reorder(definition, patched)
+        # One implementation of "what does this proposal actually change",
+        # shared with F-08's healing ladder — see `hxevolve.patch`. Two copies
+        # would eventually disagree about the same proposal.
+        from case_service.hxevolve import patch as evolve_patch
+
+        patched, errors = evolve_patch.validate_and_patch(
+            definition, i.proposal_kind, proposal)
         if errors:
             raise HTTPException(409, "Proposal no longer valid against the current "
                                      "definition: " + "; ".join(errors))

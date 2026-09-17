@@ -8,7 +8,7 @@ from pathlib import Path
 
 import structlog
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from velaris_sdk.config.brand import BRAND_NAME
 from helix_engine.compiler import BPMNCompiler
@@ -100,7 +100,22 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-async def ready() -> dict[str, str]:
+async def ready(response: Response) -> dict[str, str]:
+    """Readiness — and it ANSWERS 503 when the engine is not ready.
+
+    Until 2026-09-17 this always returned 200 with a status word in the body, so
+    a Kubernetes readiness probe pointed at it passed no matter what: an engine
+    that had fallen back to the IN-MEMORY store (no database, no persistence)
+    reported itself ready and took traffic. A probe reads the status code.
+
+    **The database is what decides.** Without it the engine keeps deployed
+    processes in memory, loses them on restart, and every pod holds a different
+    set — so it must not be in the load balancer. Temporal is reported and
+    retried here (the reconnect below), but it does not fail readiness on its
+    own: the engine still compiles, deploys and lists processes without it, and
+    flapping every pod out of service because a workflow backend blipped is the
+    failure mode liveness probes are warned about.
+    """
     from helix_engine.temporal.client import is_connected, connect
     from helix_engine.temporal.worker import start_worker
     from helix_engine.db.session import is_db_connected
@@ -120,13 +135,33 @@ async def ready() -> dict[str, str]:
             app.state.temporal_reconnecting = False
 
     temporal_ok = is_connected()
-    db_ok = is_db_connected()
+    # A REAL check, not "was an engine object created".
+    #
+    # `is_db_connected()` returns True as soon as `create_async_engine` has been
+    # called — which happens even when the database is unreachable — and the
+    # startup path falls back to the in-memory store on failure. So the two
+    # signals that matter are: did we fall back (`app.state.is_pg`), and does the
+    # database answer right now. Without both, a pod holding its processes in RAM
+    # reported "database: connected".
+    db_ok = bool(getattr(app.state, "is_pg", False)) and is_db_connected()
+    if db_ok:
+        try:
+            from sqlalchemy import text
+            from helix_engine.db.session import get_session
+
+            async with get_session() as session:
+                await session.execute(text("SELECT 1"))
+        except Exception as exc:                                  # noqa: BLE001
+            logger.warning(f"{BRAND_NAME}_readiness_db_check_failed", error=str(exc))
+            db_ok = False
     if temporal_ok and db_ok:
         status = "ready"
     elif temporal_ok or db_ok:
         status = "degraded"
     else:
         status = "unavailable"
+    if not db_ok:
+        response.status_code = 503
     return {"status": status, "database": "connected" if db_ok else "unavailable",
             "temporal": "connected" if temporal_ok else "unavailable"}
 

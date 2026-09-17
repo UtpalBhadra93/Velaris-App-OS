@@ -27,6 +27,12 @@ _DEFAULTS: dict[str, list[str]] = {
     "/documents":      ["case_worker", "admin"],
     "/inbox":          ["case_worker", "admin"],
     "/case-designer":  ["designer", "admin"],
+    # 198 — the status set and action configuration. Absent from here, the
+    # frontend's `getRouteRoles` returns [] and `RequireRole` denies everybody,
+    # so the page renders "not found" while the route, the nav entry and the
+    # sitemap all look correct. The nav-data defaults only apply until this
+    # endpoint answers.
+    "/case-config":    ["designer", "admin"],
     "/form-builder":   ["designer", "admin"],
     "/nlp-builder":    ["designer", "admin"],
     "/modeler":        ["designer", "admin"],
@@ -83,7 +89,23 @@ async def get_permissions(
     setting = await session.get(SystemConfigModel, _KEY)
     if setting is None or setting.value is None:
         return PermissionsMap(permissions=_DEFAULTS)
-    return PermissionsMap(permissions=setting.value)
+
+    # **Defaults UNDER the stored map, never instead of it.**
+    #
+    # The stored value used to replace `_DEFAULTS` outright, so a route added to
+    # this file after an operator had saved the matrix once was simply absent
+    # from the answer — and an absent route means `getRouteRoles` returns `[]`,
+    # `RequireRole` denies everybody, and the page renders "not found" while the
+    # route, the nav entry and the sitemap all look perfectly correct. It is
+    # invisible on a fresh install (no stored row, defaults used) and permanent
+    # on any install that has ever opened the permissions screen.
+    #
+    # Found on 2026-09-07 with `/case-config`; it would have silently swallowed
+    # every route added from here on. An operator's saved choices still win for
+    # every route they actually made a choice about — this only supplies the
+    # ones they have never seen.
+    merged = {**_DEFAULTS, **(setting.value or {})}
+    return PermissionsMap(permissions=merged)
 
 
 @router.put("/admin/permissions", response_model=PermissionsMap)

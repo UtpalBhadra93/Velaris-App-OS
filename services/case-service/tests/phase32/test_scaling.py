@@ -258,6 +258,94 @@ def test_10_helm_chart_files_exist():
     assert not missing, f"missing templates: {missing}"
 
 
+def test_10b_every_http_deployment_probes_correctly():
+    """The probe shape, pinned (2026-09-17).
+
+    Three things, each of which has been wrong here before:
+
+    * **Readiness checks the DATABASE (`/ready`), liveness only the process
+      (`/health`).** case-service probed `/health` for both until the August
+      Kubernetes pass and reported Ready with no database behind it; the engine
+      kept that shape until 2026-09-17, where it is worse — without a database
+      the engine keeps deployed processes in one pod's memory.
+    * **Liveness must never check the database.** Restarting every pod because
+      the database blipped turns a database outage into a platform outage.
+    * **A startup probe owns the boot budget**, so a slow first boot is waited
+      out rather than restarted in a loop.
+    """
+    from pathlib import Path
+    base = Path(__file__).parents[4] / "deploy" / "helm" / "velaris" / "templates"
+    for name in ("case-service-deployment.yaml", "analytics-service-deployment.yaml",
+                 "hxgraph-service-deployment.yaml", "hxmigrate-service-deployment.yaml",
+                 "engine-deployment.yaml"):
+        src = (base / name).read_text()
+        for probe in ("startupProbe:", "readinessProbe:", "livenessProbe:"):
+            assert probe in src, f"{name} has no {probe}"
+        after = lambda p: src.split(p, 1)[1].split("Probe:", 1)[0]
+        assert "path: /health" in after("startupProbe:"), name
+        assert "path: /ready" in after("readinessProbe:"), f"{name} readiness must check the database"
+        assert "path: /health" in after("livenessProbe:"), f"{name} liveness must NOT check the database"
+        assert "failureThreshold" in after("startupProbe:"), name
+
+
+def test_10c_workloads_are_hardened_and_carry_no_plaintext_password():
+    """What a cluster deploy found on 2026-09-17, pinned.
+
+    * **No securityContext at all** on our six deployments (the bundled
+      PostgreSQL and Valkey subcharts had theirs from day one), so containers
+      could escalate privileges and kept every capability.
+    * **The default ServiceAccount token was mounted** into pods that never
+      call the Kubernetes API — a credential sitting there for anything that
+      gets in.
+    * **The database URL, password and all, was an inline env value** in every
+      deployment: readable by anyone who can `get deployments`, which is a much
+      wider group than `get secrets`.
+    """
+    from pathlib import Path
+    base = Path(__file__).parents[4] / "deploy" / "helm" / "velaris"
+    assert (base / "templates" / "db-secret.yaml").exists()
+    for name in ("case-service", "analytics-service", "hxgraph-service",
+                 "hxmigrate-service", "engine", "worker"):
+        src = (base / "templates" / f"{name}-deployment.yaml").read_text()
+        assert "automountServiceAccountToken: false" in src, name
+        assert 'include "helix.podSecurityContext"' in src, name
+        assert 'include "helix.containerSecurityContext"' in src, name
+        assert 'include "helix.databaseUrl"' not in src, (
+            f"{name}: the database URL must come from the Secret, not inline")
+        if "DATABASE_URL" in src:
+            assert "secretKeyRef" in src, name
+    helpers = (base / "templates" / "_helpers.tpl").read_text()
+    for want in ("runAsNonRoot", "allowPrivilegeEscalation: false",
+                 'drop: ["ALL"]', "seccompProfile"):
+        assert want in helpers, want
+
+
+def test_10d_images_declare_a_numeric_non_root_user():
+    """`runAsNonRoot` fails a pod with "image has non-numeric user" before the
+    container starts, so a named USER is not enough. The engine ran as ROOT
+    until 2026-09-17 — the one image that did — and every image now pins uid
+    10001. Found by deploying the chart to a cluster, not by reading it."""
+    from pathlib import Path
+    root = Path(__file__).parents[4]
+    for df in ("services/case-service/Dockerfile", "services/analytics-service/Dockerfile",
+               "services/hxgraph-service/Dockerfile", "services/hxmigrate-service/Dockerfile",
+               "engine/Dockerfile"):
+        src = (root / df).read_text()
+        assert "USER 10001:10001" in src, f"{df} must run as a numeric non-root uid"
+
+
+def test_10e_the_case_service_image_carries_hxarbiter_core():
+    """25 modules import `hxarbiter_core`, one of them at import time through
+    `api/routers/hxnexus.py`. It is a workspace library, not a PyPI package, and
+    the Dockerfile never copied it — so every case-service image built since
+    HxArbiter shipped died at startup with ModuleNotFoundError. The host install
+    hid it: there the library is an editable install in the workspace venv."""
+    from pathlib import Path
+    src = (Path(__file__).parents[4] / "services" / "case-service" / "Dockerfile").read_text()
+    assert "libs/hxarbiter-core" in src
+    assert "pip install --break-system-packages -e /app/libs/hxarbiter-core" in src
+
+
 def test_11_values_yaml_has_autoscaling_keys():
     import yaml
     from pathlib import Path
@@ -280,3 +368,55 @@ async def test_12_redis_client_falls_back_gracefully(monkeypatch):
     monkeypatch.setattr("velaris_shared.config.get_settings", lambda: FakeSettings())
     out = await rc.get_redis()
     assert out is None
+
+
+# ── Bundled images are pinned, not floating (found 2026-08-26) ──────
+#
+# The chart pinned the *chart* version and left the *image* floating. Three of
+# the four database/cache subcharts default to `bitnami/<name>:latest`, so two
+# clusters installing the same chart version a month apart run different
+# database builds — and a rescheduled pod silently upgrades a live database.
+# Bitnami's 2025 policy leaves only `latest` in the free namespace, so the pin
+# has to be a DIGEST rather than a version tag.
+
+
+def _bundled_images() -> dict:
+    import yaml
+    from pathlib import Path
+    values = yaml.safe_load(
+        (Path(__file__).parents[4] / "deploy" / "helm" / "velaris" / "values.yaml").read_text())
+    return {name: values[name].get("image") or {}
+            for name in ("postgresql", "mysql", "mariadb", "valkey")}
+
+
+def test_13_no_bundled_database_image_floats():
+    """`latest` is only allowed when a digest nails it down."""
+    floating = []
+    for name, image in _bundled_images().items():
+        if not image.get("digest"):
+            floating.append(f"{name} (tag={image.get('tag')!r}, no digest)")
+    assert not floating, (
+        "bundled image(s) are not pinned: " + ", ".join(floating) +
+        ". An unpinned image is a silent database upgrade on a customer's "
+        "cluster, and Bitnami's free namespace keeps only `latest`, so the pin "
+        "must be a digest."
+    )
+
+
+def test_14_the_digests_are_real_sha256_references():
+    for name, image in _bundled_images().items():
+        digest = image.get("digest", "")
+        assert digest.startswith("sha256:") and len(digest) == 71, (
+            f"{name}: {digest!r} is not a sha256 digest")
+
+
+def test_15_mysql_points_at_an_image_that_exists():
+    """`docker.io/bitnami/mysql` is EMPTY — no `latest`, no version tags at all
+    — so the tag this chart pinned could not be pulled and `mysql.enabled=true`
+    would ImagePullBackOff on a fresh cluster. The image lives on under
+    `bitnamilegacy/`, which is frozen: no updates, no security fixes. Pointing
+    there is what makes the path work; the values file says out loud that an
+    operator running MySQL for real should bring their own database."""
+    mysql = _bundled_images()["mysql"]
+    assert mysql.get("repository") != "bitnami/mysql", (
+        "bitnami/mysql has no tags at all — a bundled MySQL cannot start from it")

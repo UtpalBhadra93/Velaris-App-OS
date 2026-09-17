@@ -273,4 +273,36 @@ ON DUPLICATE KEY UPDATE
 -- the first, and the failure mode is the one this file keeps warning about: an
 -- operator who has configured the feature correctly and cannot see why it does
 -- nothing.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- v2.5.1, 2026-08-27 — calendar import, subscriptions and export.
+--
+-- **No rows here either.** A subscription is created by a user and reaches only
+-- the hosts named in VELARIS_CASE_CALENDAR_FEED_HOSTS; unset, the feature cannot
+-- be used at all. That environment variable IS the switch, and a manifest row on
+-- top of it would be a second one that can disagree with the first.
+--
+-- Migrations 175 and 176 are additive: two columns on calendar_events, one on
+-- user_absences, one new table, and four indexes. Nothing renamed, nothing
+-- dropped, and every existing row keeps the behaviour it had — source defaults
+-- to 'manual', which is what every calendar entry created before this was.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- v3.0.0, prepared 2026-09-17 — HxArbiter, the AI-era features F-00…F-12, the
+-- rep desk, case actions and statuses, and the market-gap backlog.
+--
+-- **No rows.** Every feature in this release has exactly one switch already, and
+-- a manifest row would be a second one that can disagree with it:
+--   * HxArbiter — its own namespace ceilings, every one shipped at `shadow`;
+--   * F-00…F-12, audit streaming, OCR, HxShield responses — their own settings,
+--     all unset = off;
+--   * the rep desk — the platform release flag AND the tenant's marketplace
+--     install, both absent on upgrade;
+--   * bulk stage moves and moving a case between tenants — new privileges held by
+--     administrators, no switch at all.
+--
+-- The one breaking change is not a feature key: migration 198 removes six case
+-- routes (see releases/notes/v3.0.0.md §Case actions). Migrations 177–205 are
+-- additive apart from that route change and 197's data-only tenant backfill.
 -- ══════════════════════════════════════════════════════════════════════════════

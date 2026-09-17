@@ -1,0 +1,31 @@
+Velaris {{ .Chart.AppVersion | default .Chart.Version }} installed as {{ .Release.Name }}.
+
+  kubectl get pods -l app=case-service
+  kubectl port-forward svc/{{ include "helix.caseServiceName" . }} 8200:{{ .Values.caseService.port }}
+
+Three things this chart cannot decide for you:
+
+{{ if .Values.worker.enabled }}1. THE WORKER NEEDS TEMPORAL, AND THIS CHART DOES NOT INSTALL IT.
+   It is pointed at {{ .Values.worker.temporalHost }}. If nothing answers there the
+   worker pods CrashLoopBackOff — the API keeps serving, but nothing advances a
+   case in the background. Install Temporal, point `worker.temporalHost` at it,
+   or set `worker.enabled=false` until you have one.
+{{- else }}1. The worker is disabled, so nothing advances cases in the background.
+{{- end }}
+
+{{ if not (or .Values.caseService.documents.persistence.enabled .Values.caseService.documents.existingClaim) }}2. UPLOADED DOCUMENTS ARE NOT PERSISTED.
+   The default store is a path inside the container: a document is lost when its
+   pod restarts, and with more than one replica each pod holds a different set.
+   Either point the platform at object storage
+   (`caseService.env.VELARIS_CASE_STORAGE_BACKEND=minio`) or enable
+   `caseService.documents.persistence` (ReadWriteMany if replicas > 1).
+{{- else }}2. Documents are on a volume ({{ .Values.caseService.documents.mountPath }}).
+   With more than one replica that volume must be ReadWriteMany.
+{{- end }}
+
+{{ if not .Values.networkPolicy.enabled }}3. NO NETWORK POLICY.
+   Any pod in the cluster can reach these services on their ports directly,
+   bypassing the gateway. Set `networkPolicy.enabled=true` if your CNI enforces
+   policies.
+{{- else }}3. NetworkPolicies are on. Check your CNI actually enforces them.
+{{- end }}

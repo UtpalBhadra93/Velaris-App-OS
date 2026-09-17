@@ -12,6 +12,8 @@ from fastapi import FastAPI
 
 from case_service.api.routers import (
     assignments,
+    case_config,
+    case_tenant_transfers,
     case_types,
     cases,
     data_models,
@@ -52,6 +54,7 @@ from case_service.api.routers.knowledge import router as knowledge_router
 from case_service.api.routers.apps import router as apps_router
 from case_service.api.routers.hxbridge import router as hxbridge_router, webhook_router
 from case_service.api.routers.hxsync import router as hxsync_router
+from case_service.api.routers.audit_stream import router as audit_stream_router
 from case_service.api.routers.hxglobal import router as hxglobal_router
 from case_service.api.routers.hxshield import router as hxshield_router
 from case_service.api.routers.hxfusion import router as hxfusion_router
@@ -65,6 +68,19 @@ from case_service.api.routers.comms import router as comms_router
 from case_service.api.routers.docintel import router as docintel_router
 from case_service.api.routers.devconn import router as devconn_router
 from case_service.api.routers.calendar import router as calendar_router      # Calendar P1
+from case_service.api.routers.arbiter import router as arbiter_router        # HxArbiter ARB-A
+from case_service.api.routers.agents import router as agents_router          # F-00 agent identity
+from case_service.api.routers.agents import workforce_router as agents_workforce_router  # F-05
+from case_service.api.routers.capture import router as capture_router  # F-06 ambient capture
+from case_service.api.routers.ai_ledger import router as ai_ledger_router    # F-01 AI decision ledger
+from case_service.api.routers.model_market import router as model_market_router  # F-07 sovereign model marketplace
+from case_service.api.routers.healing import router as healing_router  # F-08 self-healing processes
+from case_service.api.routers.handoff import router as handoff_router  # F-09 agent handoff
+from case_service.api.routers.field import router as field_router  # F-10 field operations
+from case_service.api.routers.intent import router as intent_router  # F-11 intent execution
+from case_service.api.routers.negotiate import router as negotiate_router  # F-12 negotiation
+from case_service.api.routers.engage import router as engage_router  # item 12 rep desk
+from case_service.api.routers.proofs import router as proofs_router          # F-03 compliance proofs
 from case_service.api.routers.hxdeploy import router as hxdeploy_router
 from case_service.api.routers.hxwork import router as hxwork_router
 from case_service.api.routers.hxcanvas import router as hxcanvas_router
@@ -567,6 +583,68 @@ async def lifespan(app: FastAPI):
         logger.warning("Audit anchor loop unavailable: %s", _e)
     # <<< Group I audit anchoring
 
+    # >>> HxArbiter: seal the decision log so it is evidence, not just rows.
+    # Unconditional, and safe to be so: the sealer only reads decisions and
+    # writes chain rows. On an install where nothing has ever called the engine
+    # it seals nothing and costs one query a minute. A sealer that dies takes
+    # the evidence with it and not the platform — decisions keep being written
+    # and are sealed late when it comes back, because seal_once resumes from
+    # the chain tip rather than from now.
+    try:
+        from case_service.hxarbiter.chain import sealer_loop
+        _asyncio.create_task(sealer_loop())
+        logger.info("HxArbiter decision sealer started")
+    except Exception as _e:
+        logger.warning("HxArbiter decision sealer unavailable: %s", _e)
+    # <<< HxArbiter sealer
+
+    # >>> F-01: seal the AI decision ledger, for the same reasons and with the
+    # same guarantees. Separate loop rather than folded into the one above: the
+    # two chains cover different tables and a failure sealing one must not stop
+    # the other, since each is the evidence for a different claim.
+    try:
+        from case_service.ledger.chain import sealer_loop as _ledger_sealer
+        _asyncio.create_task(_ledger_sealer())
+        logger.info("AI ledger sealer started")
+    except Exception as _e:
+        logger.warning("AI ledger sealer unavailable: %s", _e)
+    # <<< AI ledger sealer
+
+    # >>> F-05: the nightly agent scorecard sweep.
+    # Its own switch, default off, and the task is created either way — the
+    # loop itself reports "OFF" and returns, so an operator reading the startup
+    # log sees the feature exists and how to enable it, rather than seeing
+    # nothing and concluding it was never built.
+    try:
+        from case_service.agents.workforce import scorecard_cron as _scorecard_cron
+        _asyncio.create_task(_scorecard_cron())
+    except Exception as _e:
+        logger.warning("Agent scorecard sweep unavailable: %s", _e)
+    # <<< F-05 scorecard sweep
+
+    # >>> F-06: the ambient capture sweep.
+    # Off by default and gated twice — this box's switch and each tenant's own.
+    # The loop reports "OFF" and returns rather than not existing, so the
+    # startup log says the feature is here and how to switch it on.
+    try:
+        from case_service.capture.service import auto_cron as _capture_cron
+        _asyncio.create_task(_capture_cron())
+    except Exception as _e:
+        logger.warning("Ambient capture sweep unavailable: %s", _e)
+    # <<< F-06 capture sweep
+
+    # >>> F-08: the self-healing watch sweep.
+    # Off by default and gated twice, exactly like F-06. This one decides
+    # whether an applied change is called HEALED or is rolled back, so a sweep
+    # that silently was not running would leave changes watched forever — the
+    # loop logs which state it is in.
+    try:
+        from case_service.healing.service import watch_cron as _healing_cron
+        _asyncio.create_task(_healing_cron())
+    except Exception as _e:
+        logger.warning("Self-healing watch sweep unavailable: %s", _e)
+    # <<< F-08 healing sweep
+
     # >>> RPA bot runner
     # Default OFF: this loop starts containers on the host, so it is opt-in per
     # deployment. Its own `start()` checks the flag and logs when disabled, so a
@@ -966,6 +1044,8 @@ def create_app() -> FastAPI:
     prefix = "/api/v1"
     app.include_router(case_types.router, prefix=prefix)
     app.include_router(cases.router, prefix=prefix)
+    app.include_router(case_config.router, prefix=prefix)
+    app.include_router(case_tenant_transfers.router, prefix=prefix)
     app.include_router(assignments.router, prefix=prefix)
     app.include_router(queues.router, prefix=prefix)
     app.include_router(sla.router, prefix=prefix)
@@ -1014,6 +1094,7 @@ def create_app() -> FastAPI:
     app.include_router(hxbridge_router, prefix=prefix)
     app.include_router(webhook_router, prefix=prefix)
     app.include_router(hxsync_router, prefix=prefix)
+    app.include_router(audit_stream_router, prefix=prefix)
     app.include_router(hxglobal_router, prefix=prefix)
     app.include_router(hxshield_router, prefix=prefix)
     app.include_router(hxfusion_router, prefix=prefix)
@@ -1026,6 +1107,21 @@ def create_app() -> FastAPI:
     app.include_router(docintel_router, prefix=prefix)   # P52
     app.include_router(devconn_router,   prefix=prefix)   # P53
     app.include_router(calendar_router, prefix=prefix)  # Calendar P1
+    app.include_router(arbiter_router, prefix=prefix)   # HxArbiter ARB-A
+    # F-05 first: `/agents/workforce` must be matched before `/agents/{agent_id}`,
+    # which would otherwise capture it and 422 on the UUID parse.
+    app.include_router(agents_workforce_router, prefix=prefix)  # F-05 roster
+    app.include_router(agents_router, prefix=prefix)    # F-00 agent identity
+    app.include_router(capture_router, prefix=prefix)   # F-06 ambient capture
+    app.include_router(ai_ledger_router, prefix=prefix) # F-01 AI decision ledger
+    app.include_router(model_market_router, prefix=prefix)  # F-07 sovereign model marketplace
+    app.include_router(healing_router, prefix=prefix)       # F-08 self-healing processes
+    app.include_router(handoff_router, prefix=prefix)       # F-09 agent handoff
+    app.include_router(field_router, prefix=prefix)         # F-10 field operations
+    app.include_router(intent_router, prefix=prefix)        # F-11 intent execution
+    app.include_router(negotiate_router, prefix=prefix)     # F-12 negotiation
+    app.include_router(engage_router, prefix=prefix)        # item 12 rep desk
+    app.include_router(proofs_router, prefix=prefix)    # F-03 compliance proofs
     app.include_router(hxdeploy_router,  prefix=prefix)   # P55
     app.include_router(hxdbmigrate_router, prefix=prefix)  # HxDBMigrate
     app.include_router(hxreplay_router, prefix=prefix)      # HxReplay

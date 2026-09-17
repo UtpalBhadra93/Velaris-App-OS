@@ -20,7 +20,13 @@ from case_service.testsuite.dsl import Step, TestCase
 _HIGH_LEVEL = {
     "create_case":       ("POST",  "/api/v1/cases"),
     "stage_transition":  ("POST",  "/api/v1/cases/{{case_id}}/stage-transition"),
-    "resolve_case":      ("POST",  "/api/v1/cases/{{case_id}}/resolve"),
+    # Through the DISPATCHER since migration 198 removed the six named routes
+    # on 2026-09-07. This entry still pointed at `/resolve`, so every generated
+    # scenario using `resolve_case` had been posting to a 404 — a step that
+    # cannot pass, in the feature whose whole job is telling you whether your
+    # process still works. Missed by 198's sweep, which counted Studio call
+    # sites, tests and docs; this is production code that composes a URL.
+    "resolve_case":      ("POST",  "/api/v1/cases/{{case_id}}/actions/resolve"),
     "submit_via_portal": ("POST",  "/api/v1/portal/{{slug}}/submit"),
     "assert_notification_sent": ("GET", "/api/v1/testsuite/notifications/{{case_id}}"),
 }

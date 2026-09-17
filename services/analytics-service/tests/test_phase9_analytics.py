@@ -91,8 +91,14 @@ class TestAnalyticsDashboard:
         c2 = await client.post("/api/v1/cases", json={"case_type_id": ct_id, "data": {}})
         c3 = await client.post("/api/v1/cases", json={"case_type_id": ct_id, "data": {}})
 
-        # Resolve one
-        await client.post(f"/api/v1/cases/{c2.json()['id']}/resolve", json={})
+        # Resolve one — through the DISPATCHER. `POST /cases/{id}/resolve` was
+        # one of the six named routes migration 198 removed on 2026-09-07, and
+        # this call site was missed by that sweep: it lives in
+        # analytics-service, and the sweep counted case-service's tests. It has
+        # been answering 404 ever since, so the assertion below tested nothing.
+        resolved = await client.post(
+            f"/api/v1/cases/{c2.json()['id']}/actions/resolve", json={})
+        assert resolved.status_code == 200, resolved.text
 
         resp = await client.get("/api/v1/analytics/dashboard")
         data = resp.json()

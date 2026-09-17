@@ -81,17 +81,22 @@ def queue_call(
     status: str = "ok",
     error_type: str | None = None,
     tenant_id: str | None = None,
-) -> None:
+) -> dict | None:
     """Sync, sessionless — callable from inside the backend wrapper.
 
     Never raises: a metrics failure must not turn a working completion into a
     failed request.
+
+    Returns the metric it queued, or None if it could not build one. F-02 reads
+    that return value to price the call: the token counts here are the ones
+    actually measured at the chokepoint, and re-deriving them at the call site
+    would produce a second, quietly different number for the same completion.
     """
     try:
         prompt_tokens = estimate_tokens_from_chars(prompt_chars)
         completion_tokens = estimate_tokens_from_chars(completion_chars)
         cost, rate_known = estimate_cost_usd(model, prompt_tokens, completion_tokens)
-        _PENDING.append({
+        metric = {
             "provider": provider,
             "model": model,
             "route": route,
@@ -108,9 +113,12 @@ def queue_call(
             "error_type": error_type,
             "tenant_id": tenant_id,
             "at": datetime.now(timezone.utc),
-        })
+        }
+        _PENDING.append(metric)
+        return metric
     except Exception:                      # pragma: no cover — defensive
         logger.debug("llmops: metric dropped", exc_info=True)
+        return None
 
 
 async def flush_pending(session: AsyncSession) -> int:

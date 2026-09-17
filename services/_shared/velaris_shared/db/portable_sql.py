@@ -31,8 +31,14 @@ def duration_seconds(session: AsyncSession, start: Any, end: Any) -> Any:
     ``EXTRACT(epoch FROM ts)`` is PostgreSQL-only: MySQL and MariaDB reject it
     with a syntax error at the word ``epoch``, which surfaced as a 500 on
     /analytics/overview for every MySQL install. TIMESTAMPDIFF is the portable
-    spelling there.
+    spelling there. SQLite, which the test harness runs on, has neither and
+    needs julianday().
     """
-    if dialect_of(session) == "postgresql":
+    dialect = dialect_of(session)
+    if dialect == "postgresql":
         return extract("epoch", end) - extract("epoch", start)
+    if dialect == "sqlite":
+        # SQLite has neither EXTRACT(epoch) nor TIMESTAMPDIFF. julianday()
+        # returns days as a float, so the difference times 86400 is seconds.
+        return (func.julianday(end) - func.julianday(start)) * 86400.0
     return func.timestampdiff(text("SECOND"), start, end)

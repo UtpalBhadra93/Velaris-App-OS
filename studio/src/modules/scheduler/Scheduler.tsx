@@ -89,6 +89,11 @@ const TEMPLATES: Record<string, Record<string, unknown>> = {
   report: { query: { metric: "snapshot" }, format: "csv",
             email_to: ["ops@example.com"] },
   sync: { all_destinations: true, graph: true },
+  // Empty on purpose: with no `subscription_ids` this refreshes every enabled
+  // subscription in the tenant, and each one is still only fetched when its own
+  // interval says so. The schedule sets the granularity; the subscription sets
+  // the rate.
+  calendar_feed: {},
 };
 
 const COMMON_CRONS = [
@@ -343,6 +348,19 @@ export default function Scheduler() {
               </div>
             );
           })()}
+
+          {draft.action_kind === "calendar_feed" && (
+            <div style={{ marginBottom: "var(--space-md)" }}>
+              <span style={label}>Subscribed calendars</span>
+              <small style={{ display: "block", color: "var(--text-muted)" }}>
+                An empty config refreshes every enabled subscription in this
+                tenant — each one is still only fetched when its own refresh
+                interval is due, so running this every 15 minutes is fine.
+                Name <code>subscription_ids</code> to narrow it, or set{" "}
+                <code>force</code> to ignore the intervals.
+              </small>
+            </div>
+          )}
 
           {draft.action_kind === "sync" && targets.syncDestinations.length > 0 && (
             <div style={{ marginBottom: "var(--space-md)" }}>

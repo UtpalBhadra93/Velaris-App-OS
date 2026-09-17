@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useFeatureFlags } from "@/app/FeatureFlagsContext";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
 
 type Tenant = {
   id: string;
@@ -73,26 +74,26 @@ export default function PortalAdmin() {
   const tabs: Tab[] = ["tenants", "submissions", ...(isEnabled("customer_accounts") ? ["customers" as Tab] : [])];
 
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" }}>
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 4, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border-subtle)", paddingBottom: 0 }}>
-        {tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: "8px 20px", border: "none", cursor: "pointer", fontSize: 13,
-            background: "none", fontFamily: "var(--font-body)",
-            color: tab === t ? "var(--accent)" : "var(--text-secondary)",
-            fontWeight: tab === t ? 600 : 400,
-            borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
-            marginBottom: -1,
-          }}>
-            {t === "tenants" ? "Portal Config" : t === "submissions" ? "Submissions" : "Customers"}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Portal admin"
+        tabs={tabs.map(t => ({
+          key: t,
+          label: t === "tenants" ? "Portal Config"
+               : t === "submissions" ? "Submissions" : "Customers",
+        }))}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
 
       {tab === "tenants" && <TenantsTab />}
       {tab === "submissions" && <SubmissionsTab />}
       {tab === "customers" && <CustomersTab />}
+    </div>
     </div>
   );
 }

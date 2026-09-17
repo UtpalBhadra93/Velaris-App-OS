@@ -141,6 +141,24 @@ def test_the_installer_and_the_updater_both_preflight():
         assert needs in text, f"{script} does not check ports before binding them"
 
 
+def test_both_scripts_stop_a_migration_at_its_first_error():
+    """A migration that fails must FAIL, on an upgrade as much as on an install.
+
+    Without `-v ON_ERROR_STOP=1`, psql runs the statements after a rejected one,
+    exits 0, and the caller records the file in `schema_migrations` as applied —
+    a half-applied migration that will never run again. `setup-velaris.sh`
+    learned this from migration 080 and carries the flag with a comment; the
+    UPDATE path, which is the one that runs unattended on somebody else's
+    machine, did not have it until 2026-09-10.
+    """
+    for script in ("setup-velaris.sh", "update-velaris.sh"):
+        text = (ROOT / script).read_text()
+        assert "migration_file" in text, f"{script} no longer applies migrations"
+        assert "ON_ERROR_STOP=1" in text, (
+            f"{script} applies migrations without ON_ERROR_STOP — a rejected "
+            f"statement would be recorded as a successful migration")
+
+
 def test_the_updater_never_prompts_for_a_port():
     """It runs on a timer; a question there hangs forever, and a port chosen by
     a script at 3am is a port nobody knows about."""
@@ -213,8 +231,14 @@ def test_the_public_portal_has_its_own_tighter_zone():
     """The anonymous surface must not share a budget with authenticated Studio
     traffic — one of them bursts legitimately and the other is the attack."""
     conf = NGINX.read_text()
-    assert re.search(r"zone=velaris_portal:\S+\s+rate=(\d+)r/m", conf), (
-        "the portal needs its own per-minute zone")
+    # The rate itself is substituted (see the configurability test below), so
+    # what is pinned here is that the portal has a zone of its OWN — sharing
+    # the API zone is the defect, whatever number is in it.
+    assert re.search(r"zone=velaris_portal:\S+\s+rate=\S+", conf), (
+        "the portal needs its own zone")
+    assert "VELARIS_GW_RATE_PORTAL" in conf, (
+        "the portal rate must be separately settable from the API rate, or an "
+        "operator raising one raises the anonymous surface too")
     portal_block = conf[conf.index("location /api/v1/portal"):]
     portal_block = portal_block[:portal_block.index("}")]
     assert "limit_req zone=velaris_portal" in portal_block
@@ -230,16 +254,135 @@ def test_the_limit_is_not_keyed_on_a_client_controlled_header():
             f"rate-limit key {m.group(1)} is client-controlled")
 
 
-def test_the_catch_all_is_limited_too():
-    """A limit on some paths is a limit on none — the attacker picks the rest."""
-    conf = NGINX.read_text()
+def _no_placeholders(conf: str) -> str:
+    """`${VELARIS_...}` contains a closing brace, so a naive "block ends at the
+    first }" scan stops INSIDE a proxy_pass and reads half a location. Three
+    locations were silently skipped by exactly that before this existed."""
+    return re.sub(r"\$\{[^}]*\}", "X", conf)
+
+
+def _main_server_block(conf: str) -> str:
+    """The public listener, up to the apps-network edge listener below it.
+
+    The edge listener is deliberately unlimited (its every request arrives via
+    one broker container, so one bucket would be shared by every bot), so it is
+    excluded here rather than asserted about.
+    """
+    start = conf.index("server {")
+    end = conf.index("# ── Apps-network edge listener")
+    return conf[start:end]
+
+
+def test_every_proxying_location_is_limited_not_just_the_catch_all():
+    """A limit on some paths is a limit on none — the attacker picks the rest.
+
+    This is the test that should have existed on 2026-08-24 and did not. The
+    limit was declared in `location /` alone, and **nginx does not add an
+    enclosing limit to a location that has none of its own** — it inherits only
+    when the enclosing level declares one, and neither http nor server did. So
+    eleven named prefixes (analytics, process-mining, graph, hxmigrate,
+    importer, scout, scout-ai, orchestrator, realtime, hxstream, meet) proxied
+    with no rate limit whatsoever, while the test below passed.
+    """
+    conf = _no_placeholders(NGINX.read_text())
+    server = _main_server_block(conf)
+    # A server-level declaration covers every location that declares none.
+    # Read the block's own directives — everything before the first `location`
+    # DIRECTIVE, not before the first time the word appears in a comment.
+    head = []
+    for line in server.splitlines():
+        if re.match(r"\s*location\s", line):
+            break
+        head.append(line)
+    inherited = any(
+        re.match(r"\s*limit_req zone=", line) for line in head)
+
     unlimited = []
-    for m in re.finditer(r"location / \{", conf):
-        block = conf[m.start():]
+    for m in re.finditer(r"location [^\n]*\{", server):
+        block = server[m.start():]
         block = block[:block.index("}") + 1]
-        # A catch-all that refuses everything needs no limit — only the ones
-        # that actually forward traffic do.
-        if "proxy_pass" in block and "limit_req zone=" not in block:
-            unlimited.append(block.splitlines()[0].strip())
+        # Only the locations that actually forward traffic need a limit; one
+        # that returns a literal response or a 404 reaches no service.
+        if "proxy_pass" not in block:
+            continue
+        if "limit_req zone=" in block or inherited:
+            continue
+        unlimited.append(block.splitlines()[0].strip())
     assert not unlimited, (
-        f"catch-all location(s) proxy without a rate limit: {unlimited}")
+        f"location(s) proxy without any rate limit: {unlimited}")
+
+
+def test_the_rates_are_configurable_but_default_to_what_ships():
+    """An operator raising a ceiling must not have to edit a repository file an
+    update overwrites — and an install that sets nothing must render exactly
+    the limits it renders today."""
+    conf = NGINX.read_text()
+    compose = COMPOSE.read_text()
+    for var, shipped in (
+        ("VELARIS_GW_RATE_API", "20r/s"),
+        ("VELARIS_GW_RATE_PORTAL", "30r/m"),
+        ("VELARIS_GW_WS_CONN_MAX", "256"),
+    ):
+        assert "${%s}" % var in conf, f"{var} is not substituted into the gateway config"
+        assert f'{var}: "${{{var}:-{shipped}}}"' in compose, (
+            f"{var} must default to {shipped} in compose — `:-` also covers a "
+            "key that is present but EMPTY, which is how an unset value took "
+            "the gateway down on 2026-08-24.")
+        assert var in re.search(r"NGINX_ENVSUBST_FILTER: \"([^\"]+)\"", compose).group(1), (
+            f"{var} is not in NGINX_ENVSUBST_FILTER, so it renders as the "
+            "literal text ${%s} and nginx refuses to start" % var)
+
+
+def test_a_bad_limit_in_env_is_refused_before_anything_is_touched():
+    """nginx validates a rate when it STARTS. A typo is therefore not a bad
+    ceiling, it is a gateway that will not boot — the same shape as the empty
+    identity secret that took the platform down on 2026-08-24. Both scripts
+    check it while nothing has been changed yet."""
+    for script in ("update-velaris.sh", "setup-velaris.sh"):
+        text = (ROOT / script).read_text()
+        assert "VELARIS_GW_RATE_API" in text, (
+            f"{script} does not validate the gateway limits before starting nginx")
+        assert "[1-9][0-9]*r/[sm]" in text, (
+            f"{script} does not check the rate SHAPE, only its presence")
+
+
+def test_the_long_lived_paths_have_a_connection_cap():
+    """A request limit does not bound a websocket: one request, then the
+    connection is held for up to an hour. Without limit_conn one host can hold
+    every worker connection and no rate limit says a word."""
+    conf = _no_placeholders(NGINX.read_text())
+    assert "limit_conn_zone" in conf
+    server = _main_server_block(conf)
+    for path in ("/api/v1/realtime", "/api/v1/hxstream", "/api/v1/meet"):
+        block = server[server.index(f"location {path} {{"):]
+        block = block[:block.index("}") + 1]
+        assert "limit_conn velaris_ws" in block, (
+            f"{path} holds a connection for proxy_read_timeout and has no cap")
+
+def test_the_gateway_accepts_a_body_as_large_as_the_app_does():
+    """nginx's DEFAULT `client_max_body_size` is 1 MB, and this file never set
+    one, while `config.py::max_upload_bytes` allows 25 MB. The two disagreed by
+    25x, so every document over 1 MB was refused at the door with a bare nginx
+    413 — no code, no reason — by a platform that believed it accepted it.
+    Proven against the running gateway on 2026-09-09: a 2 MB body → 413.
+
+    A scanned PDF, which is exactly what the OCR path exists to read, is almost
+    always over 1 MB."""
+    conf = NGINX.read_text()
+    match = re.search(r"client_max_body_size\s+(\d+)([kKmMgG]?);", conf)
+    assert match, (
+        "the gateway sets no body ceiling, so nginx's 1 MB default silently "
+        "overrides the application's 25 MB limit")
+    size = int(match.group(1))
+    unit = (match.group(2) or "").lower()
+    as_bytes = size * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[unit]
+
+    config_py = (ROOT / "services" / "_shared" / "velaris_shared" / "config.py").read_text()
+    app_limit = re.search(r"max_upload_bytes:\s*int\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)",
+                          config_py)
+    assert app_limit, "max_upload_bytes moved — this test needs updating with it"
+    app_bytes = int(app_limit.group(1)) * int(app_limit.group(2)) * int(app_limit.group(3))
+    assert as_bytes >= app_bytes, (
+        f"the gateway caps bodies at {as_bytes} bytes while the application "
+        f"accepts {app_bytes} — the app must be what refuses, with a coded "
+        f"error, not nginx with a bare 413")

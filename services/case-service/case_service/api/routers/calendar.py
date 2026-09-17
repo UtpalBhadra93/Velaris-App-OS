@@ -23,11 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import (
-    CalendarEventModel, UserAbsenceModel, UserDirectoryModel, UserWorkPatternModel,
+    CalendarEventModel, CalendarSubscriptionModel, UserAbsenceModel,
+    UserDirectoryModel, UserWorkPatternModel,
 )
 from velaris_shared.db.session import get_session
 from velaris_shared.middleware.endpoint_rate_limit import rate_limit
-from case_service.calendar import service
+from case_service.calendar import feeds, service
 from case_service.calendar.invites import send_invitations
 from velaris_shared.config import get_settings
 
@@ -1114,3 +1115,420 @@ async def propose_slots(
     return {"slots": slots, "searched": {"from": body.start.isoformat(),
                                          "to": body.end.isoformat(),
                                          "minutes": body.minutes}}
+
+
+# ── ICS import ────────────────────────────────────────────────────────────
+
+#: Parsing is CPU work on caller-supplied text, and the write is many rows at
+#: once. Bounded so a held-down button cannot become a hundred parses.
+_import_rl = rate_limit(max_calls=6, window_seconds=60, name="calendar-import")
+
+
+class ImportIn(BaseModel):
+    #: The file's contents. A **file**, never a URL: fetching a subscription
+    #: address a caller supplies would point this service at whatever host they
+    #: named, and every real calendar can export an .ics instead.
+    ics: str
+    #: Whose calendar. Defaults to the caller's own; naming somebody else needs
+    #: the same standing that recording their absence needs.
+    user_id: str | None = None
+    #: Default TRUE, like retention's enforcement pass. An import writes many
+    #: rows from a file the operator has usually not read, so the first call
+    #: reports what would happen and changes nothing.
+    dry_run: bool = True
+
+
+@router.post("/import", dependencies=[Depends(_import_rl)])
+async def import_ics(
+    body: ImportIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.imports.write")),
+):
+    """Import an `.ics` export into one person's calendar.
+
+    Closes the last unbuilt piece of the calendar design: `source='import'` has
+    been in the schema's vocabulary since migration 170 with nothing writing it.
+
+    What it does **not** do is the important half. It never approves an absence
+    — an out-of-office block arrives as `requested`, because only an approved
+    absence reroutes a team's work. It never deletes: an event missing from an
+    export has not necessarily been cancelled. It never adopts a row somebody
+    typed, matching only rows it created itself. And it never fills the guest
+    list, which is what `send_invitations` mails.
+    """
+    from case_service.calendar.ics_import import IcsError, apply_import, parse_ics
+
+    subject = str(body.user_id or await _me(session, user))
+    if not await _may_write_for(session, user, subject):
+        raise HTTPException(
+            403, "You can import into your own calendar, or one you manage.")
+    await _known_user(session, subject, user)
+
+    try:
+        parsed = parse_ics(body.ics)
+    except IcsError as exc:
+        # The whole file is refused. A part-applied calendar is worse than none:
+        # the operator cannot tell which half is in.
+        raise HTTPException(400, f"That file could not be read: {exc}")
+
+    if not parsed.events and not parsed.skipped:
+        raise HTTPException(400, "That file holds no events.")
+
+    outcome = await apply_import(
+        session, parsed, tenant_id=_tenant(user), user_id=subject,
+        actor=_actor(user), dry_run=bool(body.dry_run),
+    )
+    if not body.dry_run:
+        await session.commit()
+    return {"user_id": subject, **outcome}
+
+
+# ── subscriptions ("add a calendar by URL") ───────────────────────────────
+
+#: Each refresh is an outbound request this server makes on a caller's say-so.
+#: Bounded so a held-down button cannot become a hundred fetches of somebody
+#: else's calendar server.
+_feed_rl = rate_limit(max_calls=20, window_seconds=60, name="calendar-feed")
+
+
+def _subscription_json(row, *, full: bool) -> dict:
+    """`full` decides whether the URL comes back.
+
+    A Google or Outlook private address **embeds a token** — whoever holds the
+    link can read the calendar — so the URL is a credential in everything but
+    name, and a colleague seeing "Alice has 2 calendars" must not also get the
+    means to read them.
+    """
+    out = {
+        "id": str(row.id), "user_id": row.user_id, "name": row.name,
+        "enabled": row.enabled, "interval_minutes": row.interval_minutes,
+        "last_status": row.last_status,
+        "last_fetched_at": row.last_fetched_at.isoformat() if row.last_fetched_at else None,
+        "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_event_count": row.last_event_count,
+        "consecutive_errors": row.consecutive_errors,
+    }
+    if full:
+        out["url"] = row.url
+        out["last_error"] = row.last_error
+    return out
+
+
+#: How many calendars one person may subscribe to. Each is a standing outbound
+#: request on a timetable, so this bounds what one account can make this server
+#: do — not what it can store.
+MAX_SUBSCRIPTIONS = 20
+
+
+class SubscriptionIn(BaseModel):
+    name: str
+    url: str
+    user_id: str | None = None
+    interval_minutes: int = 60
+    enabled: bool = True
+
+
+class SubscriptionPatchIn(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    interval_minutes: int | None = None
+    enabled: bool | None = None
+
+
+async def _subscription_or_404(session: AsyncSession, subscription_id: uuid.UUID,
+                               user: AuthenticatedUser):
+    from case_service.tenancy.identity import same_tenant
+
+    row = await session.get(CalendarSubscriptionModel, subscription_id)
+    if row is None or not await same_tenant(session, row.tenant_id, _tenant(user)):
+        # 404 rather than 403 outside the tenant: "exists but is not yours" is an
+        # answer nobody needs.
+        raise HTTPException(404, "No such calendar subscription.")
+    return row
+
+
+@router.get("/subscriptions")
+async def list_subscriptions(
+    user_id: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.subscriptions.read")),
+):
+    """Calendars subscribed to. The URL is only returned to somebody who may
+    see the detail — see `_subscription_json`."""
+    subject = user_id or await _me(session, user)
+    full = await _may_see_detail(session, user, subject)
+    if not full:
+        # A subscription NAME is typed by its owner and can be as personal as an
+        # absence's note ("Therapy", "Court"). Detail rights gate the whole row,
+        # not only the URL — listing a colleague's calendars is not a colleague's
+        # business.
+        raise HTTPException(
+            403, "You can list your own calendar subscriptions, or those of "
+                 "somebody you manage.")
+    rows = (await session.execute(
+        select(CalendarSubscriptionModel)
+        .where(CalendarSubscriptionModel.tenant_id == _tenant(user),
+               CalendarSubscriptionModel.user_id == subject)
+        .order_by(CalendarSubscriptionModel.created_at)
+    )).scalars().all()
+    return {"subscriptions": [_subscription_json(r, full=True) for r in rows],
+            "allowed_hosts": feeds.allowed_hosts()}
+
+
+@router.post("/subscriptions", status_code=201, dependencies=[Depends(_feed_rl)])
+async def create_subscription(
+    body: SubscriptionIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.subscriptions.write")),
+):
+    """Subscribe to a calendar published somewhere else.
+
+    Read-only: this reads the feed and never writes back to it. The URL is
+    checked against the operator's allowlist **here and again before every
+    fetch** — a check that only runs at write time is not a control, because DNS
+    moves after it.
+    """
+    subject = str(body.user_id or await _me(session, user))
+    _check_len(body.name, 255, "The name")
+    if not body.name.strip():
+        raise HTTPException(400, "Give the calendar a name.")
+    if not (feeds.MIN_INTERVAL_MINUTES <= body.interval_minutes <= feeds.MAX_INTERVAL_MINUTES):
+        raise HTTPException(
+            400, f"Refresh between every {feeds.MIN_INTERVAL_MINUTES} minutes and "
+                 f"every {feeds.MAX_INTERVAL_MINUTES // 1440} days.")
+    if not await _may_write_for(session, user, subject):
+        raise HTTPException(
+            403, "You can subscribe on your own behalf, or for somebody you manage.")
+    await _known_user(session, subject, user)
+
+    existing = (await session.execute(
+        select(CalendarSubscriptionModel).where(
+            CalendarSubscriptionModel.tenant_id == _tenant(user),
+            CalendarSubscriptionModel.user_id == subject))).scalars().all()
+    if len(existing) >= MAX_SUBSCRIPTIONS:
+        # Each subscription is a standing outbound request this server makes on
+        # a timetable. Unbounded, one account could turn the platform into a
+        # traffic source aimed at whichever hosts the operator allowed.
+        raise HTTPException(
+            400, f"That calendar already has {MAX_SUBSCRIPTIONS} subscriptions, "
+                 f"which is the limit. Remove one first.")
+
+    try:
+        url = await feeds.validate_url(body.url)
+    except feeds.FeedError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    row = CalendarSubscriptionModel(
+        id=uuid.uuid4(), tenant_id=_tenant(user), user_id=subject,
+        name=body.name.strip(), url=url, enabled=body.enabled,
+        interval_minutes=body.interval_minutes, created_by=_actor(user),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _subscription_json(row, full=True)
+
+
+@router.patch("/subscriptions/{subscription_id}",
+              dependencies=[Depends(_feed_rl)])
+async def update_subscription(
+    subscription_id: uuid.UUID,
+    body: SubscriptionPatchIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.subscriptions.write")),
+):
+    row = await _subscription_or_404(session, subscription_id, user)
+    if not await _may_write_for(session, user, row.user_id):
+        raise HTTPException(403, "That is not your calendar subscription.")
+
+    if body.name is not None:
+        _check_len(body.name, 255, "The name")
+        if not body.name.strip():
+            raise HTTPException(400, "Give the calendar a name.")
+        row.name = body.name.strip()
+    if body.interval_minutes is not None:
+        if not (feeds.MIN_INTERVAL_MINUTES <= body.interval_minutes
+                <= feeds.MAX_INTERVAL_MINUTES):
+            raise HTTPException(400, "That refresh interval is out of range.")
+        row.interval_minutes = body.interval_minutes
+    if body.enabled is not None:
+        row.enabled = body.enabled
+    if body.url is not None:
+        try:
+            row.url = await feeds.validate_url(body.url)
+        except feeds.FeedError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        # A new address is a new calendar. Clear the cache validators, and clear
+        # the error count so a fixed URL is polled again rather than staying
+        # stopped for a fault that has been corrected.
+        row.etag = row.last_modified = None
+        row.consecutive_errors = 0
+        row.last_status = "never"
+        row.last_error = ""
+    await session.commit()
+    await session.refresh(row)
+    return _subscription_json(row, full=True)
+
+
+@router.delete("/subscriptions/{subscription_id}", status_code=204)
+async def delete_subscription(
+    subscription_id: uuid.UUID,
+    keep_events: bool = Query(True),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.subscriptions.write")),
+):
+    """Unsubscribe. **The entries it brought in are kept by default.**
+
+    Removing a subscription is usually "stop refreshing this", not "erase the
+    last year of my diary". `keep_events=false` is the deliberate second choice,
+    and even then it only cancels entries and withdraws *requested* leave —
+    approved leave is a human decision and is never undone by removing a feed.
+    """
+    from sqlalchemy import update
+    from velaris_shared.db.models import CalendarEventModel, UserAbsenceModel
+
+    row = await _subscription_or_404(session, subscription_id, user)
+    if not await _may_write_for(session, user, row.user_id):
+        raise HTTPException(403, "That is not your calendar subscription.")
+
+    if not keep_events:
+        await session.execute(
+            update(CalendarEventModel)
+            .where(CalendarEventModel.subscription_id == row.id)
+            .values(status="cancelled", subscription_id=None))
+        await session.execute(
+            update(UserAbsenceModel)
+            .where(UserAbsenceModel.subscription_id == row.id,
+                   UserAbsenceModel.status == "requested")
+            .values(status="cancelled", subscription_id=None))
+    else:
+        # Orphan them deliberately: they stay in the calendar and stop being
+        # anybody's to refresh.
+        for model in (CalendarEventModel, UserAbsenceModel):
+            await session.execute(
+                update(model).where(model.subscription_id == row.id)
+                .values(subscription_id=None))
+
+    await session.delete(row)
+    await session.commit()
+    return None
+
+
+@router.post("/subscriptions/{subscription_id}/refresh",
+             dependencies=[Depends(_feed_rl)])
+async def refresh_subscription(
+    subscription_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.subscriptions.write")),
+):
+    """Re-read this feed now.
+
+    A feed-side failure is a **200 with `status: "error"`**, not a 5xx: the
+    request succeeded, and what failed is somebody else's server. The reason is
+    recorded on the subscription so a calendar that has been failing for a
+    fortnight says so on the screen.
+    """
+    row = await _subscription_or_404(session, subscription_id, user)
+    if not await _may_write_for(session, user, row.user_id):
+        raise HTTPException(403, "That is not your calendar subscription.")
+
+    outcome = await feeds.refresh(session, row, actor=_actor(user))
+    await session.commit()
+    return {"subscription_id": str(row.id), **outcome}
+
+
+# ── export ────────────────────────────────────────────────────────────────
+
+@router.get("/export")
+async def export_ics(
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    user_id: str | None = Query(None),
+    include_absences: bool = Query(True),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("calendar.events.read")),
+):
+    """Download a calendar as `.ics` — the other direction from `/import`.
+
+    The pair matters: what this platform writes, it reads. An absence exported
+    here and imported elsewhere comes back as an absence, because both ends
+    agree on the property that marks one.
+
+    **Privacy is the whole of the rest.** A private event belonging to somebody
+    else is not in the file at all — not listed and titled "Busy", *absent* —
+    and the reason for an absence is stripped unless the caller may see the
+    detail, which is the same rule the team screen follows. An export leaves the
+    platform, so the filter has to be at least as strict here as on a screen.
+    """
+    from fastapi.responses import Response
+
+    from case_service.calendar.invites import build_calendar
+
+    from sqlalchemy import or_ as _or
+
+    _check_window(start, end)
+    subject = str(user_id or await _me(session, user))
+    full = await _may_see_detail(session, user, subject)
+
+    # `_tenant_candidates`, not `tenant_id == _tenant(user)`. Tenant columns are
+    # not one shape across this schema and a caller arrives holding whichever
+    # their token carried — an exact compare is the filter that matches nothing
+    # and hands back an empty calendar that looks like an empty diary.
+    names = await service._tenant_candidates(session, _tenant(user))
+    events = (await session.execute(
+        select(CalendarEventModel).where(
+            CalendarEventModel.tenant_id.in_(names),
+            CalendarEventModel.starts_at < end,
+            # A series that began before the window still has occurrences inside
+            # it — the same clause `list_events` needs, for the same reason.
+            _or(CalendarEventModel.ends_at > start,
+                CalendarEventModel.recurrence.is_not(None)),
+        ).order_by(CalendarEventModel.starts_at)
+    )).scalars().all()
+    mine = [
+        ev for ev in events
+        if (ev.organiser_user_id == subject or subject in (ev.attendee_user_ids or []))
+        and _may_see_event(ev, user)
+        # The SQL filter is deliberately loose so a series that began before the
+        # window is fetched — but `recurrence` holds a JSON **null** on rows
+        # saved without one, and `IS NOT NULL` is true for that, so the loose
+        # filter also drags in ordinary past meetings. `occurrences()` is the
+        # exact answer and the one the screen already uses: an event belongs in
+        # the file only if it actually happens inside the window.
+        and service.occurrences(ev, start, end)
+    ]
+
+    absences: list = []
+    if include_absences:
+        # An absence is personal data and has its own privilege. The two role
+        # sets happen to be identical today, but a privilege granted from data
+        # can separate them — and then this endpoint would be the way to read
+        # absences without `calendar.absences.read`.
+        may_read_absences = await hxguard.check(
+            session, hxguard.subject_from_user(user), "calendar.absences.read")
+        if not may_read_absences.allow:
+            raise HTTPException(
+                403, "Reading absences needs `calendar.absences.read`. Ask for "
+                     "`include_absences=false` to export meetings only.")
+        rows = (await session.execute(
+            select(UserAbsenceModel).where(
+                UserAbsenceModel.tenant_id.in_(names),
+                UserAbsenceModel.user_id == subject,
+                UserAbsenceModel.status == "approved",
+                UserAbsenceModel.starts_at < end,
+                UserAbsenceModel.ends_at > start,
+            ).order_by(UserAbsenceModel.starts_at)
+        )).scalars().all()
+        absences = list(rows)
+
+    body = build_calendar(mine, absences=absences, full_detail=full)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", subject)[:64] or "calendar"
+    return Response(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        # The filename is built from a user id, which a caller supplies. Reduced
+        # to a safe set first: a raw value could inject a header or suggest a
+        # path — the same rule the marketplace fork endpoint follows.
+        headers={"Content-Disposition":
+                 f'attachment; filename="velaris-{safe}.ics"'},
+    )

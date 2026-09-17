@@ -749,6 +749,24 @@ else
 fi
 cd "$VELARIS_DIR"
 
+# ── Gateway limits: validated before a container is started ───────
+#
+# The gateway's rate and connection ceilings reach nginx.conf.template from
+# .env. nginx validates them when it STARTS, so a value that is not an nginx
+# rate is a gateway that will not boot. Unset or empty is always fine — compose
+# supplies the shipped default — so only a value somebody typed can be wrong,
+# and this says so here rather than leaving a dead gateway to diagnose.
+# The same check runs in update-velaris.sh before anything is touched.
+for _k in VELARIS_GW_RATE_API VELARIS_GW_RATE_PORTAL; do
+  eval "_v=\${$_k:-}"
+  if [ -n "$_v" ] && ! printf '%s' "$_v" | grep -Eq '^[1-9][0-9]*r/[sm]$'; then
+    fail "$_k=\"$_v\" is not an nginx rate (expected e.g. 20r/s or 30r/m) — the gateway would refuse to start"
+  fi
+done
+if [ -n "${VELARIS_GW_WS_CONN_MAX:-}" ] && ! printf '%s' "$VELARIS_GW_WS_CONN_MAX" | grep -Eq '^[1-9][0-9]*$'; then
+  fail "VELARIS_GW_WS_CONN_MAX=\"$VELARIS_GW_WS_CONN_MAX\" is not a positive whole number — the gateway would refuse to start"
+fi
+
 # ── Step 5: Pull Docker images ────────────────────────────────────
 step "Step 5/9 — Pulling Docker images..."
 COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"

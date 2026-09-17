@@ -123,6 +123,15 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  //: The reason the last save was refused, or null.
+  //
+  //  `doSave` used to `await fetch(...)` and never look at the answer, then
+  //  clear the dirty flag regardless. That was survivable while this route
+  //  could not refuse a definition — it now can (`VEL-CASE-STAGE-CONFIG-400`,
+  //  a stage naming an action or a status that does not exist) — and a screen
+  //  that says "saved" over a 400 is worse than one that refuses, because the
+  //  designer walks away believing the work is stored.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -252,10 +261,11 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
       stages,
       sla_policies: slaPolicies,
     };
+    setSaveError(null);
     if (branchMode.isBranchMode && branchBelongsHere) {
       await branchMode.patchContent({ definition_json });
     } else {
-      await fetch(`/api/v1/case-types/${caseTypeId}`, {
+      const res = await fetch(`/api/v1/case-types/${caseTypeId}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -263,6 +273,18 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
         },
         body: JSON.stringify({ definition_json }),
       });
+      if (!res.ok) {
+        // Stay dirty. The work is still in the editor and the designer can fix
+        // the field the message names and save again; clearing the flag here
+        // would lose it on the next navigation.
+        let detail = `Save failed (${res.status}).`;
+        try {
+          const body = await res.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch { /* a non-JSON error body still gets the status above */ }
+        setSaveError(detail);
+        return;
+      }
     }
     setDirty(false);
   };
@@ -371,6 +393,27 @@ export default function CaseTypeEditor({ caseTypeId, onBack, readOnly = false, o
             onSubmitForReview={branchMode.submitForReview}
             onRecall={branchMode.recall}
           />
+        )}
+
+        {/* A refused save. Loud, and it does not clear the editor. */}
+        {saveError && (
+          <div role="alert" style={{
+            margin: "var(--space-md) var(--space-xl) 0",
+            padding: "10px 14px", borderRadius: "var(--radius-sm)",
+            background: "color-mix(in srgb, #ef4444 10%, transparent)",
+            border: "1px solid #ef4444", color: "var(--text-primary)",
+            fontSize: 12, display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <span style={{ flex: 1 }}>
+              <strong>Not saved.</strong> {saveError}
+            </span>
+            <button
+              onClick={() => setSaveError(null)}
+              aria-label="Dismiss"
+              style={{ background: "transparent", border: "none", cursor: "pointer",
+                       color: "var(--text-muted)", fontSize: 14 }}
+            >✕</button>
+          </div>
         )}
 
         {/* Toolbar */}

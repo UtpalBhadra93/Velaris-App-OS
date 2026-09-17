@@ -385,7 +385,12 @@ export const EP = {
   caseTypes: '/case-types',
   myAssignments: '/my/assignments',
   case: (id: string) => `/cases/${id}`,
-  resolve: (id: string) => `/cases/${id}/resolve`,
+  // One dispatcher, not one route per verb (migration 198). The six named
+  // action routes — resolve, close, reopen, cancel, status, priority — were
+  // removed, so a generated app that still called one would 404 on a
+  // customer's phone. That is exactly what this table exists to prevent, and
+  // it only works if the table is updated with the API.
+  caseAction: (id: string, action: string) => `/cases/${id}/actions/${action}`,
 };
 
 /** The customer half. Every path is scoped to one portal slug. */
@@ -1932,7 +1937,7 @@ export default function CaseDetailScreen({ route }: any) {
     if (!isUuid(caseId)) return;
     setResolving(true);
     try {
-      await request(EP.resolve(caseId), { method: 'POST', body: JSON.stringify({}) });
+      await request(EP.caseAction(caseId, 'resolve'), { method: 'POST', body: JSON.stringify({}) });
       setCaseData(await request(EP.case(caseId)));
       setError('');
     } catch (e: any) {

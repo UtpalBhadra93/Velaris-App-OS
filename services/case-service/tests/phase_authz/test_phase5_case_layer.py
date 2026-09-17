@@ -255,3 +255,106 @@ class TestActionsAreGrantableFromData:
         for name in risk:
             assert _crosses_into_platform_namespace(
                 {"resource": resource_of(name), "actions": [verb_of(name)]}), name
+
+
+# ── the 198 carve-out, and what it must NOT reach ────────────────────────────
+
+
+class TestCaseActionsAreGrantableWithoutWideningLegacy:
+    """`case.actions.*` was ungrantable from data until 2026-09-08.
+
+    `case` is in `LEGACY_PRIVILEGE_RESOURCES`, so everything under it was
+    refused as legacy vocabulary and the six privileges migration 198 added were
+    reachable only through the seeded role table — an operator could not grant
+    "may close a case" to a role of their own. The fix is an EXACT-MATCH
+    carve-out for `case.actions`, and the whole safety of it rests on the
+    match being exact: a row saying `case.actions` could not have been written
+    before 198 existed, so there is no legacy meaning to protect, while a row
+    saying `case` means what it has always meant and must keep meaning it.
+    """
+
+    def test_the_new_resource_reaches_the_new_actions(self):
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
+
+        assert _crosses_into_platform_namespace(
+            {"resource": "case.actions", "actions": ["close"]}) is True
+
+    def test_a_legacy_case_grant_still_reaches_nothing_platform_side(self):
+        """The row every install already has. If this ever returns True, every
+        access group carrying `case` silently gains the platform namespace."""
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
+
+        for priv in ({"resource": "case", "actions": ["*"]},
+                     {"resource": "case", "actions": ["update"]},
+                     {"resource": "case", "actions": ["close"]}):
+            assert _crosses_into_platform_namespace(priv) is False, priv
+
+    def test_the_bare_wildcard_still_reaches_nothing(self):
+        """The seeded `admin` access role carries it, written years before
+        platform actions existed."""
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
+
+        assert _crosses_into_platform_namespace(
+            {"resource": "*", "actions": ["*"]}) is False
+
+    def test_the_carve_out_is_exact_and_not_a_prefix(self):
+        """A prefix rule would let `case.anything` through, which would hand the
+        platform namespace to any invented resource under a legacy head."""
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
+
+        # All of these sit under a LEGACY head, so the exact-match carve-out
+        # must not admit any of them. `casex.actions` is deliberately absent:
+        # `casex` is not a legacy head at all, so it reaches the platform
+        # namespace by the ordinary rule and always did.
+        for resource in ("case.anything", "case.actionsx", "case.actions.close",
+                         "document.actions", "report.actions"):
+            assert _crosses_into_platform_namespace(
+                {"resource": resource, "actions": ["close"]}) is False, resource
+
+    def test_the_seeded_table_names_it_and_was_never_the_blocked_half(self):
+        """Worth stating, because it is why the gate LOOKED like it worked.
+
+        `effective_privileges` applies `_crosses_into_platform_namespace` to
+        access-group entries and to the Phase-6 role store — and NOT to
+        `SEEDED_ROLE_PRIVILEGES`, which is code shipped with the release. So
+        migration 198's seeded `case.actions` rows always resolved, every role
+        check passed, and the only thing that silently did not work was an
+        operator granting the same privilege from data. A gate that works for
+        the shipped roles and not for configured ones is the hardest kind of
+        gap to notice.
+        """
+        from velaris_shared.hxguard.privileges import SEEDED_ROLE_PRIVILEGES
+
+        seeded = {r for r, privs in SEEDED_ROLE_PRIVILEGES.items()
+                  if any(str(p.get("resource")) == "case.actions" for p in privs)}
+        assert seeded, "198 seeded no case.actions rows — the role gate cannot work"
+
+    def test_an_operator_grant_reaches_it_the_same_way_the_seed_does(self):
+        """The half that was broken: the same privilege, written as data."""
+        from velaris_shared.hxguard.privileges import effective_privileges
+
+        granted = effective_privileges(
+            [], access_group_privileges=[
+                {"resource": "case.actions", "actions": ["close"]}])
+        assert any(str(p.get("resource")) == "case.actions" for p in granted), granted
+
+    def test_a_legacy_case_grant_is_still_dropped_by_effective_privileges(self):
+        """End to end, not just the predicate: the row every install has must
+        contribute nothing to the platform namespace."""
+        from velaris_shared.hxguard.privileges import effective_privileges
+
+        granted = effective_privileges(
+            [], access_group_privileges=[{"resource": "case", "actions": ["*"]}])
+        assert granted == [], granted
+
+    def test_every_case_action_privilege_is_now_grantable(self):
+        from velaris_shared.hxguard.actions import ACTIONS, resource_of, verb_of
+        from velaris_shared.hxguard.privileges import _crosses_into_platform_namespace
+
+        names = [n for n in ACTIONS if n.startswith("case.actions.")]
+        # 6 from migration 198, 5 more when §7 was answered on 2026-09-08,
+        # and `bulk_stage` and `transfer_tenant` on 2026-09-17.
+        assert len(names) == 13, names
+        for name in names:
+            assert _crosses_into_platform_namespace(
+                {"resource": resource_of(name), "actions": [verb_of(name)]}), name

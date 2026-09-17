@@ -45,10 +45,16 @@ class TestParsing:
         """The Vixie rule. `0 0 1 * 1` is "the 1st OR any Monday" — reading it
         as an AND silently turns a daily-ish schedule into a once-a-year one."""
         base = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
-        got = describe("0 0 1 * 1", "UTC", 3)
-        assert got[0].startswith("2026-08-24")      # Monday
-        assert got[2].startswith("2026-09-01")      # the 1st, a Tuesday
-        assert _next("0 0 1 * 1", base).day == 24
+        assert _next("0 0 1 * 1", base).day == 24   # the Monday, not 1 Sep
+
+        # `describe` reads the clock, so asserting literal dates here made this
+        # test rot: it was written in the week of 2026-08-20 and started failing
+        # the following week. The Vixie rule is a property, so assert the
+        # property — every firing is a Monday **or** the 1st, and both appear.
+        got = [datetime.fromisoformat(when) for when in describe("0 0 1 * 1", "UTC", 6)]
+        assert all(w.weekday() == 0 or w.day == 1 for w in got)
+        assert any(w.weekday() == 0 for w in got)
+        assert any(w.day == 1 for w in got)
 
     @pytest.mark.parametrize("bad", [
         "0 2 * *", "", "not a cron", "0 2 * * 8", "60 * * * *",

@@ -171,10 +171,116 @@ function StagePropertyEditor({
         </Field>
       </Section>
 
+      <StageStatusAndActions stage={local} update={update} />
+
       <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginTop: "var(--space-md)" }}>
         ID: {local.id} · Order: {local.order}
       </div>
     </div>
+  );
+}
+
+/* ── Status & Actions on a stage ──────────────────────────────── */
+
+/**
+ * The two stage keys migration 198's model left out: what the case IS while it
+ * sits here, and what may be done to it.
+ *
+ * Both NARROW only. An action must pass the tenant's status rule AND this one,
+ * so the picker below can never grant anything — and it says so on the screen,
+ * because a designer who thinks a list here widens access will eventually write
+ * one that does not do what they meant.
+ *
+ * The distinction the copy has to carry: **no list means every action**, an
+ * EMPTY list means none. That is the difference between a stage nobody has
+ * configured and a stage somebody deliberately closed, and the two must not
+ * look the same.
+ */
+function StageStatusAndActions({
+  stage, update,
+}: { stage: StageDef; update: (partial: Partial<StageDef>) => void }) {
+  const [actions, setActions] = useState<{ name: string; label: string }[]>([]);
+  const [statuses, setStatuses] = useState<{ name: string; label: string }[]>([]);
+
+  useEffect(() => {
+    const t = getAccessToken();
+    const hdr: Record<string, string> = t ? { Authorization: `Bearer ${t}` } : {};
+    fetch("/api/v1/cases/actions/catalogue", { headers: hdr })
+      .then(r => (r.ok ? r.json() : { actions: [], statuses: [] }))
+      .then(d => {
+        setActions(d.actions ?? []);
+        setStatuses((d.statuses ?? []).filter((x: any) => x.enabled !== false));
+      })
+      .catch(() => { /* the pickers fall back to free text below */ });
+  }, []);
+
+  const restricted = Array.isArray(stage.actions_allowed);
+  const chosen = stage.actions_allowed ?? [];
+
+  const toggle = (name: string) => {
+    const next = chosen.includes(name)
+      ? chosen.filter(a => a !== name)
+      : [...chosen, name];
+    update({ actions_allowed: next });
+  };
+
+  return (
+    <Section title="Status & Actions">
+      <Field label="On entering this stage, set status">
+        <Select
+          value={stage.on_enter_status || ""}
+          onChange={(v) => update({ on_enter_status: v || undefined })}
+          options={["", ...statuses.map(s => s.name)]}
+          labels={["Leave unchanged", ...statuses.map(s => `${s.label} (${s.name})`)]}
+        />
+      </Field>
+      <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+        Applied after the case enters the stage. If the status set does not allow
+        the move, the case still enters the stage and the reason is written to
+        its history.
+      </div>
+
+      <Field label="Actions offered in this stage">
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-primary)" }}>
+          <input
+            type="checkbox"
+            checked={!restricted}
+            onChange={(e) => update({ actions_allowed: e.target.checked ? undefined : [] })}
+          />
+          Offer every action
+        </label>
+      </Field>
+
+      {restricted && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
+          {actions.length === 0 && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Could not load the action list.
+            </div>
+          )}
+          {actions.map(a => (
+            <label key={a.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-primary)" }}>
+              <input
+                type="checkbox"
+                checked={chosen.includes(a.name)}
+                onChange={() => toggle(a.name)}
+              />
+              {a.label} <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)" }}>{a.name}</span>
+            </label>
+          ))}
+          {chosen.length === 0 && (
+            <div style={{ fontSize: 11, color: "var(--warning, #d97706)" }}>
+              Nothing ticked — this stage offers no actions at all.
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+        This list can only ever <strong>narrow</strong> what a role and the status
+        rules already allow. It never grants anything.
+      </div>
+    </Section>
   );
 }
 

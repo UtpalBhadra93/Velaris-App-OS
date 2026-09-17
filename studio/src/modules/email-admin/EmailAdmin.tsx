@@ -2,6 +2,9 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getAccessToken } from "@/auth/tokenManager";
+import { Tabs } from "@shared/components";
+import { useAuth } from "@/auth/AuthContext";
+import { listTenants, type Tenant } from "@shared/api/client";
 
 type Account = {
   id?: string;
@@ -106,30 +109,43 @@ function validateTemplate(t: Template): string | null {
 export default function EmailAdmin() {
   const [tab, setTab] = useState<Tab>("accounts");
   return (
-    <div style={{ padding: "var(--space-xl) var(--space-2xl)", width: "100%", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
-      {/* Tabs — Work Center style */}
-      <div style={{ display: "flex", marginBottom: "var(--space-xl)" }}>
-        <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {(["accounts", "templates"] as Tab[]).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding: "8px 18px", fontSize: 12, fontWeight: 500,
-              fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em",
-              border: "none", cursor: "pointer", borderRadius: "var(--radius-sm)",
-              color: tab === t ? "var(--accent)" : "var(--text-muted)",
-              background: tab === t ? "var(--accent-dim)" : "transparent",
-            }}>{t}</button>
-          ))}
-        </div>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+      <Tabs
+        ariaLabel="Email admin"
+        tabs={[
+          { key: "accounts"  as Tab, label: "Accounts" },
+          { key: "templates" as Tab, label: "Templates" },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      {/* The bar is flush under the app header, like /help; the page's
+          own padding moves onto the body so the underline can reach
+          both edges. */}
+      <div style={{ flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)", boxSizing: "border-box" }}>
       {tab === "accounts" ? <AccountsPanel /> : <TemplatesPanel />}
+    </div>
     </div>
   );
 }
 
 /* ─── Accounts ─────────────────────────────────────────────────── */
 
+/** Who owns an unassigned mailbox — the default tenant, not everyone. */
+function tenantLabel(t: string | null | undefined): string {
+  return t ? t : "default (unassigned)";
+}
+
 function AccountsPanel() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // Each mailbox belongs to one tenant. Only a superadmin sees every tenant's
+  // mailboxes and can choose (or move) a mailbox's tenant; the server ignores a
+  // tenant sent by anyone else and writes their own. So the picker exists only
+  // for a superadmin, and everyone else is SHOWN the tenant rather than offered
+  // a field that would silently do nothing.
+  const isSuperadmin = !!user?.roles?.includes("superadmin");
+  const [tenants, setTenants] = useState<Tenant[]>([]);
   const [items, setItems] = useState<Account[]>([]);
   const [editing, setEditing] = useState<Account | null>(null);
   const [smtpPwStored, setSmtpPwStored] = useState(false);
@@ -150,6 +166,9 @@ function AccountsPanel() {
     } catch (e: any) { setErr(e.message); }
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (isSuperadmin) listTenants().then(setTenants).catch(() => setTenants([]));
+  }, [isSuperadmin]);
 
   function openNew() {
     setEditing({ ...emptyAccount });
@@ -182,6 +201,7 @@ function AccountsPanel() {
       const url = isNew ? "/api/v1/email/accounts" : `/api/v1/email/accounts/${editing.id}`;
       const method = isNew ? "POST" : "PATCH";
       const body = { ...editing };
+      if (!isSuperadmin) delete body.tenant_id;   // the server writes the caller's own
       if (body.smtp_password === "") body.smtp_password = null;
       if (body.imap_password === "") body.imap_password = null;
       await apiJSON(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -232,6 +252,7 @@ function AccountsPanel() {
         <button onClick={openNew} style={primaryBtn}>+ New account</button>
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
           Mailpit dev preset: SMTP localhost:1025, IMAP localhost:1143, no TLS, no auth needed.
+          {" "}Each tenant has its own mailboxes and its own default outbound mailbox.
         </span>
         <button onClick={() => navigate("/inbox")}
           style={{ ...btn, marginLeft: "auto", color: "var(--accent)", borderColor: "var(--accent)", whiteSpace: "nowrap" }}>
@@ -240,12 +261,12 @@ function AccountsPanel() {
       </div>
       <table style={tableStyle}>
         <thead><tr>
-          {["Name", "Address", "SMTP", "IMAP", "Default out", "Active", ""].map(h => (
+          {["Name", "Address", "Tenant", "SMTP", "IMAP", "Default out", "Active", ""].map(h => (
             <th key={h} style={th}>{h}</th>
           ))}
         </tr></thead>
         <tbody>
-          {items.length === 0 && <tr><td colSpan={7} style={{ ...td, color: "var(--text-muted)" }}>No accounts yet.</td></tr>}
+          {items.length === 0 && <tr><td colSpan={8} style={{ ...td, color: "var(--text-muted)" }}>No accounts yet.</td></tr>}
           {items.map(a => {
             const tr = testResults[a.id!];
             return (
@@ -258,6 +279,7 @@ function AccountsPanel() {
                     )}
                   </td>
                   <td style={{ ...td, fontFamily: "var(--font-mono)", fontSize: 12 }}>{a.address}</td>
+                  <td style={{ ...td, fontFamily: "var(--font-mono)", fontSize: 12 }}>{tenantLabel(a.tenant_id)}</td>
                   <td style={td}>{a.smtp_host}:{a.smtp_port}{a.smtp_use_tls ? " (TLS)" : ""}</td>
                   <td style={td}>{a.imap_host ? `${a.imap_host}:${a.imap_port} · ${a.imap_folder}` : "—"}</td>
                   <td style={td}>{a.is_default_outbound ? "✓" : "—"}</td>
@@ -281,7 +303,7 @@ function AccountsPanel() {
                 </tr>
                 {tr && (
                   <tr>
-                    <td colSpan={7} style={{ ...td, paddingTop: 6, paddingBottom: 8, background: "var(--bg-elevated)" }}>
+                    <td colSpan={8} style={{ ...td, paddingTop: 6, paddingBottom: 8, background: "var(--bg-elevated)" }}>
                       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
                         <span>
                           <strong>SMTP:</strong>{" "}
@@ -332,6 +354,21 @@ function AccountsPanel() {
             )}
           </div>
 
+          <Field label="Tenant">
+            {isSuperadmin ? (
+              <select aria-label="Tenant" style={inp} value={editing.tenant_id ?? ""}
+                      onChange={e => setEditing({ ...editing, tenant_id: e.target.value || null })}>
+                <option value="">default (unassigned)</option>
+                {tenants.map(t => <option key={t.id} value={t.slug}>{t.name} ({t.slug})</option>)}
+              </select>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "6px 0" }}>
+                {editing.id
+                  ? <>Belongs to <code>{tenantLabel(editing.tenant_id)}</code>. Only a superadmin can move a mailbox between tenants.</>
+                  : <>Will belong to your tenant{user?.tenant_id ? <> (<code>{user.tenant_id}</code>)</> : " (default)"}.</>}
+              </div>
+            )}
+          </Field>
           <Field label="Name *">
             <input style={inp} value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} />
           </Field>

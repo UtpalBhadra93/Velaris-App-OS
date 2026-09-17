@@ -175,8 +175,7 @@ class TestRealTimeIntegration:
         case_id = case.json()["id"]
 
         # Change status — should not error even though no subscribers
-        resp = await client.post(f"/api/v1/cases/{case_id}/status", json={
-            "status": "in_progress",
-            "actor_id": "test_user",
-        })
+        resp = await client.post(
+            f"/api/v1/cases/{case_id}/actions/change_status",
+            json={"params": {"status": "in_progress"}})
         assert resp.status_code == 200

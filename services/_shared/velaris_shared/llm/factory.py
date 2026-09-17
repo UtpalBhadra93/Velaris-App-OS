@@ -182,6 +182,12 @@ class GuardedBackend:
     Every other attribute is proxied transparently in BOTH directions, so the
     egress ladder's per-request flags (``prefer_external``, ``last_route``,
     ``suppress_generic_audit``) still land on the inner backend.
+
+    After each ``complete()`` the backend also carries ``last_usage`` — the
+    token counts and latency the chokepoint measured — for F-02 to price. Like
+    ``last_route`` it describes the MOST RECENT call and nothing more, so read
+    it immediately; ``get_llm_backend()`` builds a fresh wrapper per caller, so
+    two requests do not share one.
     """
 
     def __init__(self, inner) -> None:
@@ -214,7 +220,7 @@ class GuardedBackend:
         try:
             raw = await self._inner.complete(prompt, **kwargs)
         except Exception as exc:
-            llmops.queue_call(
+            self.last_usage = llmops.queue_call(
                 **self._call_identity(),
                 purpose=purpose,
                 prompt_chars=len(prompt or "") + len(system),
@@ -226,7 +232,17 @@ class GuardedBackend:
             raise
 
         out = guard.scrub_output(raw) if isinstance(raw, str) else raw
-        llmops.queue_call(
+        # F-02: the token counts measured HERE are stashed for the caller, the
+        # same way `last_route` already is. A caller that re-derived them from
+        # the text it holds would produce a second, quietly different number for
+        # the same completion — and for case Q&A it would be wrong outright,
+        # since the ledger commits to the question while the model was sent the
+        # question plus every case source.
+        #
+        # Set on BOTH paths, including the failure above: leaving the previous
+        # call's numbers in place would let a failed completion be priced as the
+        # successful one before it.
+        self.last_usage = llmops.queue_call(
             **self._call_identity(),
             purpose=purpose,
             prompt_chars=len(prompt or "") + len(system),
@@ -407,14 +423,22 @@ async def generate_json(
     system: str = "",
     temperature: float = 0.3,
     max_tokens: int = 4096,
+    llm: Any = None,
 ) -> dict[str, Any] | None:
     """Generate structured JSON from any backend.
 
     Used by NLP Builder and Scout AI so they benefit from
     whatever backend is configured (Ollama, OpenAI, Anthropic).
     Returns None if backend is unavailable or response is not valid JSON.
+
+    `llm` lets a caller supply — and therefore KEEP — the backend. Without it
+    this function builds one and discards it, so the caller cannot read
+    `last_route` or `last_usage` afterwards: `active_model()` with no argument
+    then resolves a *fresh* backend that has answered nothing, and reports the
+    CONFIGURED model rather than the one that actually replied. Optional, so
+    every existing caller is unchanged.
     """
-    llm = get_llm_backend()
+    llm = llm if llm is not None else get_llm_backend()
 
     available = await llm.check_available() if hasattr(llm, "check_available") else llm.available
     if not available:

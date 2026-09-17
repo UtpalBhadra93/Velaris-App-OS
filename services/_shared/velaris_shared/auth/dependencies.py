@@ -232,14 +232,23 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # MCP scoped tokens (P4 external agents) are single-purpose: they are only
-    # accepted by the MCP transport's own dependency. Everywhere else — REST,
-    # proposals confirm/reject, token minting — they fail closed, so a leaked
-    # agent token cannot touch any other surface.
-    if claims.get("token_use") == "mcp":
+    # Purpose-built tokens are single-purpose: each is accepted only by the one
+    # dependency written for it — MCP scoped tokens by the MCP transport
+    # (`token_use="mcp"`, P4), agent tokens by the agent caller dependency
+    # (`token_use="agent"`, F-00). Everywhere else — REST, proposals
+    # confirm/reject, token minting — they fail closed, so a leaked non-human
+    # token cannot touch any other surface.
+    #
+    # The check is "any token_use at all", not a list of known values. A session
+    # token has never carried this claim, so nothing existing is affected, and
+    # the next purpose-built token kind is refused here by default instead of
+    # being admitted until somebody remembers to add it. Fail closed on the
+    # unknown case is the whole point.
+    token_use = claims.get("token_use")
+    if token_use:
         raise HTTPException(
             status_code=401,
-            detail="Scoped MCP token is not valid on this endpoint",
+            detail=f"A {token_use} token is not valid on this endpoint",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

@@ -3,7 +3,7 @@ import { useApi } from "@shared/hooks";
 import {
   listCodegenPlatforms, previewApp, downloadGeneratedApp, listCaseTypes,
 } from "@shared/api/client";
-import { Card, Button, Spinner } from "@shared/components";
+import { Button, Card, Spinner, Tabs } from "@shared/components";
 import { BRAND } from "@/branding";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -128,26 +128,28 @@ export default function AppBuilder() {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Tab bar — Work Center format */}
-      <div style={{ padding: "var(--space-md) var(--space-2xl)", flexShrink: 0, display: "flex", alignItems: "center", gap: "var(--space-md)" }}>
-        <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding: "8px 16px", fontSize: 12, fontWeight: 500,
-              fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em",
-              border: "none", cursor: "pointer", borderRadius: "var(--radius-sm)",
-              color: tab === t ? "var(--accent)" : "var(--text-muted)",
-              background: tab === t ? "var(--accent-dim)" : "transparent",
-              display: "flex", alignItems: "center", gap: 4,
-            }}>
-              {t}
-              {t === "Ship Update" && (changedSinceLastBuild.length > 0 || newSinceLastBuild.length > 0) && (
-                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8, background: "var(--status-running)", color: "#fff", fontWeight: 700 }}>
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden", boxSizing: "border-box" }}>
+        <Tabs
+          ariaLabel="App builder"
+          tabs={TABS.map(t => ({
+            key: t,
+            label: t,
+            badge: t === "Ship Update"
+              && (changedSinceLastBuild.length > 0 || newSinceLastBuild.length > 0)
+              ? (
+                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8,
+                               background: "var(--status-running)", color: "#fff", fontWeight: 700 }}>
                   {changedSinceLastBuild.length + newSinceLastBuild.length}
                 </span>
-              )}
-            </button>
-          ))}
-        </div>
+              ) : undefined,
+          }))}
+          value={tab}
+          onChange={setTab}
+        />
+        {/* The bar is flush under the app header, like /help; the page's
+            own padding moves onto the body so the underline can reach
+            both edges. */}
+        <div style={{ flex: 1, overflow: "auto", padding: "var(--space-md) var(--space-2xl)", boxSizing: "border-box" }}>
         {/* Actions at right */}
         <div style={{ marginLeft: "auto", display: "flex", gap: "var(--space-sm)" }}>
           <Button variant="secondary" onClick={handlePreview} disabled={loading}>
@@ -157,6 +159,7 @@ export default function AppBuilder() {
             {downloading ? "Packaging…" : "↓ Download ZIP"}
           </Button>
         </div>
+      </div>
       </div>
 
       {/* Error banner */}

@@ -1,0 +1,19 @@
+{{- if and .Values.caseService.documents.persistence.enabled (not .Values.caseService.documents.existingClaim) }}
+# Uploaded documents, when they are kept on a filesystem rather than in object
+# storage. Without this the default local store writes into the container and
+# every uploaded document is lost on the next restart — silently, because the
+# upload itself succeeds.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "helix.caseServiceName" . }}-documents
+  labels: { app: case-service }
+spec:
+  accessModes: {{ .Values.caseService.documents.persistence.accessModes | toYaml | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.caseService.documents.persistence.size }}
+  {{- with .Values.caseService.documents.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

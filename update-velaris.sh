@@ -125,6 +125,42 @@ if [ -f "$VELARIS_DIR/deploy/ports/velaris-ports.sh" ]; then
     exit 1
   fi
 fi
+
+# ── Gateway limits, checked BEFORE anything is touched ───────────
+#
+# The gateway's rate and connection ceilings are substituted into
+# nginx.conf.template from .env (2026-09-09). nginx validates them at START,
+# not at write time, so a typo here is not a bad limit — it is a gateway that
+# refuses to boot, which is the whole platform. That failure has happened once
+# already (an empty identity secret, 2026-08-24), so it is checked here where
+# it costs nothing and nothing has been touched yet.
+#
+# UNSET OR EMPTY IS ALWAYS FINE: compose supplies the shipped default, which is
+# the ceiling the gateway already enforces. Only a value the operator actually
+# typed can be wrong.
+_velaris_check_gateway_limits() {
+  local bad=0 v
+  for k in VELARIS_GW_RATE_API VELARIS_GW_RATE_PORTAL; do
+    eval "v=\${$k:-}"
+    [ -z "$v" ] && continue
+    if ! printf '%s' "$v" | grep -Eq '^[1-9][0-9]*r/[sm]$'; then
+      red "  ✗ $k=\"$v\" is not an nginx rate (expected e.g. 20r/s or 30r/m)"
+      bad=1
+    fi
+  done
+  v="${VELARIS_GW_WS_CONN_MAX:-}"
+  if [ -n "$v" ] && ! printf '%s' "$v" | grep -Eq '^[1-9][0-9]*$'; then
+    red "  ✗ VELARIS_GW_WS_CONN_MAX=\"$v\" is not a positive whole number"
+    bad=1
+  fi
+  return $bad
+}
+if ! _velaris_check_gateway_limits; then
+  red "✗ A gateway limit in .env would stop nginx from starting."
+  red "  Nothing has been changed. Correct the value, or delete the line to"
+  red "  take the shipped default, and re-run."
+  exit 1
+fi
 bold()   { echo -e "\033[1m$*\033[0m"; }
 step()   { echo ""; bold "▶ $*"; }
 
@@ -581,7 +617,14 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
     SKIPPED=$((SKIPPED + 1)); continue
   fi
   echo -n "    apply $filename ... "
-  if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q < "$migration_file" 2>/tmp/migration_err.log; then
+  # ON_ERROR_STOP is what makes a failure a failure — the same line
+  # setup-velaris.sh carries, and for the same reason. Without it psql runs the
+  # remaining statements after a rejected one, exits 0, and the file is recorded
+  # in schema_migrations as applied: a half-applied migration that never runs
+  # again, on an EXISTING install, unattended. `setup` learned this from
+  # migration 080; the update path never had the fix.
+  if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))

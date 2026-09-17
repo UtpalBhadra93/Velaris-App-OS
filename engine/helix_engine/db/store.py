@@ -25,6 +25,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 import structlog
 
@@ -37,6 +38,13 @@ from helix_engine.api.schemas.process import (
 logger = structlog.get_logger()
 
 
+def _serialise(process: BPMNProcess) -> dict[str, Any]:
+    """The serialised IR for a caller that handed us objects."""
+    from helix_engine.temporal.workflows import _serialize_process
+
+    return _serialize_process(process)
+
+
 @dataclass
 class DeployedProcess:
     """A compiled process definition stored in the engine."""
@@ -44,7 +52,11 @@ class DeployedProcess:
     version: int
     name: str | None
     status: ProcessStatus
-    process: BPMNProcess              # The compiled IR
+    process: BPMNProcess              # The compiled IR, as objects
+    #: The SAME IR, serialised — what `PgProcessStore` stores and what the API
+    #: reads when it starts an instance. Both stores must expose it or the route
+    #: works on one and raises `AttributeError` on the other (2026-09-17).
+    compiled_ir: dict[str, Any]
     bpmn_xml: str                     # Original XML (for re-export / versioning)
     element_count: int
     flow_count: int
@@ -78,7 +90,9 @@ class ProcessStore:
         store = ProcessStore()
 
         # Deploy
-        deployed = store.deploy(process, bpmn_xml, warnings)
+        deployed = await store.deploy(
+            process_id=process.id, name=process.name, bpmn_xml=bpmn_xml,
+            compiled_ir=compiled_ir, element_count=n, flow_count=m)
 
         # Start instance
         instance = store.create_instance("my_process", {"order_id": "123"})
@@ -103,18 +117,44 @@ class ProcessStore:
 
     async def deploy(
         self,
-        process: BPMNProcess,
-        bpmn_xml: str,
-        warnings: list[str] | None = None,
+        process_id: str | None = None,
         name: str | None = None,
+        bpmn_xml: str = "",
+        compiled_ir: dict[str, Any] | None = None,
+        element_count: int | None = None,
+        flow_count: int | None = None,
+        warnings: list[str] | None = None,
         tags: dict[str, str] | None = None,
+        process: BPMNProcess | None = None,
     ) -> DeployedProcess:
         """
         Deploy a compiled process.  Auto-increments version number.
 
         If a process with the same id already exists, a new version is created.
         The previous version is automatically deprecated.
+
+        **The signature matches `PgProcessStore.deploy` on purpose.** `POST
+        /deploy` calls whichever store the engine started with, and until
+        2026-09-17 this one took a `BPMNProcess` while the Postgres one took the
+        serialised IR — so every deploy against an engine running WITHOUT a
+        database failed with a `TypeError`, a 500 on the only route that puts a
+        process into the engine. Two stores behind one call have to answer the
+        same call.
+
+        `process` is still accepted for a caller that already holds the compiled
+        object; otherwise the IR is reconstructed from `compiled_ir`, which is
+        what the route sends.
         """
+        if process is None:
+            if not compiled_ir:
+                raise ValueError("deploy needs either `process` or `compiled_ir`")
+            from helix_engine.temporal.workflows import _deserialize_process
+            process = _deserialize_process(compiled_ir)
+        if process_id and process_id != process.id:
+            raise ValueError(
+                f"process_id {process_id!r} does not match the compiled process "
+                f"{process.id!r}")
+
         versions = self._processes.get(process.id, [])
         new_version = len(versions) + 1
 
@@ -128,9 +168,10 @@ class ProcessStore:
             name=name or process.name,
             status=ProcessStatus.ACTIVE,
             process=process,
+            compiled_ir=compiled_ir if compiled_ir is not None else _serialise(process),
             bpmn_xml=bpmn_xml,
-            element_count=len(process.elements),
-            flow_count=len(process.flows),
+            element_count=element_count if element_count is not None else len(process.elements),
+            flow_count=flow_count if flow_count is not None else len(process.flows),
             warnings=warnings or [],
             tags=tags or {},
             deployed_at=datetime.now(timezone.utc),
@@ -185,7 +226,10 @@ class ProcessStore:
 
         Returns None if the process doesn't exist or isn't active.
         """
-        deployed = self.get_process(process_id)
+        # `get_process` is a coroutine: unawaited, this compared a coroutine
+        # object to a status and raised `AttributeError` on every start against
+        # an engine with no database (2026-09-17).
+        deployed = await self.get_process(process_id)
         if deployed is None or deployed.status != ProcessStatus.ACTIVE:
             return None
 

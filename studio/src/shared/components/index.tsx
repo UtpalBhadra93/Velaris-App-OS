@@ -264,6 +264,286 @@ export function Stat({ label, value }: { label: string; value: string | number }
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   Pill — small status token
+
+   **Why this exists.** Five modules built in one week (rep desk, self-healing,
+   intent, joint contracts, field ops) each hand-rolled the same `Pill` against
+   `--success-bg`, `--success-fg`, `--danger-bg`, `--danger-fg` and
+   `--warning-fg`. **None of those variables exist.** Every one of them fell
+   through to its hardcoded fallback — `#10331f`, `#4ade80`, `#f87171` — which
+   are dark-theme colours painted onto a white card in light mode. The one that
+   does resolve, `--warning-bg`, is `--accent-dim`: teal, under amber text.
+
+   So the tone lives here, on the tokens the platform actually defines, and a
+   copy cannot drift again.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export type PillTone = "ok" | "warn" | "bad" | "info" | "muted";
+
+const PILL_COLOR: Record<PillTone, string> = {
+  ok:    "var(--status-completed)",
+  warn:  "var(--status-running)",
+  bad:   "var(--status-failed)",
+  info:  "var(--accent-text)",
+  muted: "var(--text-muted)",
+};
+
+export function Pill({
+  tone = "muted",
+  children,
+  title,
+}: {
+  tone?: PillTone;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  const c = PILL_COLOR[tone];
+  return (
+    <span
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "2px 9px",
+        borderRadius: 100,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: "var(--font-mono)",
+        letterSpacing: "0.02em",
+        whiteSpace: "nowrap",
+        color: c,
+        background: `color-mix(in srgb, ${c} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${c} 25%, transparent)`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Banner — a standing fact above the tab bar
+
+   For the one sentence that changes how every tab below it reads: the feature
+   is off, N changes are still being watched, N nodes are locked out. It sits
+   between the app header and the tabs, full width, so it cannot be scrolled
+   past.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function Banner({
+  tone = "muted",
+  title,
+  children,
+}: {
+  tone?: PillTone;
+  title?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const c = PILL_COLOR[tone];
+  return (
+    <div
+      style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        flexWrap: "wrap",
+        padding: "10px var(--space-2xl)",
+        background: `color-mix(in srgb, ${c} 7%, var(--bg-panel))`,
+        borderBottom: "1px solid var(--border-subtle)",
+        borderLeft: `3px solid ${c}`,
+        fontSize: 12,
+        color: "var(--text-secondary)",
+        lineHeight: 1.6,
+      }}
+    >
+      {title && (
+        <strong style={{ color: "var(--text-primary)", fontWeight: 600 }}>{title}</strong>
+      )}
+      {children && <span>{children}</span>}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Form fields
+
+   A bare `<input>` inherits the browser's own chrome, which in dark mode is a
+   white box with black text sitting on a #18181c card. Every text entry goes
+   through these.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export const FIELD_STYLE: React.CSSProperties = {
+  padding: "8px 12px",
+  border: "1px solid var(--border-default)",
+  borderRadius: "var(--radius-sm)",
+  fontSize: 13,
+  fontFamily: "var(--font-body)",
+  background: "var(--bg-input)",
+  color: "var(--text-primary)",
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+export function TextInput(
+  props: React.InputHTMLAttributes<HTMLInputElement>,
+) {
+  const { style, ...rest } = props;
+  return (
+    <input
+      {...rest}
+      style={{ ...FIELD_STYLE, ...style }}
+      onFocus={(e) => { e.currentTarget.style.borderColor = "var(--border-focus)"; props.onFocus?.(e); }}
+      onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; props.onBlur?.(e); }}
+    />
+  );
+}
+
+export function Select(
+  props: React.SelectHTMLAttributes<HTMLSelectElement>,
+) {
+  const { style, children, ...rest } = props;
+  return (
+    <select {...rest} style={{ ...FIELD_STYLE, cursor: "pointer", ...style }}>
+      {children}
+    </select>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SubPanel — an inset block INSIDE a Card
+
+   Modules were nesting `<Card>` in `<Card>`, which draws the same border and
+   background twice and reads as a rendering fault rather than a hierarchy.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function SubPanel({
+  tone,
+  children,
+  style,
+}: {
+  tone?: PillTone;
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  const c = tone ? PILL_COLOR[tone] : "var(--border-subtle)";
+  return (
+    <div
+      style={{
+        marginTop: "var(--space-md)",
+        padding: "var(--space-md)",
+        borderRadius: "var(--radius-sm)",
+        background: tone
+          ? `color-mix(in srgb, ${c} 5%, var(--bg-elevated))`
+          : "var(--bg-elevated)",
+        borderLeft: `3px solid ${c}`,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SectionTitle — the heading inside a card or a tab body
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function SectionTitle({
+  children,
+  right,
+  style,
+}: {
+  children: React.ReactNode;
+  right?: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "var(--space-md)",
+        margin: "0 0 var(--space-md)",
+        ...style,
+      }}
+    >
+      <h3
+        style={{
+          margin: 0,
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--text-primary)",
+          fontFamily: "var(--font-display)",
+        }}
+      >
+        {children}
+      </h3>
+      {right}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Table styles — one geometry for every module's data table
+   ═══════════════════════════════════════════════════════════════════ */
+
+export const TABLE: Record<string, React.CSSProperties> = {
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
+  th: {
+    textAlign: "left",
+    padding: "8px 10px",
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    color: "var(--text-muted)",
+    fontFamily: "var(--font-mono)",
+    borderBottom: "1px solid var(--border-default)",
+    whiteSpace: "nowrap",
+  },
+  tr: { borderBottom: "1px solid var(--border-subtle)" },
+  td: { padding: "10px", color: "var(--text-primary)", verticalAlign: "top" },
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   ErrorNote — a failed call, shown the same way everywhere
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function ErrorNote({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  if (!children) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        padding: "10px 14px",
+        borderRadius: "var(--radius-sm)",
+        background: "color-mix(in srgb, var(--status-failed) 10%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--status-failed) 30%, transparent)",
+        color: "var(--status-failed)",
+        fontSize: 13,
+        lineHeight: 1.5,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MONO — the one monospace run every module was redeclaring
+   ═══════════════════════════════════════════════════════════════════ */
+
+export const MONO: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+};
+
 export { CommitModal } from "./CommitModal";
 
 export { CommitHistory } from "./CommitHistory";
@@ -272,7 +552,21 @@ export { BranchModeBanner } from "./BranchModeBanner";
 
 export { ReviewerPicker } from "./ReviewerPicker";
 
-export { default as MeetRoom } from "./MeetRoom";
+export { Tabs, default as TabBar } from "./Tabs";
+export type { TabItem } from "./Tabs";
+
+/**
+ * MeetRoom is `lazy` HERE, in the barrel, on purpose.
+ *
+ * Every module in Studio imports something from `@shared/components`, and this
+ * one line pulled `livekit-client` — a WebRTC stack — into whatever chunk the
+ * barrel landed in, which was the single entry chunk. A user who never opens a
+ * meeting downloaded the whole conferencing client to see their case list.
+ *
+ * It renders inside the router's Suspense boundary, so the only visible
+ * difference is that the video component arrives when a meeting is opened.
+ */
+export const MeetRoom = React.lazy(() => import("./MeetRoom"));
 
 export { default as VoiceInput, appendTranscript } from "./VoiceInput";
 

@@ -37,22 +37,27 @@ import {
   listEvents,
   proposeSlots,
   skipOccurrence,
+  importCalendarIcs,
+  listCalendarSubscriptions,
+  createCalendarSubscription,
+  updateCalendarSubscription,
+  deleteCalendarSubscription,
+  refreshCalendarSubscription,
+  exportCalendarIcs,
+  type CalendarSubscription,
   updateEvent,
   saveWorkPattern,
   updateCalendar,
   type Absence,
   type CalendarEvent,
 } from "@shared/api/client";
-import { Button, Card, EmptyState, Spinner } from "@shared/components";
+import { Button, Card, EmptyState, Spinner, Tabs } from "@shared/components";
 import MeetRoom from "@shared/components/MeetRoom";
 import { ALL_DAYS, DAY_NAMES, TZ_GROUPS } from "@shared/constants/calendar";
 
 const S: Record<string, React.CSSProperties> = {
   page:   { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" },
   body:   { flex: 1, overflow: "auto", padding: "var(--space-xl) var(--space-2xl)" },
-  tabBar: { display: "flex", gap: 2, borderBottom: "1px solid var(--border-subtle)", marginBottom: "var(--space-lg)" },
-  tab:    { padding: "10px 16px", fontSize: 12, fontWeight: 500, fontFamily: "var(--font-mono)", textTransform: "uppercase" as const, letterSpacing: "0.04em", border: "none", cursor: "pointer", color: "var(--text-muted)", background: "transparent", borderBottom: "2px solid transparent", marginBottom: -1 },
-  tabA:   { color: "var(--accent)", borderBottom: "2px solid var(--accent)" },  // full shorthand, not borderBottomColor: React warns when a rerender
           // mixes the two for one value, and the warning is right — the
           // shorthand below would win on a rerender.
   label:  { fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4, display: "block" },
@@ -1193,9 +1198,343 @@ function MeetingsTab() {
   );
 }
 
+
+/* ── Sync tab ──────────────────────────────────────────────────────
+ *
+ * Three things that are one idea: get a calendar in, keep it coming in, get it
+ * out. They share a tab because a user asking "can I use my Outlook calendar
+ * here" does not know which of the three they want.
+ */
+
+const FEED_STATUS: Record<string, { colour: string; label: string }> = {
+  ok:        { colour: "#22c55e", label: "OK" },
+  unchanged: { colour: "#22c55e", label: "Up to date" },
+  error:     { colour: "#ef4444", label: "Failing" },
+  never:     { colour: "#64748b", label: "Not read yet" },
+};
+
+function when(value: string | null): string {
+  if (!value) return "never";
+  try { return new Date(value).toLocaleString(); } catch { return value; }
+}
+
+function SyncTab() {
+  const [subs, setSubs] = useState<CalendarSubscription[]>([]);
+  const [hosts, setHosts] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const [form, setForm] = useState({ name: "", url: "", interval_minutes: 60 });
+  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // Import. `preview` holds the dry run, so the second click confirms something
+  // the person has actually read rather than something they hope is true.
+  const [ics, setIcs] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [preview, setPreview] = useState<any | null>(null);
+  const [importing, setImporting] = useState(false);
+
+  const [range, setRange] = useState(() => {
+    const from = new Date();
+    const to = new Date(); to.setMonth(to.getMonth() + 3);
+    return { start: from.toISOString().slice(0, 10), end: to.toISOString().slice(0, 10) };
+  });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await listCalendarSubscriptions();
+      setSubs(data.subscriptions);
+      setHosts(data.allowed_hosts || []);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.message || "Could not load subscriptions");
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function subscribe() {
+    if (!form.name.trim() || !form.url.trim()) {
+      setMsg({ text: "A name and a URL, please.", ok: false });
+      return;
+    }
+    setBusy("new");
+    try {
+      await createCalendarSubscription(form);
+      setForm({ name: "", url: "", interval_minutes: 60 });
+      setMsg({ text: "Subscribed. Refresh it to read it now.", ok: true });
+      await load();
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Could not subscribe", ok: false });
+    } finally { setBusy(null); }
+  }
+
+  async function refresh(id: string) {
+    setBusy(id);
+    try {
+      // A feed-side failure comes back as a 200 with status "error" — the
+      // request worked, somebody else's server did not. Report it as it is.
+      const out = await refreshCalendarSubscription(id);
+      setMsg(out.status === "error"
+        ? { text: `That calendar could not be read: ${out.error}`, ok: false }
+        : { text: out.status === "unchanged" ? "Already up to date."
+              : `Read ${out.created} new, ${out.updated} updated${out.withdrawn ? `, ${out.withdrawn} withdrawn` : ""}.`,
+            ok: true });
+      await load();
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Refresh failed", ok: false });
+    } finally { setBusy(null); }
+  }
+
+  async function toggle(row: CalendarSubscription) {
+    setBusy(row.id);
+    try { await updateCalendarSubscription(row.id, { enabled: !row.enabled }); await load(); }
+    catch (e: any) { setMsg({ text: e?.message || "Could not save", ok: false }); }
+    finally { setBusy(null); }
+  }
+
+  async function remove(row: CalendarSubscription) {
+    setBusy(row.id);
+    try {
+      // Entries are kept: unsubscribing means "stop refreshing this", not
+      // "erase the last year of my diary".
+      await deleteCalendarSubscription(row.id, true);
+      setMsg({ text: `Unsubscribed from "${row.name}". Its entries were kept.`, ok: true });
+      await load();
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Could not unsubscribe", ok: false });
+    } finally { setBusy(null); }
+  }
+
+  function readFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      setIcs(String(reader.result || ""));
+      setFileName(file.name);
+      setPreview(null);
+    };
+    reader.readAsText(file);
+  }
+
+  async function runImport(dryRun: boolean) {
+    if (!ics.trim()) { setMsg({ text: "Choose a .ics file first.", ok: false }); return; }
+    setImporting(true);
+    try {
+      const out = await importCalendarIcs({ ics, dry_run: dryRun });
+      if (dryRun) {
+        setPreview(out);
+        setMsg(null);
+      } else {
+        setPreview(null); setIcs(""); setFileName("");
+        setMsg({ text: `Imported ${out.created} new and ${out.updated} updated entries.`, ok: true });
+      }
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Import failed", ok: false });
+      setPreview(null);
+    } finally { setImporting(false); }
+  }
+
+  async function download() {
+    try {
+      const text = await exportCalendarIcs({
+        start: new Date(range.start).toISOString(),
+        end: new Date(range.end).toISOString(),
+      });
+      // Built in the browser, not followed as a link: a plain <a href> carries
+      // no Authorization header and would come back 401.
+      const url = URL.createObjectURL(new Blob([text], { type: "text/calendar" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = "velaris-calendar.ics";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setMsg({ text: e?.message || "Export failed", ok: false });
+    }
+  }
+
+  if (loading) return <Spinner />;
+
+  return (
+    <div>
+      {msg && (
+        <div style={{ marginBottom: 14, padding: "10px 12px", borderRadius: "var(--radius-sm)", fontSize: 13,
+                      background: msg.ok ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)",
+                      color: msg.ok ? "#16a34a" : "#dc2626" }}>
+          {msg.text}
+        </div>
+      )}
+
+      <Card>
+        <h3 style={{ margin: "0 0 4px", fontSize: 15 }}>Subscribe to a calendar</h3>
+        <div style={{ ...S.note, marginBottom: 14 }}>
+          Paste the address of a calendar published elsewhere &mdash; Outlook, Google
+          or Apple all give you one. Velaris <b>reads</b> it on a schedule and never
+          writes back to it.
+        </div>
+
+        {hosts.length === 0 ? (
+          <EmptyState
+            title="No calendar services are allowed yet"
+            description="An administrator lists the calendar hosts this server may fetch from before a subscription can be added. This server only fetches addresses approved in advance."
+          />
+        ) : (
+          <>
+            <div style={S.grid2}>
+              <div>
+                <label style={S.label}>Name</label>
+                <input style={S.input} value={form.name} placeholder="My Outlook calendar"
+                       onChange={e => setForm({ ...form, name: e.target.value })} />
+              </div>
+              <div>
+                <label style={S.label}>Refresh every</label>
+                <select style={S.input} value={form.interval_minutes}
+                        onChange={e => setForm({ ...form, interval_minutes: Number(e.target.value) })}>
+                  <option value={15}>15 minutes</option>
+                  <option value={60}>hour</option>
+                  <option value={360}>6 hours</option>
+                  <option value={1440}>day</option>
+                </select>
+              </div>
+            </div>
+            <label style={S.label}>Calendar address</label>
+            <input style={S.input} value={form.url} placeholder="https://outlook.office365.com/owa/calendar/…/calendar.ics"
+                   onChange={e => setForm({ ...form, url: e.target.value })} />
+            <div style={{ ...S.note, marginBottom: 12 }}>
+              <b>Treat this address like a password.</b> A private calendar link has a
+              token in it, so anyone holding the link can read that calendar. It is
+              shown back only to you, your manager and an administrator.
+              <br />
+              Allowed here: {hosts.map(h => <code key={h} style={{ marginRight: 8 }}>{h}</code>)}
+            </div>
+            <Button onClick={subscribe} disabled={busy === "new"}>
+              {busy === "new" ? "Subscribing…" : "Subscribe"}
+            </Button>
+          </>
+        )}
+      </Card>
+
+      <Card style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 15 }}>Subscribed calendars</h3>
+        {err && <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 10 }}>{err}</div>}
+        {subs.length === 0 ? (
+          <EmptyState title="No subscriptions" description="Calendars you subscribe to appear here, with when they were last read." />
+        ) : subs.map(row => {
+          const state = FEED_STATUS[row.last_status] || FEED_STATUS.never;
+          return (
+            <div key={row.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
+                                       borderBottom: "1px solid var(--border-subtle)" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  {row.name}{" "}
+                  <span style={{ ...S.badge, background: `${state.colour}22`, color: state.colour }}>
+                    {state.label}
+                  </span>
+                  {!row.enabled && <span style={{ ...S.badge, marginLeft: 6, background: "#64748b22", color: "#64748b" }}>PAUSED</span>}
+                </div>
+                <div style={{ ...S.note, fontSize: 12 }}>
+                  {row.last_event_count} entries &middot; last read {when(row.last_fetched_at)}
+                  {row.last_status === "error" && row.last_error && (
+                    // A calendar failing for a fortnight must SAY so. A sync that
+                    // silently stops is worse than one that never started.
+                    <div style={{ color: "#dc2626", marginTop: 4 }}>
+                      {row.last_error}
+                      {row.consecutive_errors >= 20 &&
+                        " — stopped refreshing after repeated failures. Fix the address and refresh by hand."}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <Button variant="secondary" onClick={() => refresh(row.id)} disabled={busy === row.id}>
+                {busy === row.id ? "…" : "Refresh"}
+              </Button>
+              <Button variant="secondary" onClick={() => toggle(row)} disabled={busy === row.id}>
+                {row.enabled ? "Pause" : "Resume"}
+              </Button>
+              <Button variant="secondary" onClick={() => remove(row)} disabled={busy === row.id}>
+                Unsubscribe
+              </Button>
+            </div>
+          );
+        })}
+      </Card>
+
+      <Card style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 15 }}>Import a file once</h3>
+        <div style={{ ...S.note, marginBottom: 14 }}>
+          Export your calendar from Outlook, Google or Apple as an <code>.ics</code>
+          file and upload it. A file is a snapshot &mdash; it will not update itself.
+          Subscribe above if you want it to stay current.
+        </div>
+        <input type="file" accept=".ics,text/calendar" style={{ marginBottom: 12 }}
+               onChange={e => { const f = e.target.files?.[0]; if (f) readFile(f); }} />
+        {fileName && <div style={{ ...S.note, marginBottom: 12 }}>Selected: <b>{fileName}</b></div>}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="secondary" onClick={() => runImport(true)} disabled={!ics || importing}>
+            {importing ? "Reading…" : "Preview"}
+          </Button>
+          <Button onClick={() => runImport(false)} disabled={!preview || importing}>
+            Import {preview ? `${preview.created + preview.updated} entries` : ""}
+          </Button>
+        </div>
+
+        {preview && (
+          // The preview is the point: the second click confirms something the
+          // person has read, not something they hope is true.
+          <div style={{ marginTop: 14, padding: 12, borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              {preview.created} new &middot; {preview.updated} updated
+              {preview.absences_requested > 0 && ` · ${preview.absences_requested} leave request(s)`}
+            </div>
+            {preview.absences_requested > 0 && (
+              <div style={{ ...S.note, fontSize: 12 }}>
+                Out-of-office entries arrive as leave <b>requests</b> &mdash; they change
+                nothing until somebody approves them.
+              </div>
+            )}
+            {preview.skipped?.length > 0 && (
+              <div style={{ ...S.note, fontSize: 12, marginTop: 8 }}>
+                <b>{preview.skipped.length} entr{preview.skipped.length === 1 ? "y" : "ies"} skipped:</b>
+                <ul style={{ margin: "4px 0 0 18px", padding: 0 }}>
+                  {preview.skipped.slice(0, 8).map((s: any, i: number) => (
+                    <li key={i}>{s.event} &mdash; {s.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 15 }}>Export your calendar</h3>
+        <div style={{ ...S.note, marginBottom: 14 }}>
+          Download meetings and approved leave as an <code>.ics</code> file, to open
+          in Outlook, Google or Apple Calendar.
+        </div>
+        <div style={S.grid2}>
+          <div>
+            <label style={S.label}>From</label>
+            <input type="date" style={S.input} value={range.start}
+                   onChange={e => setRange({ ...range, start: e.target.value })} />
+          </div>
+          <div>
+            <label style={S.label}>To</label>
+            <input type="date" style={S.input} value={range.end}
+                   onChange={e => setRange({ ...range, end: e.target.value })} />
+          </div>
+        </div>
+        <Button variant="secondary" onClick={download}>Download .ics</Button>
+      </Card>
+    </div>
+  );
+}
+
 /* ── Root ──────────────────────────────────────────────────────── */
 
-type Tab = "month" | "team" | "record" | "meetings" | "calendars";
+type Tab = "month" | "team" | "record" | "meetings" | "calendars" | "sync";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "month",     label: "Calendar" },
@@ -1203,6 +1542,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "record",    label: "Record leave" },
   { key: "meetings",  label: "New meeting" },
   { key: "calendars", label: "Business Calendars" },
+  { key: "sync",      label: "Import / Sync" },
 ];
 
 export default function Calendar() {
@@ -1211,19 +1551,19 @@ export default function Calendar() {
 
   return (
     <div style={S.page}>
+      <Tabs
+          ariaLabel="Calendar"
+          tabs={TABS}
+          value={tab}
+          onChange={setTab}
+        />
       <div style={S.body}>
-        <div style={S.tabBar}>
-          {TABS.map(({ key, label }) => (
-            <button key={key} style={{ ...S.tab, ...(tab === key ? S.tabA : {}) }} onClick={() => setTab(key)}>
-              {label}
-            </button>
-          ))}
-        </div>
         {tab === "month"     && <MonthTab key={reload} />}
         {tab === "team"      && <TeamTab key={reload} />}
         {tab === "record"    && <RecordTab onDone={() => setReload(n => n + 1)} />}
         {tab === "meetings"  && <MeetingsTab />}
         {tab === "calendars" && <CalendarsTab />}
+        {tab === "sync"      && <SyncTab />}
       </div>
     </div>
   );

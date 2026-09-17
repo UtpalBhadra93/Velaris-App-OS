@@ -119,6 +119,13 @@ export const NAV_DATA: NavEntry[] = [
     roles: ["designer", "admin"],
   },
   {
+    path: "/case-config",
+    label: "Case Configuration",
+    description: "Statuses | Categories | Transitions | Action labels | Action visibility | Offered-from rules",
+    section: "Development",
+    roles: ["designer", "admin"],
+  },
+  {
     path: "/form-builder",
     label: "Form Builder",
     description: "Drag-and-drop fields | Sections | Field types | Validation rules | Form preview | JSON schema",
@@ -231,6 +238,55 @@ export const NAV_DATA: NavEntry[] = [
     description: "RPA bot registry and job queue | Approval by a second admin | Attended jobs propose, the operator commits",
     section: "DevOps",
     roles: ["devops", "admin", "developer"],
+  },
+  {
+    path: "/workforce",
+    label: "Agent Workforce",
+    description: "AI agents that hold case work | Skills, capacity and hourly token budgets | Why an agent stopped receiving work | Scorecards from the decision ledger | Routing weights a person approves",
+    section: "Operations",
+    roles: ["admin", "manager", "security"],
+  },
+  {
+    path: "/rep-desk",
+    label: "Rep Desk",
+    description: "Who is calling, and what you may tell them | A 360 that can only narrow what your own permissions allow | Verification tiers on the call, not the person | One field unmasked at a time, with a reason | Raise a case in the customer's name",
+    section: "Operations",
+    roles: ["admin", "manager", "case_worker"],
+  },
+  {
+    path: "/healing",
+    label: "Self-Healing",
+    description: "What the platform proposed to change about itself | Every rung of the validation ladder, passes included | One approval that applies the change | A pre-signed rollback | Deployed is not healed until the watch window closes",
+    section: "Operations",
+    roles: ["admin", "manager", "security"],
+  },
+  {
+    path: "/field-ops",
+    label: "Field Operations",
+    description: "Work that came back from a disconnected node | Conflicts nothing decided for itself | Both values side by side before you choose | Node fleet, charters and staleness lockouts",
+    section: "Operations",
+    roles: ["admin", "manager", "case_worker"],
+  },
+  {
+    path: "/intent",
+    label: "Intent Execution",
+    description: "State an outcome and read the plan Velaris composed | Verified fragments only, never free-form generation | Consequential capabilities called out | Confirming binds the hash of exactly what will run",
+    section: "Development",
+    roles: ["admin", "manager", "developer"],
+  },
+  {
+    path: "/joint-contracts",
+    label: "Joint Contracts",
+    description: "Shared workflows agreed with another organisation | Every clause the matcher resolved | What the seam carries now vs what was negotiated | Recompute their answer yourself | Close the seam without asking anybody",
+    section: "Integration",
+    roles: ["admin", "manager", "security"],
+  },
+  {
+    path: "/model-market",
+    label: "Model Marketplace",
+    description: "Share what a model learned, never the cases it learned from | What a published file actually discloses | A stranger's model scored on your own data before it may be installed | Installed is not active | Uninstall-with-delete destroys the weights and keeps the record",
+    section: "Operations",
+    roles: ["admin", "security"],
   },
   {
     path: "/calendar",
@@ -382,6 +438,13 @@ export const NAV_DATA: NavEntry[] = [
     featureKey:  "hxdbmanager",
   },
   {
+    path: "/arbiter",
+    label: "HxArbiter",
+    description: "Sovereignty & security policy engine | One rule, one deterministic evaluator, one provable decision log | Shadow before enforce, with parity as the evidence | Policies written in plain English, approved by a person",
+    section: "Security",
+    roles: ["admin", "security", "developer"],
+  },
+  {
     path: "/compliance",
     label: "Compliance",
     description: "Audit chain integrity | Evidence pack | Compliance reports | Data lineage | GDPR | Regulatory frameworks",
@@ -399,7 +462,7 @@ export const NAV_DATA: NavEntry[] = [
   // ── Admin ─────────────────────────────────────────────────────────────
   {
     path: "/portal-admin",
-    label: "Customer Portal",
+    label: "Portals Management",
     description: "Portal configuration | Customer submissions | Portal branding | Case type access | Portal settings",
     section: "Admin",
     roles: ["admin"],

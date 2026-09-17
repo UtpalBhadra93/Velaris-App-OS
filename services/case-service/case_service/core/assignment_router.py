@@ -392,6 +392,59 @@ async def _resolve_skill_based(
     return "user", str(chosen)
 
 
+async def _resolve_workforce(
+    session: AsyncSession, rule: dict[str, Any], context: dict[str, Any]
+) -> tuple[str, str]:
+    """F-05: assign to an AGENT if one qualifies, otherwise to a human.
+
+    A NEW strategy rather than a change to `skill_based`, and that is the whole
+    upgrade story: every existing case type keeps the strategy it names, so no
+    install starts routing work to agents because it took an update. A case type
+    opts in by naming `workforce`.
+
+    Agents first, then the human path — deliberately in that order. The point of
+    the feature is that an agent takes the step when it can; a human is the
+    fallback, and the fallback is the ordinary skill-based resolution, so
+    nothing about human routing is reimplemented here.
+
+    `assignable_to` on the rule mirrors the design's per-step setting:
+    `human` skips agents entirely, `agent` refuses to fall back to a person,
+    and `either` (the default) prefers an agent and falls back.
+    """
+    from case_service.agents import workforce
+
+    assignable = str(rule.get("assignable_to", "either")).lower()
+    if assignable not in ("human", "agent", "either"):
+        # An unrecognised value routes to humans. Fail towards the party that
+        # can ask questions.
+        logger.warning("workforce: unknown assignable_to %r, routing to humans",
+                       assignable)
+        assignable = "human"
+
+    if assignable != "human":
+        tenant = await _tenant_for(session, context)
+        try:
+            ranked = await workforce.eligible(
+                session, tenant_id=tenant,
+                required_skills=_required_skills(rule))
+        except Exception:                                      # noqa: BLE001
+            # A broken roster must not stop work being assigned at all.
+            logger.warning("workforce: agent selection failed, using the human "
+                           "path", exc_info=True)
+            ranked = []
+        if ranked:
+            chosen, _score = ranked[0]
+            return "agent", str(chosen.agent_id)
+        if assignable == "agent":
+            # Agent-only work with no available agent goes to the ESCALATION
+            # queue, never to nobody. `target` is the rule's own fallback queue.
+            logger.info("workforce: no agent available for an agent-only step, "
+                        "using queue %s", rule.get("target", "default-queue"))
+            return "queue", rule.get("target", "default-queue")
+
+    return await _resolve_skill_based(session, rule, context)
+
+
 _RESOLVERS = {
     "specific_user": _resolve_specific_user,
     "role_based": _resolve_role_based,
@@ -402,6 +455,9 @@ _RESOLVERS = {
     "rule_based": _resolve_rule_based,
     "manager_of": _resolve_manager_of,
     "skill_based": _resolve_skill_based,
+    # F-05. Opt-in per rule: an install that names none of its steps
+    # `workforce` never routes anything to an agent.
+    "workforce": _resolve_workforce,
 }
 
 

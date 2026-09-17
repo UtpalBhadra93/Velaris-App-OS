@@ -5,7 +5,7 @@
  * manage its catalogue, inventory, promotions, and theme.
  */
 import React, { useState, useEffect, useCallback } from "react";
-import { Button } from "@shared/components";
+import { Button, Tabs } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 const API = "/api/v1/storefront";
@@ -20,9 +20,6 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
 
 const S: Record<string, React.CSSProperties> = {
   page:   { padding: "var(--space-xl) var(--space-2xl)", width: "100%", overflow: "auto", height: "100%", boxSizing: "border-box" as const },
-  tabs:   { display: "flex", gap: 2, marginBottom: "var(--space-lg)", borderBottom: "1px solid var(--border)", flexWrap: "wrap" as const },
-  tab:    { padding: "8px 16px", fontSize: 13, fontWeight: 500, background: "none", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", color: "var(--text-muted)", marginBottom: -1 },
-  tabOn:  { borderBottomColor: "var(--accent)", color: "var(--accent)", fontWeight: 700 },
   card:   { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: "var(--space-lg)", marginBottom: "var(--space-md)" },
   label:  { fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" as const, letterSpacing: "0.05em", marginBottom: 4 },
   input:  { width: "100%", padding: "8px 10px", border: "1px solid var(--border-subtle)", borderRadius: 4, fontSize: 13, background: "var(--bg-input)", color: "var(--text-primary)", boxSizing: "border-box" as const, marginBottom: 10 },
@@ -235,9 +232,9 @@ export default function HxStorefront() {
 
       {slug ? (
         <>
-          <div style={S.tabs}>
-            {STORE_TABS.map(t => <button key={t} style={{ ...S.tab, ...(tab === t ? S.tabOn : {}) }} onClick={() => setTab(t)}>{t}</button>)}
-          </div>
+          <Tabs ariaLabel="Storefront"
+                tabs={STORE_TABS.map(t => ({ key: t, label: t }))}
+                value={tab} onChange={setTab} />
           {tab === "Products" && <ProductsTab slug={slug} />}
           {tab === "Categories" && <CategoriesTab slug={slug} />}
           {tab === "Inventory" && <InventoryTab slug={slug} />}

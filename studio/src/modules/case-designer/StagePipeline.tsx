@@ -43,6 +43,16 @@ export interface StageDef {
   steps: StepDef[];
   entry_criteria?: string[];
   exit_criteria?: string[];
+  /** Entering this stage moves the case to this status. Absent = unchanged. */
+  on_enter_status?: string;
+  /**
+   * The actions offered while a case sits here. **Absent means every action**
+   * — which is every stage on every install until somebody configures one —
+   * and an EMPTY array means none. The two are different answers and the
+   * backend reads them as different answers, so the optional marker here is
+   * load-bearing: never default it to `[]`.
+   */
+  actions_allowed?: string[];
 }
 
 interface StagePipelineProps {

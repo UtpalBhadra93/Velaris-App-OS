@@ -12,6 +12,7 @@ Endpoints:
   GET  /graph/report                   graphify-equivalent markdown report
   GET  /graph/export                   graph.json export
   GET  /graph/visualize                interactive D3.js graph.html
+  GET  /graph/vendor/d3.js             the vendored D3 the visualizer loads
 """
 from __future__ import annotations
 
@@ -234,6 +235,44 @@ async def get_visualize(
     """graph.html equivalent — interactive D3.js force-directed visualizer."""
     html = await graph_html(session, tenant_id=_tenant(user))
     return HTMLResponse(content=html)
+
+
+@router.get("/vendor/d3.js", include_in_schema=False)
+async def get_vendored_d3():
+    """The D3 library, from this install, for this install's own visualizer.
+
+    **Why the platform serves it at all.** Both visualizers used to load D3 from
+    `https://d3js.org`, so the graph screen was dead on any deployment without
+    internet — an air-gapped install, a customer's private network, the kiosk
+    image — and a third party's CDN was a runtime dependency of a
+    sovereignty-first product.
+
+    **Why it is not authenticated.** It is an unmodified copy of a public
+    library and carries no data of any kind. It also cannot be: the page that
+    needs it is an iframe whose `<script src>` sends no Authorization header,
+    and Studio authenticates with a bearer token rather than a cookie. What
+    needs gating is `/visualize`, which is where the graph itself is, and that
+    is gated.
+
+    Cached for a year and immutable — the file is pinned to a version, and a
+    version change is a different deployment, not a different response.
+    """
+    from fastapi.responses import Response
+
+    from velaris_shared.hxgraph.report import D3_FILENAME, d3_path
+
+    path = d3_path()
+    if not path.exists():
+        # Said out loud rather than answered with an empty 200: a blank graph
+        # screen with no explanation is what this change exists to end.
+        raise HTTPException(
+            500, f"The vendored D3 file is missing from this install ({D3_FILENAME}).")
+
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 # ── Utils ─────────────────────────────────────────────────────────────────────

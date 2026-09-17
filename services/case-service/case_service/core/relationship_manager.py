@@ -51,7 +51,16 @@ async def propagate_status_change(
     """
     affected: list[uuid.UUID] = []
 
-    if new_status not in ("resolved", "closed", "cancelled"):
+    # Resolved from the status set, not from a tuple. A sub-case that ends on a
+    # tenant's OWN terminal status must still tell its parent so — otherwise the
+    # parent sits on `pending_subcase` forever, waiting for a child that is
+    # already finished, and nothing anywhere says why.
+    from case_service.case_actions import statuses as _st
+    _child = await repo.get_case_instance(session, case_id)
+    if not await _st.is_terminal(
+            session, new_status,
+            tenant_id=getattr(_child, "tenant_id", None) if _child else None,
+            case_type_id=getattr(_child, "case_type_id", None) if _child else None):
         return affected
 
     # Find relationships where this case is the target (i.e., it's a child)
@@ -178,11 +187,20 @@ async def check_blocking_resolved(
     result = await session.execute(stmt)
     blockers = result.scalars().all()
 
+    from case_service.case_actions import statuses as _st
+
     for blocker_rel in blockers:
         blocker = await repo.get_case_instance(
             session, blocker_rel.source_case_id
         )
-        if blocker and blocker.status not in ("resolved", "closed"):
+        # A blocker that was CANCELLED still blocks — deliberately, and this is
+        # the one place the distinction matters. Cancelling the thing somebody
+        # was waiting for does not mean the wait is satisfied; it means the work
+        # was abandoned, and letting the dependent case proceed on that basis
+        # would be the wrong answer quietly. Asked through the resolved set so a
+        # tenant's own "done" status counts, while its own "abandoned" one does
+        # not.
+        if not await _st.is_concluded_for_case(session, blocker):
             return False
 
     return True
@@ -203,9 +221,11 @@ async def _all_required_targets_resolved(
     result = await session.execute(stmt)
     rels = result.scalars().all()
 
+    from case_service.case_actions import statuses as _st
+
     for rel in rels:
         target = await repo.get_case_instance(session, rel.target_case_id)
-        if target and target.status not in ("resolved", "closed", "cancelled"):
+        if target is not None and not await _st.is_terminal_for_case(session, target):
             return False
 
     return True

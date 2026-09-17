@@ -119,12 +119,11 @@ class EmailAction:
             account = await session.get(
                 EmailAccountModel, _uuid(cfg["account_id"], "account_id"))
         else:
-            account = (await session.execute(
-                select(EmailAccountModel).where(
-                    EmailAccountModel.is_default_outbound.is_(True),
-                    EmailAccountModel.is_active.is_(True),
-                ).limit(1)
-            )).scalar_one_or_none()
+            # The schedule's tenant's default mailbox — not whichever tenant's
+            # default the database returned first (2026-09-17).
+            from case_service.mail import tenancy as mail_tenancy
+            account = await mail_tenancy.default_outbound(
+                session, await mail_tenancy.scope_for_token(session, schedule.tenant_id))
         if account is None:
             raise ScheduleActionError("No outbound email account configured.")
         await _require_same_tenant(session, account.tenant_id, schedule, "Email account")
@@ -333,7 +332,10 @@ class CaseBulkAction:
         from case_service.tenancy.identity import resolve_tenant
         from sqlalchemy import or_
 
-        stmt = select(CaseInstanceModel)
+        # A soft-deleted case is not eligible for an unattended sweep — it is
+        # hidden from the operator who would have to answer for the change.
+        stmt = select(CaseInstanceModel).where(
+            CaseInstanceModel.is_deleted.is_(False))
         # Tenant-scoped in SQL, not only afterwards in Python. Filtering after a
         # `LIMIT` means another tenant's matching cases consume the budget and
         # this schedule silently skips its OWN cases — the query would look
@@ -509,10 +511,159 @@ class SyncAction:
         return detail
 
 
+# ── calendar feeds ────────────────────────────────────────────────────────
+
+class CalendarFeedAction:
+    """Re-read the external calendars this tenant subscribes to.
+
+    A subscription is worth having only if something re-reads it, and this
+    platform already has one thing that runs work on a timetable with approval,
+    a tenant pin and a timeout. A second always-on poller would be a second
+    thing to configure, a second thing to forget, and a second place for a
+    stalled fetch to hide.
+    """
+
+    KIND = "calendar_feed"
+    LABEL = "Refresh subscribed calendars"
+
+    async def _subscriptions(self, session, schedule, cfg):
+        from velaris_shared.db.models import CalendarSubscriptionModel
+
+        rows = (await session.execute(
+            select(CalendarSubscriptionModel)
+            .where(CalendarSubscriptionModel.enabled.is_(True))
+        )).scalars().all()
+        rows = [r for r in rows
+                if await same_tenant(session, r.tenant_id, schedule.tenant_id)]
+        wanted = cfg.get("subscription_ids")
+        if wanted:
+            ids = {str(_uuid(w, "subscription_ids")) for w in wanted}
+            found = [r for r in rows if str(r.id) in ids]
+            missing = ids - {str(r.id) for r in found}
+            if missing:
+                raise ScheduleActionError(
+                    f"{len(missing)} calendar subscription(s) not found, "
+                    f"disabled, or not this tenant's.")
+            return found
+        return rows
+
+    async def validate(self, session, schedule, cfg):
+        if cfg.get("subscription_ids"):
+            await self._subscriptions(session, schedule, cfg)
+
+    async def run(self, session, schedule, cfg):
+        from case_service.calendar import feeds
+
+        detail: dict[str, Any] = {"refreshed": [], "skipped_not_due": 0}
+        for row in await self._subscriptions(session, schedule, cfg):
+            # `due` is what lets this be scheduled every five minutes while each
+            # calendar is still only fetched at its own interval — the schedule
+            # sets the granularity, the subscription sets the rate.
+            if not cfg.get("force") and not feeds.due(row):
+                detail["skipped_not_due"] += 1
+                continue
+            outcome = await feeds.refresh(session, row, actor="scheduler")
+            detail["refreshed"].append(
+                {"id": str(row.id), "name": row.name, **outcome})
+        return detail
+
+
+class AuditStreamAction:
+    """Forward security events to every enabled SIEM target (market gap A3).
+
+    A scheduler action rather than an always-on loop, for the same reason
+    `calendar_feed` is one: a second background poller is a second thing to
+    configure, a second thing to forget, and a second place for a stall to hide.
+    It also means the forwarding interval is an operator's setting, visible on
+    the schedules screen, rather than a constant in a file.
+
+    **Platform-wide.** Targets are not tenant-scoped — `security_events` has no
+    tenant column — so this runs the same work whichever tenant's schedule
+    triggers it. That is stated here rather than filtered silently.
+    """
+
+    KIND = "audit_stream"
+    LABEL = "Forward security events to the SIEM"
+
+    async def validate(self, session, schedule, cfg):
+        # Nothing to validate: a schedule created before the target is normal,
+        # and refusing it would force the operator to do the two steps in one
+        # order. The "no target yet" observation belongs in `run`, whose result
+        # is RECORDED — `validate`'s return value is discarded by the caller
+        # (`scheduler/service.py`), so a warning returned here reaches nobody.
+        return None
+
+    async def run(self, session, schedule, cfg):
+        from case_service.audit_stream import run_due_targets
+
+        results = await run_due_targets(session)
+        if not results:
+            return {"targets": [], "sent": 0, "failed": [],
+                    "note": "No audit stream target is enabled, so nothing was "
+                            "forwarded. Create one and enable it."}
+        return {
+            "targets": results,
+            "sent": sum(r.get("sent", 0) for r in results),
+            "failed": [r["name"] for r in results if r.get("error")],
+        }
+
+
+class DocumentIndexAction:
+    """Drain the document index queue (migration 203).
+
+    A scheduler action for the third time, and for the third time the same
+    reason as `calendar_feed` and `audit_stream`: a second always-on loop is a
+    second thing to configure, a second thing to forget, and a second place for
+    a stall to hide. It also puts the interval on a screen rather than in a
+    constant.
+
+    **Nothing enqueues itself.** A row exists only because a caller asked for
+    `background: true`, so a schedule that finds an empty queue is the normal
+    state of an install that never asked for one.
+
+    **Tenant-scoped by the schedule that runs it**, unlike `audit_stream`: a job
+    carries the tenant of the case it came from, so a tenant's schedule drains
+    that tenant's work — plus the untenanted rows, which have always meant
+    platform-shared here and would otherwise wait forever.
+    """
+
+    KIND = "document_index"
+    LABEL = "Index queued documents"
+
+    async def validate(self, session, schedule, cfg):
+        for key in ("max_jobs", "budget_seconds"):
+            if key in cfg and cfg[key] is not None:
+                try:
+                    value = float(cfg[key])
+                except (TypeError, ValueError):
+                    raise ScheduleActionError(f"{key} must be a number.")
+                if value <= 0:
+                    raise ScheduleActionError(f"{key} must be greater than zero.")
+
+    async def run(self, session, schedule, cfg):
+        from case_service.hxnexus import index_queue
+
+        result = await index_queue.run_due_jobs(
+            session,
+            max_jobs=int(cfg.get("max_jobs") or index_queue.DEFAULT_MAX_JOBS),
+            budget_seconds=float(
+                cfg.get("budget_seconds") or index_queue.DEFAULT_BUDGET_SECONDS),
+            tenant_id=schedule.tenant_id,
+        )
+        if not result["claimed"]:
+            # Said out loud, because "0 indexed" and "nothing was waiting" look
+            # identical on a schedule history screen.
+            result["note"] = ("No document was waiting to be indexed. Documents "
+                              "reach this queue only when indexing is requested "
+                              "with background: true.")
+        return result
+
+
 _ACTIONS: dict[str, Any] = {
     a.KIND: a() for a in (
         BotAction, EmailAction, CaseAction, ConnectorAction,
-        CaseBulkAction, ReportAction, SyncAction,
+        CaseBulkAction, ReportAction, SyncAction, CalendarFeedAction,
+        AuditStreamAction, DocumentIndexAction,
     )
 }
 

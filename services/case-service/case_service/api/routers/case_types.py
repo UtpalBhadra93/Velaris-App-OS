@@ -35,6 +35,39 @@ from velaris_shared.db.session import get_session
 router = APIRouter(prefix="/case-types", tags=["case-types"], dependencies=[Depends(get_current_user)])
 
 
+async def _validate_stage_config(
+    session: AsyncSession,
+    definition_json: Any,
+    *,
+    tenant_id: uuid.UUID | None,
+    case_type_id: uuid.UUID | None,
+) -> None:
+    """Refuse a stage naming an action or a status that does not exist.
+
+    Checked here rather than at runtime because both failures are silent by
+    nature. An `actions_allowed` holding a typo narrows the stage to fewer
+    actions than its author listed and says nothing; an `on_enter_status`
+    holding a typo moves the case and changes nothing. Neither shows up until
+    somebody notices a button missing or a status not moving, which may be
+    weeks.
+
+    A definition with neither key is untouched, so every case type that exists
+    today deploys and updates exactly as it does now.
+    """
+    from case_service.case_actions import stages as _stages
+
+    stage_list = ((definition_json or {}).get("stages")
+                  if isinstance(definition_json, dict) else None)
+    if not stage_list:
+        return
+    try:
+        _stages.validate_actions_allowed(stage_list)
+        await _stages.validate_on_enter_status(
+            session, stage_list, tenant_id=tenant_id, case_type_id=case_type_id)
+    except _stages.StageConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.code}: {exc}") from exc
+
+
 @router.post("", response_model=CaseTypeResponse, status_code=201)
 async def deploy_case_type(
     body: CaseTypeCreate,
@@ -57,6 +90,10 @@ async def deploy_case_type(
             status_code=409,
             detail=f"Case type '{body.name}' v{body.version} already exists",
         )
+
+    await _validate_stage_config(
+        session, body.definition_json,
+        tenant_id=body.tenant_id, case_type_id=None)
 
     ct = await repo.create_case_type(
         session,
@@ -215,6 +252,13 @@ async def update_case_type(
         "filter_conditions", "field_mapping", "process_definition_id",
     }
     values = {k: v for k, v in body.items() if k in allowed}
+
+    if "definition_json" in values:
+        # Scoped to the case type being edited, so a status this case type
+        # defines for itself is accepted and a neighbouring tenant's is not.
+        await _validate_stage_config(
+            session, values["definition_json"],
+            tenant_id=ct.tenant_id, case_type_id=case_type_id)
 
     if values:
         stmt = (

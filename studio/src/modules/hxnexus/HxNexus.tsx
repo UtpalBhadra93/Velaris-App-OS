@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import LLMOpsPanel from "./LLMOpsPanel";
+import IndexQueuePanel from "./IndexQueuePanel";
 import { AiUnavailableBanner } from "@shared/components/AiUnavailableBanner";
-import { VoiceInput, appendTranscript } from "@shared/components";
+import { VoiceInput, appendTranscript, Tabs } from "@shared/components";
 import { useAuth } from "../../auth/AuthContext";
 import { getAccessToken } from "@/auth/tokenManager";
 
-type Tab = "chat" | "suggest" | "qa" | "translator" | "llmops";
+type Tab = "chat" | "suggest" | "qa" | "translator" | "llmops" | "indexqueue";
 type DraftKind = "rule" | "case_type" | "form" | "sla" | "user" | "connector"
                | "escalation" | "routing";
 type DraftDiff = { changed_fields: { field: string; base: any; branch: any }[];
@@ -404,9 +405,30 @@ export default function HxNexus() {
     }
   }
 
-  function downloadTranscript() {
+  async function downloadTranscript() {
     if (!convId) return;
-    window.open(`/api/v1/hxnexus/conversations/${convId}/transcript`, "_blank");
+    // `window.open` sends no Authorization header, so this button opened a tab
+    // showing a 401 — the same trap documented on document downloads. Fetch it
+    // with the token and hand the browser a blob.
+    try {
+      const token = getAccessToken();
+      const r = await fetch(`/api/v1/hxnexus/conversations/${convId}/transcript`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!r.ok) throw new Error(`Transcript download failed (${r.status})`);
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `conversation-${convId}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      // Reported in the thread, like every other failure on this screen.
+      setMessages(m => [...m, { role: "assistant",
+                                content: `Error: ${e?.message || "Transcript download failed"}` }]);
+    }
   }
 
   async function fetchSummary() {
@@ -492,33 +514,37 @@ export default function HxNexus() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <AiUnavailableBanner featureName="AI chat & suggestions" />
 
-      {/* Tab bar — matches Work Center format, no duplicate title */}
-      <div style={{
-        padding: "var(--space-md) var(--space-2xl)",
-        display: "flex", alignItems: "center", gap: "var(--space-md)", flexShrink: 0,
-      }}>
-        <div style={{ display: "flex", background: "var(--bg-card)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
-          {(["chat", "suggest", "qa", "translator", "llmops"] as Tab[]).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding: "8px 16px", fontSize: 12, fontWeight: 500,
-              fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.04em",
-              border: "none", cursor: "pointer", borderRadius: "var(--radius-sm)",
-              color: tab === t ? "var(--accent)" : "var(--text-muted)",
-              background: tab === t ? "var(--accent-dim)" : "transparent",
-            }}>
-              {t === "chat" ? "Chat" : t === "suggest" ? "Suggestions" : t === "qa" ? "Doc Q&A" : "BPM Translator"}
-            </button>
-          ))}
-        </div>
-        {/* Status indicator at far right */}
-        {status && (
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: "var(--font-mono)", color: status.available ? "var(--status-completed)" : "var(--status-failed)" }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: status.available ? "var(--status-completed)" : "var(--status-failed)", display: "inline-block" }} />
-            {status.backend} {status.available ? "online" : "offline"}
-          </div>
-        )}
-        {statusError && <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--status-failed)", fontFamily: "var(--font-mono)" }}>{statusError}</span>}
-      </div>
+      {/* `llmops` used to fall through the label ternary and render as
+          "BPM Translator" — two tabs, the same name, and no way to tell which
+          one you were on. A label per key cannot do that. */}
+      <Tabs
+        ariaLabel="HxNexus"
+        tabs={[
+          { key: "chat"       as Tab, label: "Chat" },
+          { key: "suggest"    as Tab, label: "Suggestions" },
+          { key: "qa"         as Tab, label: "Doc Q&A" },
+          { key: "translator" as Tab, label: "BPM Translator" },
+          { key: "llmops"     as Tab, label: "LLM Ops" },
+          { key: "indexqueue" as Tab, label: "Index Queue" },
+        ]}
+        value={tab}
+        onChange={setTab}
+        right={
+          status ? (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+                           fontFamily: "var(--font-mono)",
+                           color: status.available ? "var(--status-completed)" : "var(--status-failed)" }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", display: "inline-block",
+                             background: status.available ? "var(--status-completed)" : "var(--status-failed)" }} />
+              {status.backend} {status.available ? "online" : "offline"}
+            </span>
+          ) : statusError ? (
+            <span style={{ fontSize: 11, color: "var(--status-failed)", fontFamily: "var(--font-mono)" }}>
+              {statusError}
+            </span>
+          ) : null
+        }
+      />
 
       {/* The configured provider was dropped and the local model took over.
           Worth its own row rather than a colour change on the dot above: the
@@ -707,6 +733,7 @@ export default function HxNexus() {
 
       {/* ── Suggest tab ── */}
       {tab === "llmops" && <LLMOpsPanel />}
+      {tab === "indexqueue" && <IndexQueuePanel />}
       {tab === "suggest" && (
         <div style={{ flex: 1, overflowY: "auto", padding: "var(--space-xl) var(--space-2xl)" }}>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 0 }}>Get AI-powered next-best-action suggestions for any case.</p>

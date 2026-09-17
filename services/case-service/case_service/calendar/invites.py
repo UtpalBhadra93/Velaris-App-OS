@@ -65,20 +65,15 @@ def _fold(line: str) -> str:
     return _CRLF.join(out)
 
 
-def build_ics(event, *, organiser_email: str | None = None,
-              method: str = "REQUEST") -> str:
-    """One VEVENT for this meeting, repeating if it repeats.
+def _vevent(event, *, organiser_email: str | None = None) -> list[str]:
+    """The VEVENT lines for one meeting, without the enclosing VCALENDAR.
 
-    The recurrence travels as an RRULE rather than as expanded copies: the
-    guest's calendar then owns the series the same way this one does, and moving
-    it later means one update rather than fifty.
+    Split out so a whole calendar can be exported (`build_calendar`) without a
+    second implementation of the same properties — two writers would drift, and
+    the one nobody tests is the one that breaks a guest's invitation.
     """
     uid = f"{event.id}@velaris"
     lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Velaris//Calendar//EN",
-        f"METHOD:{method}",
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{_stamp(datetime.now(timezone.utc))}",
@@ -116,8 +111,71 @@ def build_ics(event, *, organiser_email: str | None = None,
             lines.append(
                 f"EXDATE:{skipped.replace('-', '')}T{_stamp(start)[9:]}")
 
-    lines += ["END:VEVENT", "END:VCALENDAR"]
+    lines.append("END:VEVENT")
+    return lines
+
+
+def _wrap(blocks: list[str], *, method: str) -> str:
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0",
+             "PRODID:-//Velaris//Calendar//EN", f"METHOD:{method}"]
+    lines += blocks
+    lines.append("END:VCALENDAR")
     return _CRLF.join(_fold(line) for line in lines) + _CRLF
+
+
+def build_ics(event, *, organiser_email: str | None = None,
+              method: str = "REQUEST") -> str:
+    """One VEVENT for this meeting, repeating if it repeats.
+
+    The recurrence travels as an RRULE rather than as expanded copies: the
+    guest's calendar then owns the series the same way this one does, and moving
+    it later means one update rather than fifty.
+    """
+    return _wrap(_vevent(event, organiser_email=organiser_email), method=method)
+
+
+def build_calendar(events, *, absences=(), organiser_email: str | None = None,
+                   full_detail: bool = True) -> str:
+    """A whole calendar — what "export my calendar" hands the person.
+
+    `METHOD:PUBLISH`, not `REQUEST`: this is a copy of a diary, not an
+    invitation, and a client that reads it as a request would ask the person to
+    RSVP to fifty meetings they are already in.
+
+    **`full_detail=False` strips the reason for an absence.** The kind of leave
+    is health data at worst and personal at best (`visible_absence`), so an
+    export somebody else pulled says "Away" and nothing more — the same rule the
+    team screen follows, applied to a file that leaves the platform entirely.
+    """
+    blocks: list[str] = []
+    for event in events:
+        blocks += _vevent(event, organiser_email=organiser_email)
+    for absence in absences:
+        blocks += _vabsence(absence, full_detail=full_detail)
+    return _wrap(blocks, method="PUBLISH")
+
+
+def _vabsence(absence, *, full_detail: bool) -> list[str]:
+    """Leave as a VEVENT, marked out-of-office.
+
+    Exported so that what this platform writes is what it reads: an absence
+    exported here and imported elsewhere comes back as an absence, because
+    `ics_import` looks for exactly this property.
+    """
+    summary = (f"Away — {absence.kind}" if full_detail and absence.kind
+               else "Away")
+    return [
+        "BEGIN:VEVENT",
+        f"UID:absence-{absence.id}@velaris",
+        f"DTSTAMP:{_stamp(datetime.now(timezone.utc))}",
+        f"DTSTART:{_stamp(absence.starts_at)}",
+        f"DTEND:{_stamp(absence.ends_at)}",
+        f"SUMMARY:{_escape(summary)}",
+        "TRANSP:OPAQUE",
+        "X-MICROSOFT-CDO-BUSYSTATUS:OOF",
+        f"STATUS:{'CANCELLED' if absence.status == 'cancelled' else 'CONFIRMED'}",
+        "END:VEVENT",
+    ]
 
 
 async def _join_link_for(session: AsyncSession, event, address: str, *,
@@ -209,12 +267,11 @@ async def send_invitations(session: AsyncSession, event, *, tenant_id: str,
     from velaris_shared.db.models import EmailAccountModel
     from case_service.mail.service import EmailService
 
-    account = (await session.execute(
-        select(EmailAccountModel).where(
-            EmailAccountModel.is_default_outbound.is_(True),
-            EmailAccountModel.is_active.is_(True),
-        ).limit(1)
-    )).scalar_one_or_none()
+    # The organiser's tenant's own mailbox. An invitation sent from another
+    # tenant's address would be that tenant speaking for this one (2026-09-17).
+    from case_service.mail import tenancy as mail_tenancy
+    account = await mail_tenancy.default_outbound(
+        session, await mail_tenancy.scope_for_token(session, tenant_id))
     if account is None:
         raise CalendarError(
             "No outbound email account is configured, so an invitation cannot be "

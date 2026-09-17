@@ -39,7 +39,9 @@ async function openRetention() {
   // Enterprise's OverviewTab calls useNavigate(), so the module cannot mount
   // outside a router even when we only care about a different tab.
   render(<MemoryRouter><Enterprise /></MemoryRouter>);
-  await user.click(screen.getByRole("button", { name: /retention/i }));
+  // `role="tab"`, not "button": the shared <Tabs> component marks the bar up as
+  // a real tablist. Querying the role the user's screen reader sees is the point.
+  await user.click(screen.getByRole("tab", { name: /retention/i }));
   await waitFor(() => expect(screen.getByText(/Retention policies decide/i)).toBeInTheDocument());
   return user;
 }

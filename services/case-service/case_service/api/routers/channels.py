@@ -233,11 +233,21 @@ def _message_dict(m: ChannelMessageModel) -> dict:
     }
 
 
-async def _scoped(stmt, user: AuthenticatedUser):
-    """Tenant scoping for an operator. A superadmin sees every tenant."""
-    if user.tenant_id and "superadmin" not in (user.roles or []):
+async def _scoped(stmt, user: AuthenticatedUser, session: AsyncSession | None = None):
+    """Tenant scoping for an operator. A superadmin sees every tenant.
+
+    A caller with no tenant claim is the default tenant, never every tenant —
+    until 2026-09-17 it listed every tenant's conversations.
+    """
+    if "superadmin" in (user.roles or []):
+        return stmt
+    if user.tenant_id:
         return stmt.where(ChannelConversationModel.tenant_id == user.tenant_id)
-    return stmt
+    from sqlalchemy import or_ as _or
+    from case_service.tenancy.identity import DEFAULT_TENANT, default_tenant_tokens
+    tokens = await default_tenant_tokens(session) if session is not None else [DEFAULT_TENANT]
+    return stmt.where(_or(ChannelConversationModel.tenant_id.is_(None),
+                          ChannelConversationModel.tenant_id.in_(tokens)))
 
 
 @router.get("/conversations")
@@ -250,7 +260,7 @@ async def list_conversations(
     user: AuthenticatedUser = Depends(hxguard.guard("channels.conversations.read")),
 ):
     """The channel inbox."""
-    stmt = await _scoped(select(ChannelConversationModel), user)
+    stmt = await _scoped(select(ChannelConversationModel), user, session)
     if status:
         stmt = stmt.where(ChannelConversationModel.status == status)
     if case_id:
@@ -276,7 +286,7 @@ async def inbox_stats(
     user: AuthenticatedUser = Depends(hxguard.guard("channels.conversations.read")),
 ):
     """Mirrors `GET /email/inbox/stats` so the two inboxes read alike."""
-    stmt = await _scoped(select(ChannelConversationModel), user)
+    stmt = await _scoped(select(ChannelConversationModel), user, session)
     rows = (await session.execute(stmt)).scalars().all()
     return {
         "total": len(rows),
@@ -294,9 +304,16 @@ async def _load_conversation(
     if conversation is None:
         raise coded(404, CHANNEL_NOTFOUND_404, "Conversation not found.")
     # 404 rather than 403 across the tenant boundary: a 403 confirms the id.
-    if (user.tenant_id and "superadmin" not in (user.roles or [])
-            and conversation.tenant_id != user.tenant_id):
-        raise coded(404, CHANNEL_NOTFOUND_404, "Conversation not found.")
+    if "superadmin" not in (user.roles or []):
+        if user.tenant_id:
+            outside = conversation.tenant_id != user.tenant_id
+        else:
+            # No tenant claim = the default tenant, never every tenant (2026-09-17).
+            from case_service.tenancy.identity import default_tenant_tokens
+            outside = (conversation.tenant_id is not None and conversation.tenant_id
+                       not in await default_tenant_tokens(session))
+        if outside:
+            raise coded(404, CHANNEL_NOTFOUND_404, "Conversation not found.")
     endpoint = await session.get(ChannelEndpointModel, conversation.endpoint_id)
     if endpoint is None:
         raise coded(404, CHANNEL_NOTFOUND_404, "Conversation not found.")
@@ -498,7 +515,7 @@ async def conversations_for_case(
     """The case's Channels tab."""
     stmt = await _scoped(
         select(ChannelConversationModel).where(
-            ChannelConversationModel.case_id == case_id), user)
+            ChannelConversationModel.case_id == case_id), user, session)
     rows = (await session.execute(stmt)).scalars().all()
     return {"conversations": [_conversation_dict(c) for c in rows]}
 

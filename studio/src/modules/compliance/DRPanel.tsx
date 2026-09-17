@@ -28,10 +28,10 @@ type Posture = {
 };
 
 const STATE_STYLE: Record<Region["state"], { fg: string; bg: string; label: string }> = {
-  ok:           { fg: "#1b5e20", bg: "#e8f5e9", label: "OK" },
-  untested:     { fg: "#8a6d00", bg: "#fff8e1", label: "UNTESTED" },
-  rpo_breached: { fg: "#b71c1c", bg: "#fdecea", label: "RPO BREACHED" },
-  no_backup:    { fg: "#b71c1c", bg: "#fdecea", label: "NO BACKUP" },
+  ok:           { fg: "var(--status-completed)", bg: "rgba(13,148,136,0.15)", label: "OK" },
+  untested:     { fg: "var(--status-running)", bg: "rgba(247,183,49,0.15)", label: "UNTESTED" },
+  rpo_breached: { fg: "var(--status-failed)", bg: "rgba(220,38,38,0.15)", label: "RPO BREACHED" },
+  no_backup:    { fg: "var(--status-failed)", bg: "rgba(220,38,38,0.15)", label: "NO BACKUP" },
 };
 
 export default function DRPanel() {
@@ -63,13 +63,13 @@ export default function DRPanel() {
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
           <h2 style={{ ...h2, margin: 0 }}>Recovery posture</h2>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-            <label style={{ fontSize: 12, color: "#666" }}>RPO</label>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>RPO</label>
             <input type="number" min={1} value={rpo}
               onChange={e => setRpo(Number(e.target.value) || 24)} style={{ ...inp, width: 64 }} />
-            <label style={{ fontSize: 12, color: "#666" }}>RTO</label>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>RTO</label>
             <input type="number" min={1} value={rto}
               onChange={e => setRto(Number(e.target.value) || 4)} style={{ ...inp, width: 64 }} />
-            <span style={{ fontSize: 12, color: "#666" }}>hours</span>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>hours</span>
             <button onClick={load} disabled={!!busy} style={btn(true)}>
               {busy === "load" ? "Loading…" : "Refresh"}
             </button>
@@ -120,7 +120,7 @@ export default function DRPanel() {
                 return (
                   <tr key={r.region_id}>
                     <td style={{ ...td, ...mono }}>
-                      {r.region}{r.is_primary && <span style={{ color: "#4a6cf7" }}> ★</span>}
+                      {r.region}{r.is_primary && <span style={{ color: "var(--accent-text)" }}> ★</span>}
                     </td>
                     <td style={td}>
                       <span style={{ background: s.bg, color: s.fg, padding: "2px 6px",
@@ -128,7 +128,7 @@ export default function DRPanel() {
                         {s.label}
                       </span>
                     </td>
-                    <td style={{ ...td, color: "#666" }}>{r.detail}</td>
+                    <td style={{ ...td, color: "var(--text-secondary)" }}>{r.detail}</td>
                     <td style={td}>{when(r.last_backup_at)}</td>
                     <td style={td}>{when(r.last_restore_test_at)}</td>
                     <td style={td}><DrillButtons region={r} onDone={m => { setNote(m); load(); }} onError={setErr} /></td>
@@ -138,7 +138,7 @@ export default function DRPanel() {
             </tbody>
           </table>
         )}
-        <div style={{ fontSize: 11, color: "#888", marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
           Backups are taken by <code style={mono}>update-velaris.sh</code> and recorded from there —
           this platform is a registry, not an executor. A fresh backup nobody has restored reports
           as <strong>untested</strong>, never as healthy.
@@ -174,7 +174,7 @@ function DrillButtons({ region, onDone, onError }: {
     finally { setBusy(false); }
   }
 
-  if (region.state === "no_backup") return <span style={{ color: "#999" }}>—</span>;
+  if (region.state === "no_backup") return <span style={{ color: "var(--text-muted)" }}>—</span>;
   return (
     <>
       <button onClick={() => record("passed")} disabled={busy} style={btn()}>Passed</button>{" "}

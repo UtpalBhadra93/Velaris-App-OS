@@ -262,6 +262,14 @@ const apiProxy = {
       target: "http://localhost:8200",
       changeOrigin: true,
     },
+    // Audit streaming to a SIEM (mig 200). Missing until the Enterprise screen
+    // was built on 2026-09-10 — the documented trap: without an entry here the
+    // browser's calls fall through to the engine on 8100 and 404, while curl
+    // against :8200 works perfectly.
+    "/api/v1/audit-stream": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
     "/api/v1/fusion": {
       target: "http://localhost:8200",
       changeOrigin: true,
@@ -299,6 +307,57 @@ const apiProxy = {
       changeOrigin: true,
     },
     "/api/v1/hxmigrate": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/arbiter": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    // F-00 agent identity. No Studio screen yet — the entry is here because a
+    // router without one is the trap this allowlist exists to prevent, and the
+    // first UI to call it would otherwise hit the catch-all instead.
+    "/api/v1/agents": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    // F-06 ambient capture. Same reason as the line above: the router exists,
+    // so the allowlist entry exists, whether or not a screen calls it yet.
+    "/api/v1/capture": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    // F-07 sovereign model marketplace.
+    "/api/v1/model-market": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    // F-08 … F-12 and the Customer Engagement rep desk. None of these has a
+    // Studio screen yet, and the entries exist anyway for the same reason
+    // F-00's does: a router without an allowlist entry is precisely the trap
+    // this list prevents, and the first UI to call one would silently hit the
+    // catch-all instead of the gateway.
+    "/api/v1/healing": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/handoff": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/field": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/intent": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/negotiate": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    "/api/v1/engage": {
       target: "http://localhost:8200",
       changeOrigin: true,
     },
@@ -353,6 +412,12 @@ const apiProxy = {
       changeOrigin: true,
     },
     "/api/v1/hxdbmanager": {
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
+    // 198 — case status set and action configuration. `/api/v1/cases` already
+    // routes to 8200 above; this is the separate authoring router.
+    "/api/v1/case-config": {
       target: "http://localhost:8200",
       changeOrigin: true,
     },

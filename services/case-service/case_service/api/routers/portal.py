@@ -507,7 +507,12 @@ async def track_case(
 ):
     case = (await session.execute(
         select(CaseInstanceModel).where(
-            CaseInstanceModel.portal_tracking_token == token
+            CaseInstanceModel.portal_tracking_token == token,
+            # 199 — a deleted case is hidden from the CUSTOMER too. "Hidden from
+            # every list and read" was true of the staff surface and false of
+            # this one until 2026-09-08, which is the wrong way round: this is
+            # the least-trusted surface on the platform.
+            CaseInstanceModel.is_deleted.is_(False),
         )
     )).scalar_one_or_none()
     if not case:
@@ -540,12 +545,21 @@ async def portal_upload_document(
 ):
     case = (await session.execute(
         select(CaseInstanceModel).where(
-            CaseInstanceModel.portal_tracking_token == token
+            CaseInstanceModel.portal_tracking_token == token,
+            # 199 — a deleted case is hidden from the CUSTOMER too. "Hidden from
+            # every list and read" was true of the staff surface and false of
+            # this one until 2026-09-08, which is the wrong way round: this is
+            # the least-trusted surface on the platform.
+            CaseInstanceModel.is_deleted.is_(False),
         )
     )).scalar_one_or_none()
     if not case:
         raise coded(404, PORTAL_ACCESS_404, "Tracking token not found")
-    if case.status in ("resolved", "closed", "cancelled"):
+    # Resolved from the tenant's own status set, not from a tuple. A tenant
+    # that adds its own terminal status got a case that was closed everywhere
+    # except here, where the customer could still upload to it.
+    from case_service.case_actions import statuses as _st
+    if await _st.is_terminal_for_case(session, case):
         raise coded(400, PORTAL_CLOSED_400, "Cannot upload to a closed case")
 
     from velaris_shared.middleware.file_security import validate_upload_filename, safe_filename, ALLOWED_DOCUMENT_EXTENSIONS
@@ -1361,7 +1375,10 @@ async def _linked_case(
         )
     )).scalar_one_or_none()
     case = await session.get(CaseInstanceModel, case_id) if link else None
-    if not case:
+    # A deleted case answers the SAME uniform 404 as a missing one, a foreign
+    # one and an unlinked one — the docstring's anti-oracle property is why the
+    # check belongs here rather than at each of the twenty routes that call this.
+    if not case or bool(getattr(case, "is_deleted", False)):
         raise coded(404, PORTAL_ACCESS_404, "Case not found")
     return case
 
@@ -1371,16 +1388,24 @@ def _portal_display(ct: CaseTypeModel | None) -> dict:
     return ((ct.definition_json or {}).get("portal", {}) if ct else {}) or {}
 
 
-def _stage_rail(ct: CaseTypeModel | None, case: CaseInstanceModel) -> list[dict]:
+def _stage_rail(ct: CaseTypeModel | None, case: CaseInstanceModel,
+                done: bool = False) -> list[dict]:
     """Ordered stages with customer-friendly labels — internal names never
     leak when a label map is configured; unmapped stages fall back to the
-    designer's stage name (already human text, unlike stage ids)."""
+    designer's stage name (already human text, unlike stage ids).
+
+    `done` is passed IN rather than derived here: "has this case concluded" now
+    comes from the tenant's own status set, which needs a database session, and
+    this helper is deliberately synchronous and session-free so it stays a pure
+    function of the definition. It defaults to False, which is what an unfinished
+    case looks like — the safe answer if a future caller forgets it, because it
+    shows the rail's current step rather than silently marking everything done.
+    """
     stages = sorted(((ct.definition_json or {}).get("stages", []) if ct else []),
                     key=lambda s: s.get("order", 0))
     labels = _portal_display(ct).get("stage_labels", {}) or {}
     current_order = next((s.get("order", 0) for s in stages
                           if s.get("id") == case.current_stage_id), None)
-    done = case.status in ("resolved", "closed")
     rail = []
     for s in stages:
         sid = s.get("id", "")
@@ -1409,6 +1434,12 @@ async def account_case_detail(
     sla_resp = await portal_case_sla(
         slug, case_id, email=case.portal_submitter_email, session=session)
 
+    # "Concluded" comes from the tenant's own status set, so a tenant that adds
+    # its own terminal status gets a rail that reads as finished. Resolved here
+    # because `_stage_rail` is a session-free pure function of the definition.
+    from case_service.case_actions import statuses as _st
+    _concluded = await _st.is_concluded_for_case(session, case)
+
     return {
         "case_id":        str(case.id),
         "case_number":    case.case_number,
@@ -1421,7 +1452,7 @@ async def account_case_detail(
         "submitted_at":   case.created_at.isoformat() if case.created_at else None,
         "updated_at":     case.updated_at.isoformat() if case.updated_at else None,
         "resolved_at":    case.resolved_at.isoformat() if case.resolved_at else None,
-        "stage_rail":     _stage_rail(ct, case),
+        "stage_rail":     _stage_rail(ct, case, _concluded),
         "expected_days":  _portal_display(ct).get("expected_days"),
         "sla":            sla_resp.get("sla"),
     }
@@ -1660,7 +1691,8 @@ async def account_case_actions(
     case = await _linked_case(slug, case_id, customer, session)
     ct = await session.get(CaseTypeModel, case.case_type_id)
     steps = _customer_steps(ct, case.current_stage_id)
-    if not steps or case.status in ("resolved", "closed", "cancelled"):
+    from case_service.case_actions import statuses as _st
+    if not steps or await _st.is_terminal_for_case(session, case):
         return {"actions": []}
 
     done = {
@@ -1706,7 +1738,8 @@ async def account_complete_action(
     from case_service.api.routers.cases import _audit, _auto_advance_if_complete
 
     case = await _linked_case(slug, case_id, customer, session)
-    if case.status in ("resolved", "closed", "cancelled"):
+    from case_service.case_actions import statuses as _st
+    if await _st.is_terminal_for_case(session, case):
         raise coded(400, PORTAL_CLOSED_400, "This case is closed")
     ct = await session.get(CaseTypeModel, case.case_type_id)
     step = next((s for s in _customer_steps(ct, case.current_stage_id)
@@ -1836,7 +1869,8 @@ async def account_post_message(
     if not text or len(text) > 10_000:
         raise HTTPException(400, "Message must be 1–10000 characters")
     case = await _linked_case(slug, case_id, customer, session)
-    if case.status in ("closed", "cancelled"):
+    from case_service.case_actions import statuses as _st
+    if await _st.is_thread_closed_for_case(session, case):
         raise coded(400, PORTAL_CLOSED_400, "This case is closed")
     ip = request.client.host if request.client else "unknown"
     if not await _rate_check(f"msg:{ip}:{case_id}", max_calls=30, window_seconds=3600):
@@ -1874,7 +1908,8 @@ async def account_case_csat(
     if not 1 <= body.rating <= 5:
         raise HTTPException(400, "rating must be 1–5")
     case = await _linked_case(slug, case_id, customer, session)
-    if case.status not in ("resolved", "closed"):
+    from case_service.case_actions import statuses as _st
+    if not await _st.is_concluded_for_case(session, case):
         raise HTTPException(400, "You can rate a request once it is resolved")
     if await session.get(PortalCsatModel, case.id) is not None:
         raise coded(409, PORTAL_ACTION_409, "This request has already been rated")
@@ -1896,8 +1931,9 @@ async def account_case_csat_status(
     from velaris_shared.db.models import PortalCsatModel
     case = await _linked_case(slug, case_id, customer, session)
     row = await session.get(PortalCsatModel, case.id)
+    from case_service.case_actions import statuses as _st
     return {"rated": row is not None, "rating": row.rating if row else None,
-            "can_rate": row is None and case.status in ("resolved", "closed")}
+            "can_rate": row is None and await _st.is_concluded_for_case(session, case)}
 
 
 class AskFeedbackBody(BaseModel):

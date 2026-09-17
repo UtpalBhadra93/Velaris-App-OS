@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared.auth.dependencies import get_current_user
@@ -29,6 +29,24 @@ _import_rl = rate_limit(max_calls=30, window_seconds=60, name="deploy-import")
 
 def _tenant(user: AuthenticatedUser) -> str:
     return getattr(user, "tenant_id", None) or "default"
+
+
+async def _actor_id(
+    session: AsyncSession, user: AuthenticatedUser,
+) -> uuid.UUID | None:
+    """The caller as a `GUID`, for `simulation_gates`/`simulation_runs.created_by`.
+
+    Distinct from `_actor` above, which produces a display string for the
+    `String` columns on deployment runs and packages. These two columns are
+    `GUID`, and `user.user_id` is a UUID only for a password login — an SSO or
+    service principal put a username there and the write raised
+    *"actor id is not a valid id"*. `actor_uuid` resolves either form and
+    answers None for a principal with no user row, which is what the nullable
+    column already means.
+    """
+    from case_service.tenancy.identity import actor_uuid
+
+    return await actor_uuid(session, user)
 
 
 def _actor(user: AuthenticatedUser) -> str:
@@ -896,3 +914,366 @@ async def deploy_callback(
 
     await session.commit()
     return {"run_id": str(run.id), "status": run.status}
+
+
+# ══ F-04 — the simulation gate ══════════════════════════════════════════════
+#
+# Appended to this router because it is part of promotion, not a neighbour of
+# it: the gate exists to stand between `promote` and `approve`.
+#
+# `simulate` BINDS an existing HxReplay cohort run rather than driving its own.
+# HxReplay already owns cohort selection, background execution, aggregation and
+# anchoring; re-driving that here would be a second implementation of it, and
+# the two would eventually disagree about what a divergence is.
+
+class GateIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+    #: NULL means "not checked". Zero would be the strictest possible setting,
+    #: and must never be what an operator gets from a blank field.
+    max_divergent_pct: float | None = None
+    max_cost_increase_pct: float | None = None
+    min_cohort: int | None = None
+    require_proof: bool = False
+    #: F-04 second slice — the twin thresholds. NULL is "not checked" like the
+    #: three above, but with one deliberate difference: a twin threshold that IS
+    #: set and could not be measured is a BREACH, not a pass. Setting one is an
+    #: operator saying "do not promote this without rehearsing it", and a broken
+    #: twin must not quietly satisfy that.
+    min_twin_cases: int | None = None
+    max_twin_failure_pct: float | None = None
+    max_twin_p95_ms: int | None = None
+    #: Set the PLATFORM default, inherited by every tenant without a gate of
+    #: its own. Superadmin only, below.
+    platform: bool = False
+
+
+class SimulateIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    #: A completed HxReplay cohort run against the candidate rules. Omitting it
+    #: produces a REFUSED simulation, not a passing one — a gate that passed on
+    #: an absent rehearsal would be worse than no gate.
+    replay_run_id: uuid.UUID | None = None
+    #: A compliance proof (F-03), when the package changes policy.
+    proof_id: uuid.UUID | None = None
+    policy_touched: bool = False
+    #: Also execute the candidate against the twin. Default FALSE: a rehearsal
+    #: that provisions and runs cases is expensive and touches an external
+    #: database, and neither should happen because a caller left a field out.
+    with_twin: bool = False
+    #: Synthetic cases per case type in the package, bounded by the operator's
+    #: own `VELARIS_CASE_TWIN_MAX_CASES`.
+    twin_cases_per_type: int = Field(default=5, ge=1, le=100)
+
+
+class OverrideIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    reason: str
+
+
+async def _tenant_pair(session: AsyncSession, user: AuthenticatedUser):
+    """(uuid, slug) — the gate keys on the id, the agent registry on the slug."""
+    from case_service.tenancy.identity import resolve_tenant
+
+    token = getattr(user, "tenant_id", None) or "default"
+    resolved = await resolve_tenant(session, token)
+    if resolved is None:
+        raise HTTPException(403, "VEL-DEPLOY-TENANT-UNRESOLVED-403")
+    return resolved
+
+
+async def _run_bundle(session: AsyncSession, run) -> dict | None:
+    """The bundle this promotion actually ships.
+
+    Read from the package the run points at, and only when the checksum still
+    matches: if the package was replaced after the run was created, rehearsing
+    it would be rehearsing something the promotion is not about — the same
+    reason the gate refuses a simulation of a different checksum.
+    """
+    from velaris_shared.db.models import DeploymentPackageModel
+
+    if run.package_id is None:
+        return None
+    pkg = await session.get(DeploymentPackageModel, run.package_id)
+    if pkg is None:
+        return None
+    if run.package_checksum and pkg.checksum and pkg.checksum != run.package_checksum:
+        raise HTTPException(
+            409,
+            "VEL-DEPLOY-TWIN-CHECKSUM-409: the package has changed since this "
+            "run was created, so rehearsing it would rehearse a different "
+            "deployment from the one being approved.")
+    return pkg.bundle or None
+
+
+def _twin_out(twin_run) -> dict | None:
+    """What the twin did. `None` when none was asked for — which is the shipped
+    state and what every install taking this update sees."""
+    if twin_run is None:
+        return None
+    return {
+        "id": str(twin_run.id),
+        "status": twin_run.status,
+        "refusal_reason": twin_run.refusal_reason,
+        "error": twin_run.error,
+        "isolation_verified": bool(twin_run.isolation_verified),
+        "isolation_detail": twin_run.isolation_detail,
+        "load_profile": twin_run.load_profile,
+        "requested_cases": twin_run.requested_cases,
+        "started_cases": twin_run.started_cases,
+        "terminal_cases": twin_run.terminal_cases,
+        "stuck_cases": twin_run.stuck_cases,
+        "failed_cases": twin_run.failed_cases,
+        "p50_ms": twin_run.p50_ms,
+        "p95_ms": twin_run.p95_ms,
+        "max_ms": twin_run.max_ms,
+        "stage_profile": twin_run.stage_profile,
+        "failures": twin_run.failures,
+        "torn_down_rows": twin_run.torn_down_rows,
+        "teardown_error": twin_run.teardown_error,
+        "created_at": iso_utc(twin_run.created_at),
+    }
+
+
+@router.get("/twin/status")
+async def twin_status(
+    request: Request,
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.simulation.configure")),
+):
+    """Is there a twin, is it genuinely somewhere else, and is anyone home?
+
+    Three separate answers, because they fail for three different reasons and an
+    operator fixes each one differently. `configured: false` is the shipped
+    state — no twin, no twin runs, and simulations that read exactly as they did
+    before this existed.
+    """
+    from case_service.hxdeploy import twin as twin_mod
+    from velaris_shared.config import get_settings as _gs
+
+    settings = _gs()
+    if not twin_mod.configured():
+        return {"configured": False, "isolated": False, "pollers": None,
+                "detail": {"reason": "no twin database is configured"}}
+    ok, detail = twin_mod.isolation(settings)
+    queue = (settings.twin_task_queue or "").strip()
+    pollers = await twin_mod.worker_pollers(
+        getattr(request.app.state, "temporal_client", None), queue)
+    return {
+        "configured": True,
+        "isolated": ok,
+        "detail": detail,
+        "task_queue": queue or None,
+        # None is NOT zero. "Temporal did not answer" and "nobody is listening"
+        # lead to the same refusal and read very differently to whoever fixes it.
+        "pollers": pollers,
+        "database_fingerprint": twin_mod.fingerprint(settings.twin_database_url),
+        "max_cases": settings.twin_max_cases,
+        "deadline_seconds": settings.twin_deadline_seconds,
+    }
+
+
+@router.get("/runs/{run_id}/twin")
+async def get_run_twin(
+    run_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
+):
+    """The newest twin rehearsal of this promotion, if there was one."""
+    from sqlalchemy import select as _select
+    from velaris_shared.db.models import TwinRunModel
+
+    await _run_or_404(session, run_id, user)
+    row = (await session.execute(
+        _select(TwinRunModel)
+        .where(TwinRunModel.deployment_run_id == run_id)
+        .order_by(TwinRunModel.created_at.desc()).limit(1))).scalars().first()
+    if row is None:
+        return {"rehearsed": False}
+    return {"rehearsed": True, **(_twin_out(row) or {})}
+
+
+@router.get("/simulation-gate")
+async def get_simulation_gate(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.simulation.configure")),
+):
+    """The gate in force here. `configured: false` means promotions are ungated,
+    which is the shipped state and what every upgrade sees."""
+    from case_service.hxdeploy import simulation as sim
+
+    tenant_uuid, _ = await _tenant_pair(session, user)
+    gate = await sim.resolve_gate(session, tenant_id=tenant_uuid)
+    if gate is None:
+        return {"configured": False, "enabled": False}
+    return {
+        "configured": True,
+        "enabled": bool(gate.enabled),
+        "scope": "platform" if gate.tenant_id is None else "tenant",
+        "max_divergent_pct": (float(gate.max_divergent_pct)
+                              if gate.max_divergent_pct is not None else None),
+        "max_cost_increase_pct": (float(gate.max_cost_increase_pct)
+                                  if gate.max_cost_increase_pct is not None else None),
+        "min_cohort": gate.min_cohort,
+        "require_proof": bool(gate.require_proof),
+        "min_twin_cases": gate.min_twin_cases,
+        "max_twin_failure_pct": (float(gate.max_twin_failure_pct)
+                                 if gate.max_twin_failure_pct is not None else None),
+        "max_twin_p95_ms": gate.max_twin_p95_ms,
+    }
+
+
+@router.put("/simulation-gate")
+async def put_simulation_gate(
+    body: GateIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.simulation.configure")),
+):
+    from case_service.hxdeploy import simulation as sim
+    from case_service.tenancy.identity import is_superadmin
+
+    if body.platform and not is_superadmin(user):
+        # A platform gate blocks promotions for every tenant on the box; on a
+        # shared install "admin" is a TENANT admin.
+        raise HTTPException(
+            403,
+            "VEL-DEPLOY-PLATFORM-SCOPE-403: a platform gate governs every "
+            "tenant's promotions and is reserved to a platform operator.")
+
+    tenant_uuid = None
+    if not body.platform:
+        tenant_uuid, _ = await _tenant_pair(session, user)
+    try:
+        gate = await sim.upsert_gate(
+            session, tenant_id=tenant_uuid, enabled=body.enabled,
+            max_divergent_pct=body.max_divergent_pct,
+            max_cost_increase_pct=body.max_cost_increase_pct,
+            min_cohort=body.min_cohort, require_proof=body.require_proof,
+            min_twin_cases=body.min_twin_cases,
+            max_twin_failure_pct=body.max_twin_failure_pct,
+            max_twin_p95_ms=body.max_twin_p95_ms,
+            created_by=await _actor_id(session, user))
+    except sim.SimulationError as exc:
+        raise HTTPException(422, f"VEL-DEPLOY-GATE-422: {exc}") from exc
+    await session.commit()
+    return {"configured": True, "enabled": bool(gate.enabled),
+            "scope": "platform" if body.platform else "tenant"}
+
+
+@router.post("/runs/{run_id}/simulate", status_code=201)
+async def simulate_run(
+    run_id: uuid.UUID,
+    body: SimulateIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.simulation.run")),
+):
+    """Judge a rehearsal of this promotion against the gate.
+
+    A refusal is a 201 with `status: "refused"` — the caller asked a well-formed
+    question and got an answer.
+    """
+    from velaris_shared.db.models import ReplayRunModel
+    from case_service.hxdeploy import simulation as sim
+
+    await _run_or_404(session, run_id, user)
+    run = await service.get_run(session, run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    tenant_uuid, tenant_slug = await _tenant_pair(session, user)
+
+    summary = None
+    if body.replay_run_id is not None:
+        replay = await session.get(ReplayRunModel, body.replay_run_id)
+        # Another tenant's replay is not evidence about this promotion, and
+        # binding one would leak its aggregate across the boundary.
+        if replay is None or (replay.tenant_id or "default") != (run.tenant_id or "default"):
+            raise HTTPException(404, "Replay run not found")
+        if replay.status != "complete":
+            raise HTTPException(
+                422, f"VEL-DEPLOY-REPLAY-422: that replay is {replay.status}; "
+                     f"a rehearsal that has not finished cannot be judged")
+        summary = replay.summary or {}
+
+    twin_run = None
+    if body.with_twin:
+        from case_service.hxdeploy import twin as twin_mod
+
+        # The bundle the promotion actually ships. A twin that provisioned
+        # anything else would be rehearsing a different deployment from the one
+        # being approved.
+        bundle = await _run_bundle(session, run)
+        twin_run = await twin_mod.run(
+            session, tenant_uuid=tenant_uuid, bundle=bundle, run_row=run,
+            cases_per_type=body.twin_cases_per_type,
+            created_by=await _actor_id(session, user),
+            temporal_client=getattr(request.app.state, "temporal_client", None))
+
+    sim_run = await sim.simulate(
+        session, run=run, tenant_uuid=tenant_uuid, tenant_slug=tenant_slug,
+        replay_summary=summary, replay_run_id=body.replay_run_id,
+        proof_id=body.proof_id, policy_touched=body.policy_touched,
+        created_by=await _actor_id(session, user), twin_run=twin_run)
+    await session.commit()
+    return {
+        "id": str(sim_run.id),
+        "deployment_run_id": str(run_id),
+        "status": sim_run.status,
+        "findings": sim_run.findings,
+        "thresholds": sim_run.thresholds,
+        "twin": _twin_out(twin_run),
+        "created_at": iso_utc(sim_run.created_at),
+    }
+
+
+@router.get("/runs/{run_id}/simulation")
+async def get_run_simulation(
+    run_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.runs.read")),
+):
+    from case_service.hxdeploy import simulation as sim
+
+    await _run_or_404(session, run_id, user)
+    sim_run = await sim.latest(session, run_id)
+    if sim_run is None:
+        return {"simulated": False}
+    return {
+        "simulated": True,
+        "id": str(sim_run.id),
+        "status": sim_run.status,
+        "findings": sim_run.findings,
+        "thresholds": sim_run.thresholds,
+        "package_checksum": sim_run.package_checksum,
+        "created_at": iso_utc(sim_run.created_at),
+    }
+
+
+@router.post("/runs/{run_id}/gate-override", response_model=RunOut)
+async def override_simulation_gate(
+    run_id: uuid.UUID,
+    body: OverrideIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("deploy.simulation.override")),
+):
+    """Let a promotion past a failed rehearsal. Permanent, and attributed.
+
+    Its own action, so bypassing the gate and approving the deployment are two
+    grants rather than one — and the reason is stored on the run forever,
+    because this row is the only trace that a failed gate was ever bypassed.
+    """
+    from case_service.hxdeploy import simulation as sim
+
+    await _run_or_404(session, run_id, user)
+    run = await service.get_run(session, run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    try:
+        run = await sim.override_gate(
+            session, run, actor_id=_actor(user), reason=body.reason)
+    except sim.SimulationError as exc:
+        raise HTTPException(422, f"VEL-DEPLOY-OVERRIDE-422: {exc}") from exc
+    await session.commit()
+    return RunOut.from_model(run)
