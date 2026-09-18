@@ -13,6 +13,13 @@ dependencies = [
 members = [
     "libs/velaris-ir/python",
     "libs/velaris-sdk",
+    # HxArbiter's evaluator. It was outside the workspace, so
+    # `uv sync --all-packages` never installed it and — sync being exact —
+    # PRUNED a hand-installed copy. case-service imports it at module scope
+    # (agents/attribution.py, reached from api/routers/hxnexus.py), so a host
+    # that ran an update died on `ModuleNotFoundError: hxarbiter_core` before
+    # serving a request. Found on the DuckDNS box, 2026-09-17.
+    "libs/hxarbiter-core",
     "engine",
     "services/*",
     "codegen",
@@ -42,6 +49,7 @@ addopts = "-v --tb=short"
 
 [tool.uv.sources]
 velaris-ir = { workspace = true }
+hxarbiter-core = { workspace = true }
 velaris-shared = { workspace = true }
 velaris-case-service = { workspace = true }
 velaris-analytics-service = { workspace = true }

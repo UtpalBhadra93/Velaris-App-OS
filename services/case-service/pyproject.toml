@@ -7,11 +7,19 @@ license = "LicenseRef-BSL-1.1"
 dependencies = [
     # The shared layer carved out at 13b: config, db, auth, hxguard.
     "velaris-shared",
+    # HxArbiter's deterministic evaluator. Imported at MODULE scope by
+    # agents/attribution.py, so this is a hard dependency, not an extra: the
+    # service does not start without it.
+    "hxarbiter-core",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.30.0",
-    "pydantic>=2.10.0",
+    # [email] — auth_real.py uses `EmailStr` at MODULE scope, and pydantic
+    # raises at class-definition time when email-validator is absent. It was
+    # only ever present by accident, and `uv sync` being exact would have
+    # pruned it (2026-09-17, same shape as hxarbiter-core below).
+    "pydantic[email]>=2.10.0",
     "pydantic-settings>=2.6.0",
     "temporalio>=1.7.0",
     "httpx>=0.28.0",
