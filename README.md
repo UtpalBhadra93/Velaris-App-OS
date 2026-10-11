@@ -72,7 +72,17 @@
 
 ---
 
-## What's new in 3.0.0
+## What's new in 3.1.0
+
+- **A minor: nothing removed or renamed, nothing switches itself on.** What changes on upgrade is who may do what, and only on a multi-tenant install — a non-default tenant's administrator now sees and acts on their own tenant only. A single-tenant install sees no change. Full notes: [`releases/notes/v3.1.0.md`](releases/notes/v3.1.0.md).
+- **Legal holds** — freeze a case's records while a dispute is open: nothing may delete, anonymise, erase or move them until the hold is released, and the case can still be worked.
+- **Staged rollouts** — a new case type version can go out behind a feature flag, to a percentage of customers, blue-green, in shadow or as an A/B comparison, chosen per deployment and approved by the target environment's operator.
+- **Rep desk** — a join link that brings a second rep into a live contact, the full action rail with every action checked against consent, a profile backfill that proposes and never creates, suggested relationships, and industry rail packs. Plus a one-file customer data export (GDPR Art. 15), by staff or by the customer.
+- **Tenant-owned design** — case types, forms, rules, data models and calendars belong to the tenant that creates them; platform defaults are inherited, and an edit makes the tenant's own copy.
+- **The tenant boundary, everywhere** — a probe that calls every route of every service as another tenant found about 110 routes and 45 lists crossing tenants; one guard now closes them as a class. Script tasks can no longer run arbitrary code; payments, webhooks and 101 login-only routes gained real privileges.
+- **Also** — the offline field node, background document indexing on upload, optional structure-aware chunking and reranking for document Q&A, three more privacy switches, an audit chain that still verifies after a retention purge, and an update that now finishes the job on a systemd install.
+
+### 3.0.0
 
 - **A major, for one reason:** six case routes are replaced by one dispatcher, `POST /cases/{id}/actions/{action}`. Anything calling `/status`, `/priority`, `/resolve`, `/close`, `/reopen` or `/cancel` directly gets a 404 — move it before upgrading. Everything else is additive and ships off.
 - **HxArbiter** — one deterministic policy engine across every sovereignty and security control, with a tamper-evident decision log, policies drafted in plain English and approved by a person, and every enforcement point in shadow until you promote it.
@@ -267,6 +277,11 @@ This script:
 Pulls the channel-pinned release, applies any new migrations, and restarts the stack. It takes a
 database backup first and aborts if the dump fails.
 
+On an install run by systemd (`deploy/systemd/`), the update finishes with
+`deploy/systemd/refresh-after-update.sh`: it re-applies the release manifest, rebuilds Studio and
+restarts the units. **Updating *to* 3.1.0 from an earlier release, run that script once by hand
+afterwards** — that update is carried out by the older script, which does not know to.
+
 ### 5. Back up
 
 ```bash
@@ -372,8 +387,8 @@ services/
 
 engine/                    # BPMN process engine (Temporal-backed)
 studio/                    # React frontend (Vite)
-migrations/                # ordered SQL migrations (postgresql/ 001–155, mysql/ frozen baseline + 155→)
-libs/                      # helix-ir (schema) + helix-sdk
+migrations/                # ordered SQL migrations (postgresql/ 001–217, mysql/ frozen baseline + 155→)
+libs/                      # velaris-ir (schema) + velaris-sdk + hxarbiter-core
 plugins/                   # auth, cache, db, events, git, integrations, search
 load-tests/                # Locust load test suite (4 user classes)
 deploy/
@@ -401,7 +416,7 @@ PGPASSWORD=<pw> psql -h localhost -U velaris -d velaris \
   -f migrations/postgresql/155_dr_measured_rto.sql
 ```
 
-**PostgreSQL** carries the full incremental history (`001` → `155`). **MySQL/MariaDB** starts from a
+**PostgreSQL** carries the full incremental history (`001` → `217`). **MySQL/MariaDB** starts from a
 **frozen** baseline — `000_baseline_pg154.sql`, a snapshot of PostgreSQL `001`–`154` — followed by
 the seed files and then one file per PostgreSQL migration from `155` on, sharing its sibling's
 number. The gap between `003` and `155` is intentional: the baseline already contains it.
@@ -437,6 +452,8 @@ Key endpoint groups:
 | `/api/v1/hxtest` | HxTest — AI test generation (install-gated add-on) |
 | `/api/v1/hxdbmanager` | HxDB Manager — guarded database operations |
 | `/api/v1/deploy` | HxDeploy promotion governance |
+| `/api/v1/rollouts` | Staged rollouts of case type versions |
+| `/api/v1/legal-holds` | Legal holds — place, release, what is frozen |
 | `/api/v1/forms` | Form definitions |
 | `/api/v1/portal` | Customer-facing portal + customer accounts |
 
