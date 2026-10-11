@@ -12,14 +12,80 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.jwt_handler import decode_jwt_token
 from velaris_shared.config import get_settings
+from case_service.core.tenant_path_guard import platform_operator_only
 from case_service.realtime.manager import get_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/realtime", tags=["realtime"])
+
+
+class _Caller:
+    """Who holds this socket — enough to authorize a channel."""
+
+    def __init__(self, user_id: str, roles: list[str], tenant: str | None):
+        self.user_id, self.roles, self.tenant_id = user_id, roles, tenant
+
+
+async def _socket_caller(claims: dict) -> _Caller:
+    from sqlalchemy import select
+
+    from velaris_shared.auth.jwt_handler import extract_user_from_claims
+    from velaris_shared.db.models import UserDirectoryModel
+    from velaris_shared.db.session import get_session_factory
+
+    info = extract_user_from_claims(claims)
+    user_id = str(info.get("user_id") or claims.get("sub") or "")
+    tenant = None
+    async with get_session_factory()() as session:
+        for ident in (user_id, info.get("username"), info.get("email")):
+            if not ident:
+                continue
+            row = (await session.execute(select(UserDirectoryModel).where(
+                UserDirectoryModel.user_id == str(ident)))).scalars().first()
+            if row is not None:
+                tenant = row.tenant_id
+                break
+    return _Caller(user_id, list(info.get("roles") or []), tenant)
+
+
+async def authorize_channel(caller: _Caller, channel: str) -> bool:
+    """May this socket hear this channel? — 8d, 2026-09-29.
+
+    Until today any signed-in user could subscribe to any channel: `cases.<id>`
+    of another tenant's case (its events carry changed data), another user's
+    `assignments.<id>` worklist, or `cases.*` — every tenant's case events.
+    """
+    from velaris_shared.db.models import CaseInstanceModel
+    from velaris_shared.db.session import get_session_factory
+    from velaris_shared.tenancy.identity import (
+        is_platform_operator, is_superadmin, same_tenant,
+    )
+
+    if is_superadmin(caller):
+        return True
+    parts = channel.split(".", 1)
+    async with get_session_factory()() as session:
+        if "*" in channel:
+            return await is_platform_operator(session, caller)
+        head, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+        if head == "assignments":
+            return rest == caller.user_id
+        if head == "presence":
+            head, rest = ("cases", rest.split(":", 1)[1]) if rest.startswith("case:") else ("", "")
+        if head == "cases":
+            import uuid as _uuid
+            try:
+                case = await session.get(CaseInstanceModel, _uuid.UUID(rest))
+            except ValueError:
+                return False
+            return case is not None and await same_tenant(session, case.tenant_id,
+                                                          caller.tenant_id)
+    return True     # a channel nothing tenant-owned is published on
 
 
 @router.websocket("/ws")
@@ -54,6 +120,7 @@ async def websocket_endpoint(
                                       issuer=settings.auth_issuer, audience=settings.auth_audience,
                                       public_key=settings.auth_rsa_public_key or "")
             authenticated_user_id = claims.get("sub", user_id)
+            caller = await _socket_caller(claims)
         except Exception:
             await websocket.close(code=4001, reason="Invalid token")
             return
@@ -85,7 +152,10 @@ async def websocket_endpoint(
 
             if mtype == "subscribe":
                 channel = msg.get("channel")
-                if channel:
+                if channel and not await authorize_channel(caller, str(channel)):
+                    # The same answer as a channel that does not exist.
+                    await conn.send({"type": "error", "message": "Unknown channel"})
+                elif channel:
                     await manager.subscribe(conn, channel)
                     await conn.send({"type": "subscribed", "channel": channel})
 
@@ -98,7 +168,7 @@ async def websocket_endpoint(
             elif mtype == "presence":
                 resource = msg.get("resource")
                 action = msg.get("action", "viewing")
-                if resource:
+                if resource and await authorize_channel(caller, f"presence.{resource}"):
                     await manager.set_presence(resource, authenticated_user_id, action)
                     presence_resources.add(resource)
 
@@ -121,14 +191,25 @@ async def websocket_endpoint(
 @router.get("/presence/{resource:path}")
 async def get_presence(resource: str, _=Depends(get_current_user)):
     """Get users currently present on a resource."""
+    if not await authorize_channel(_Caller(_.user_id, _.roles, _.tenant_id),
+                                   f"presence.{resource}"):
+        from fastapi import HTTPException
+        raise HTTPException(404, "Not found")
     manager = get_manager()
     users = await manager.get_presence(resource)
     return {"resource": resource, "users": users, "count": len(users)}
 
 
 @router.get("/stats")
-async def get_stats(_=Depends(get_current_user)):
-    """WebSocket connection statistics."""
+async def get_stats(
+    _=Depends(hxguard.guard("platform.realtime.read")),
+    __=Depends(platform_operator_only),
+):
+    """WebSocket connection statistics.
+
+    Channel names carry case ids from every tenant on the install. A login was
+    the only gate until 2026-09-30; it is the operator's view now, the same as
+    the broadcast below."""
     manager = get_manager()
     return manager.stats()
 
@@ -138,8 +219,13 @@ async def manual_broadcast(
     channel: str,
     message: dict,
     _=Depends(get_current_user),
+    __=Depends(platform_operator_only),
 ):
-    """Manual broadcast endpoint for testing."""
+    """Manual broadcast endpoint for testing.
+
+    Any signed-in user could push any message into any channel — onto another
+    tenant's open case screens — until 2026-09-29 (8d). Operator only now.
+    """
     manager = get_manager()
     sent = await manager.broadcast(channel, message)
     return {"channel": channel, "sent_to": sent}

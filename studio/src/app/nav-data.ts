@@ -254,6 +254,13 @@ export const NAV_DATA: NavEntry[] = [
     roles: ["admin", "manager", "case_worker"],
   },
   {
+    path: "/case-transfers",
+    label: "Case Transfers",
+    description: "Move a case into another tenant | Outgoing requests and a second administrator's approval | Incoming requests to accept or refuse | What moved, closed and was severed, once accepted",
+    section: "Operations",
+    roles: ["admin"],
+  },
+  {
     path: "/healing",
     label: "Self-Healing",
     description: "What the platform proposed to change about itself | Every rung of the validation ladder, passes included | One approval that applies the change | A pre-signed rollback | Deployed is not healed until the watch window closes",

@@ -24,6 +24,20 @@ from velaris_shared.db.session import get_session
 
 from velaris_shared import hxguard
 
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.db.models import DataModelModel as _DM
+from velaris_shared.tenancy import inherit
+
+
+async def _inherit(awaitable):
+    """Run an `inherit` step (8e), answering its refusal as HTTP."""
+    try:
+        return await awaitable
+    except inherit.InheritError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
 router = APIRouter(prefix="/data-models", tags=["data-models"], dependencies=[Depends(hxguard.guard("design.data_models.access"))])
 
 
@@ -31,11 +45,11 @@ router = APIRouter(prefix="/data-models", tags=["data-models"], dependencies=[De
 async def create_data_model(
     body: DataModelCreate,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
-    existing = await repo.get_data_model_by_name(
-        session, body.name, body.version
-    )
-    if existing:
+    # 8e: a tenant's data model is its own; only the operator makes a default.
+    owner = await _inherit(inherit.owner_for_create(session, user))
+    if await inherit.name_taken(session, _DM, owner, name=body.name, version=body.version):
         raise HTTPException(
             status_code=409,
             detail=f"Data model '{body.name}' v{body.version} already exists",
@@ -44,6 +58,7 @@ async def create_data_model(
     dm = await repo.create_data_model(
         session,
         data={
+            "tenant_id": owner,
             "name": body.name,
             "version": body.version,
             "definition_json": body.definition_json,
@@ -57,12 +72,17 @@ async def list_data_models(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    from sqlalchemy import select as _select
+    clause = (await inherit.scope_list(_select(_DM), _DM, session, user)).whereclause
     items, total = await repo.list_data_models(
         session,
         offset=(page - 1) * page_size,
         limit=page_size,
+        where=clause,   # 8e
     )
+    await inherit.flag_updates(session, _DM, items)   # 8k
     return DataModelListResponse(
         items=items, total=total, page=page, page_size=page_size
     )
@@ -72,13 +92,15 @@ async def list_data_models(
 async def get_data_model(
     model_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     dm = await repo.get_data_model(session, model_id)
     if dm is None:
         raise HTTPException(
             status_code=404, detail="Data model not found"
         )
-    return dm
+    dm = await inherit.resolve_for_caller(session, user, _DM, dm)   # 8e
+    return (await inherit.flag_updates(session, _DM, [dm]))[0]       # 8k
 
 
 @router.patch("/{model_id}", response_model=DataModelResponse)
@@ -86,12 +108,16 @@ async def update_data_model(
     model_id: uuid.UUID,
     body: DataModelUpdate,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     dm = await repo.get_data_model(session, model_id)
     if dm is None:
         raise HTTPException(
             status_code=404, detail="Data model not found"
         )
+    # 8e: a tenant's edit of a default lands in its fork.
+    dm = await _inherit(inherit.target_for_write(session, user, _DM, dm))
+    model_id = dm.id
 
     values = {}
     if body.definition_json is not None:
@@ -107,7 +133,11 @@ async def update_data_model(
 async def delete_data_model(
     model_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    dm = await repo.get_data_model(session, model_id)
+    if dm is not None:
+        await _inherit(inherit.assert_may_delete(session, user, dm))   # 8e
     deleted = await repo.delete_data_model(session, model_id)
     if not deleted:
         raise HTTPException(

@@ -10,6 +10,7 @@ import {
 import { Button, Card, EmptyState, Spinner, Stat, Tabs, TimeAgo } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 import AuditStreamTab from "./AuditStreamTab";
+import CustomerExportPanel from "./CustomerExportPanel";
 
 /* ═══════════════════════════════════════════════════════════════════
    Enterprise — GDPR, Security Events, Retention (Phase 20)
@@ -418,6 +419,7 @@ function GDPRTab() {
 
   return (
     <>
+      <CustomerExportPanel />
       <Card style={{ marginBottom: "var(--space-lg)" }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: "var(--space-sm)" }}>
           GDPR Data Subject Request

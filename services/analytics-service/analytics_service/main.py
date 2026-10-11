@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import HTTPConnection
 
 from velaris_shared.db.commit_route import install_commit_before_response
 from velaris_shared.app import (
@@ -40,12 +42,26 @@ from velaris_shared.app import (
     platform_lifespan,
 )
 from velaris_shared.config import get_settings
+from velaris_shared.db.session import get_analytics_session, get_replica_session
+from velaris_shared.tenancy.orm_scope import scope_session_to_caller
 from velaris_shared.observability import configure_logging, configure_telemetry
 
 from analytics_service.api.routers.analytics import router as analytics_router
 from analytics_service.api.routers.process_mining import router as process_mining_router
 
 logger = logging.getLogger("analytics_service")
+
+
+async def _tenant_scope(
+    request: HTTPConnection,
+    ro: AsyncSession = Depends(get_replica_session),
+    rw: AsyncSession = Depends(get_analytics_session),
+) -> None:
+    """8d (2026-09-29): every analytics read was every tenant's. Mark this
+    request's sessions with the caller's tenant; `tenancy.orm_scope` adds the
+    criteria to every SELECT. The dependency cache hands the routes these same
+    session objects."""
+    await scope_session_to_caller(request, ro, rw)
 
 SERVICE_NAME = "analytics-service"
 API_PREFIX = "/api/v1"
@@ -63,6 +79,7 @@ def create_app() -> FastAPI:
         # The superadmin boot gate: the middleware only reads the flag this
         # lifespan sets, so the two must always be wired together.
         lifespan=platform_lifespan(SERVICE_NAME),
+        dependencies=[Depends(_tenant_scope)],
     )
 
     # Commit each request's database work BEFORE its response is sent. Must be

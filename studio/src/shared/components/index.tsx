@@ -324,6 +324,47 @@ export function Pill({
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   OwnershipPill — default, a tenant's copy, and a copy whose default moved
+
+   Oct 8i/8e: case types, forms, rules, data models and calendars are one
+   platform DEFAULT (tenant_id null) that every tenant reads, until a tenant
+   edits it — then that tenant has its own copy (forked_from_id), and the
+   default's later changes are OFFERED (update_available), never applied.
+   A tenant's own row, and a server too old to send these fields, show nothing.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export type Ownership = {
+  tenant_id?: string | null;
+  forked_from_id?: string | null;
+  update_available?: boolean;
+};
+
+export function OwnershipPill({ row }: { row: Ownership }) {
+  if (row.forked_from_id) {
+    return (
+      <span style={{ display: "inline-flex", gap: 4 }}>
+        <Pill tone="info" title="Your tenant's own copy of a platform default. Your edits stay here.">
+          Your copy
+        </Pill>
+        {row.update_available && (
+          <Pill tone="warn" title="The default this was copied from has changed since. Your copy has not been changed.">
+            Update available
+          </Pill>
+        )}
+      </span>
+    );
+  }
+  if (row.tenant_id === null) {
+    return (
+      <Pill title="A platform default shared by every tenant. A tenant that edits it gets its own copy.">
+        Default
+      </Pill>
+    );
+  }
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Banner — a standing fact above the tab bar
 
    For the one sentence that changes how every tab below it reads: the feature

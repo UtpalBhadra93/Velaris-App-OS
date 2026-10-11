@@ -333,8 +333,13 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
     echo "    skip  $filename"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   echo -n "    apply $filename ... "
+  # ON_ERROR_STOP is what makes a failure a failure. Without it psql runs the
+  # rest of the file, exits 0, and the migration is recorded as applied — which
+  # is how an install ended up with 080 "applied" and its column unchanged
+  # (repaired by 217). setup-velaris.sh and update-velaris.sh already had it;
+  # this runner was missed until 2026-10-11.
   if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-      < "$migration_file" 2>/tmp/migration_err.log; then
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))

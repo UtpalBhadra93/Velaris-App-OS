@@ -60,6 +60,16 @@ async def package_app(
     user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.write")),
 ):
     """Snapshot the current platform state into a versioned package."""
+    # 8e (2026-10-01): `capture_bundle` snapshots EVERY tenant's case types,
+    # forms, rules, portals and access groups. Any tenant's admin, devops or
+    # developer could take that snapshot and download it. It is the platform
+    # operator's — on a single-tenant install, everybody who could before.
+    # (A tenant's own package is HxDeploy's `/hxdeploy/packages`, which is
+    # tenant-scoped.)
+    from velaris_shared.tenancy.identity import caller_tenant_uuid, is_platform_operator
+    if not await is_platform_operator(session, user):
+        raise HTTPException(403, "A package snapshots the whole platform; only the "
+                                 "platform operator may make one. Use HxDeploy packages.")
     try:
         pkg = await create_package(
             session,
@@ -67,6 +77,7 @@ async def package_app(
             version=body.version,
             description=body.description,
             created_by=user.user_id,
+            tenant_id=await caller_tenant_uuid(session, user),
         )
     except Exception as e:
         err = str(e).lower()
@@ -81,9 +92,11 @@ async def package_app(
 async def list_packages(
     status: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     stmt = select(AppPackageModel).order_by(desc(AppPackageModel.created_at))
+    from velaris_shared.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, AppPackageModel, session, user)   # 8e
     if status:
         stmt = stmt.where(AppPackageModel.status == status)
     pkgs = (await session.execute(stmt)).scalars().all()
@@ -194,9 +207,13 @@ async def list_deployments(
     environment: Optional[str] = Query(None),
     package_id:  Optional[uuid.UUID] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
+    user: AuthenticatedUser = Depends(hxguard.guard("apps.packages.read")),
 ):
     stmt = select(AppDeploymentModel).order_by(desc(AppDeploymentModel.deployed_at))
+    # 8e: a deployment is its package's tenant's.
+    from velaris_shared.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, AppDeploymentModel, session, user,
+                                 via=(AppDeploymentModel.package_id, AppPackageModel))
     if environment:
         stmt = stmt.where(AppDeploymentModel.environment == environment)
     if package_id:
@@ -251,7 +268,8 @@ async def package_case_type(
     """Bundle one case type + all linked forms into a portable package."""
     from velaris_shared.db.models import CaseTypeModel, FormDefinitionModel
     ct = await session.get(CaseTypeModel, case_type_id)
-    if not ct:
+    from case_service.case_types import ownership
+    if not ct or not await ownership.may_read(session, user, ct):
         raise HTTPException(404, "Case type not found")
 
     defn = ct.definition_json or {}
@@ -326,13 +344,24 @@ async def import_bundle(
     results: dict = {"case_type": None, "forms": [], "sla_policies": [], "warnings": []}
 
     # ── Case type ──────────────────────────────────────────────────────────────
+    # 8i / 8e: an import lands in the caller's tenant (a default only for the
+    # platform operator, as before) and overwrites only a row of that owner's —
+    # never another tenant's, nor a default under a tenant.
+    from case_service.case_types import ownership
+    from velaris_shared.db.models import case_type_tenant_key
+    from sqlalchemy import select as sa_select   # was imported only when a case type came first
+    try:
+        owner = await ownership.owner_for_create(session, user, None)
+    except ownership.OwnershipError as exc:
+        raise HTTPException(403, str(exc))
+
     ct_data = bundle.get("case_type")
     if ct_data:
         import_version = body.version_override or ct_data.get("version", "1.0.0")
         # Check if this name+version already exists
-        from sqlalchemy import select as sa_select
         existing = (await session.execute(
             sa_select(CaseTypeModel).where(
+                CaseTypeModel.tenant_key == case_type_tenant_key(owner),
                 CaseTypeModel.name == ct_data["name"],
                 CaseTypeModel.version == import_version,
             )
@@ -350,6 +379,7 @@ async def import_bundle(
             new_ct = CaseTypeModel(
                 name=ct_data["name"],
                 version=import_version,
+                tenant_id=owner,
                 description=ct_data.get("description", ""),
                 definition_json=ct_data.get("definition_json", {}),
                 default_priority=ct_data.get("default_priority", "medium"),
@@ -367,6 +397,7 @@ async def import_bundle(
         import_version = body.version_override or fd.get("version", "1.0.0")
         existing_form = (await session.execute(
             sa_select(FormDefinitionModel).where(
+                FormDefinitionModel.tenant_key == case_type_tenant_key(owner),
                 FormDefinitionModel.name == fd["name"],
                 FormDefinitionModel.version == import_version,
             )
@@ -377,6 +408,7 @@ async def import_bundle(
             results["forms"].append({"name": fd["name"], "action": "updated"})
         else:
             new_form = FormDefinitionModel(
+                tenant_id=owner,
                 name=fd["name"], version=import_version,
                 definition_json=fd.get("definition_json", {}),
             )
@@ -423,8 +455,24 @@ async def bump_case_type_version(
     """
     from velaris_shared.db.models import CaseTypeModel
     original = await session.get(CaseTypeModel, case_type_id)
-    if not original:
+    from case_service.case_types import ownership
+    if not original or not await ownership.may_read(session, user, original):
         raise HTTPException(404, "Case type not found")
+
+    # 8i: the new version belongs to the original's owner when the caller may
+    # write that row; a tenant bumping a DEFAULT gets its own copy, recorded as
+    # forked from it, instead of a new default for every tenant.
+    forked_from = None
+    if await ownership.may_write_in_place(session, user, original):
+        owner = original.tenant_id
+    elif original.tenant_id is None:
+        owner = await ownership.caller_tenant(session, user)
+        forked_from = original.id
+        if owner is None:
+            raise HTTPException(403, "Your tenant could not be resolved.")
+    else:
+        raise HTTPException(404, "Case type not found")
+    from velaris_shared.db.models import case_type_tenant_key
 
     new_version = _bump_version(original.version, body.bump_type)
 
@@ -432,6 +480,7 @@ async def bump_case_type_version(
     from sqlalchemy import select as sa_select
     conflict = (await session.execute(
         sa_select(CaseTypeModel).where(
+            CaseTypeModel.tenant_key == case_type_tenant_key(owner),
             CaseTypeModel.name == original.name,
             CaseTypeModel.version == new_version,
         )
@@ -442,6 +491,10 @@ async def bump_case_type_version(
     new_ct = CaseTypeModel(
         name=original.name,
         version=new_version,
+        tenant_id=owner,
+        forked_from_id=forked_from,
+        forked_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        if forked_from else None,
         lifecycle_process_id=original.lifecycle_process_id,
         data_model_id=original.data_model_id,
         security_profile_id=original.security_profile_id,
@@ -476,9 +529,14 @@ async def list_case_type_versions(
     """List all versions of a case type by name, newest first."""
     from velaris_shared.db.models import CaseTypeModel
     from sqlalchemy import select as sa_select
-    rows = (await session.execute(
-        sa_select(CaseTypeModel).where(CaseTypeModel.name == case_type_name)
-    )).scalars().all()
+    stmt = sa_select(CaseTypeModel).where(CaseTypeModel.name == case_type_name)
+    # 8i: another tenant's versions are not this caller's to list.
+    from velaris_shared.tenancy.identity import is_superadmin
+    if not is_superadmin(user) and user.tenant_id:
+        from case_service.case_types import ownership
+        mine = await ownership.caller_tenant(session, user)
+        stmt = stmt.where(ownership.visible_to(mine or uuid.UUID(int=0)))
+    rows = (await session.execute(stmt)).scalars().all()
     if not rows:
         raise HTTPException(404, f"No case type named '{case_type_name}'")
 

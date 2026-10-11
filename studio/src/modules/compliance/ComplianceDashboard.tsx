@@ -8,6 +8,7 @@ import React, { useEffect, useState } from "react";
 import ConsentPanel from "./ConsentPanel";
 import DRPanel from "./DRPanel";
 import LedgerPanel from "./LedgerPanel";
+import LegalHoldsPanel from "@/modules/case-manager/LegalHold";
 import PrivacyPanel from "./PrivacyPanel";
 import { getAccessToken } from "@/auth/tokenManager";
 import { Tabs } from "@shared/components";
@@ -18,6 +19,7 @@ const TABS = [
   { id: "privacy", label: "Privacy" },
   { id: "ledger",  label: "Ledger" },
   { id: "dr",      label: "Disaster Recovery" },
+  { id: "holds",   label: "Legal Holds" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -34,6 +36,7 @@ type ChainStatus = {
 type VerifyResult = {
   verified: boolean;
   chain_length: number;
+  pruned?: number;
   breaks: any[];
   tip_sequence: number;
 };
@@ -150,6 +153,7 @@ export default function ComplianceDashboard() {
       {tab === "privacy" && <PrivacyPanel />}
       {tab === "ledger" && <LedgerPanel />}
       {tab === "dr" && <DRPanel />}
+      {tab === "holds" && <LegalHoldsPanel />}
 
       {tab === "audit" && <>
       {err && <div style={{ color: "var(--status-failed)", marginBottom: 12 }}>⚠ {err}</div>}
@@ -183,6 +187,7 @@ export default function ComplianceDashboard() {
                         color: verify.verified ? "var(--status-completed)" : "var(--status-failed)", fontSize: 13 }}>
             {verify.verified
               ? `✓ Chain verified — ${verify.chain_length} sealed rows, no tampering.`
+                + (verify.pruned ? ` ${verify.pruned} removed by retention, on the record.` : "")
               : `✗ ${verify.breaks.length} breaks detected over ${verify.chain_length} rows.`}
           </div>
         )}

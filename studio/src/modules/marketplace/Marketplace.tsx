@@ -622,7 +622,8 @@ function DetailPanel({ pkg, onClose, onInstall, canInstall, installed, requested
         {/* Description */}
         <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: 20,
           whiteSpace: "pre-line" }}>
-          {pkg.long_description}
+          {/* Real packages carry only `description`; the long form is optional. */}
+          {pkg.long_description || pkg.description}
         </div>
 
         {/* Meta info */}

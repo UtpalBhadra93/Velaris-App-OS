@@ -836,7 +836,11 @@ async def test_by_id_paths_do_not_cross_tenants(client: AsyncClient, session: As
         id=uuid.uuid4(), tenant_id="other-tenant", env_id=env.id, name="Theirs",
         days_of_week=[0], start_hour_utc=0, end_hour_utc=23, enabled=True,
     )
-    session.add_all([env, run, win])
+    # The env first: nothing relates the three models, so the unit of work may
+    # order them either way, and PostgreSQL enforces the runs' FK (SQLite does not).
+    session.add(env)
+    await session.flush()
+    session.add_all([run, win])
     await session.commit()
 
     cases = [

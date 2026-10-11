@@ -82,6 +82,12 @@ class SyncIn(_Strict):
     signature: str | None = Field(default=None, max_length=200)
 
 
+class ContactIn(_Strict):
+    #: The node's own clock, and its signature over `service.contact_message`.
+    at: str | None = Field(default=None, max_length=64)
+    signature: str | None = Field(default=None, max_length=200)
+
+
 class ShredIn(_Strict):
     reason: str = Field(min_length=5, max_length=2000)
 
@@ -208,6 +214,29 @@ async def sync_node(
     except service.FieldError as exc:
         await session.commit()      # last contact is still a fact
         raise HTTPException(409, f"VEL-FIELD-SYNC-409: {exc}") from exc
+    await session.commit()
+    return out
+
+
+@router.post("/nodes/{slug}/contact")
+async def node_contact(
+    slug: str,
+    body: ContactIn | None = None,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("field.nodes.dispatch")),
+) -> dict[str, Any]:
+    """The first thing a node does on every connection: is there an order for me?
+
+    Oct item 8. A shred order used to reach a node only inside a successful
+    sync, so a node whose sync was refused kept its data. See `service.contact`.
+    """
+    tenant_uuid = await _tenant(session, user)
+    node = await _node(session, slug, tenant_uuid)
+    body = body or ContactIn()
+    try:
+        out = await service.contact(session, node=node, at=body.at, signature=body.signature)
+    except service.FieldError as exc:
+        raise HTTPException(409, f"VEL-FIELD-CONTACT-409: {exc}") from exc
     await session.commit()
     return out
 

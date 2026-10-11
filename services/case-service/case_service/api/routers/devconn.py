@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.session import get_session
@@ -108,7 +109,7 @@ class RuleOut(BaseModel):
 @router.get("/connectors/inbound", response_model=list[RuleOut])
 async def list_rules(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.read")),
 ):
     return await service.list_rules(session, _tenant(user))
 
@@ -117,7 +118,7 @@ async def list_rules(
 async def create_rule(
     body: RuleIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     rule = WebhookReceiverRuleModel(
         tenant_id=_tenant(user),
@@ -138,7 +139,7 @@ async def create_rule(
 async def delete_rule(
     rule_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     from sqlalchemy import select, delete
     await session.execute(
@@ -175,9 +176,10 @@ async def list_events(
     connector_id: uuid.UUID | None = None,
     limit: int = 100,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.read")),
 ):
-    rows = await service.list_events(session, status=status, connector_id=connector_id, limit=limit)
+    rows = await service.list_events(session, status=status, connector_id=connector_id,
+                                     limit=limit, user=user)
     return [EventOut.from_model(r) for r in rows]
 
 
@@ -244,7 +246,7 @@ async def build_connector(
 @router.get("/connectors", response_model=list[ConnectorOut])
 async def list_custom_connectors(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.read")),
 ):
     from sqlalchemy import select
     from velaris_shared.db.models import ConnectorRegistryModel
@@ -290,7 +292,7 @@ _VALID_TRIGGER_EVENTS = {
 @router.get("/connectors/outbound", response_model=list[OutboundRuleOut])
 async def list_outbound_rules(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.read")),
 ):
     from sqlalchemy import select
     rows = (await session.execute(
@@ -305,7 +307,7 @@ async def list_outbound_rules(
 async def create_outbound_rule(
     body: OutboundRuleIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     from fastapi import HTTPException as _HTTPException
     if body.trigger_event not in _VALID_TRIGGER_EVENTS:
@@ -331,7 +333,7 @@ async def update_outbound_rule(
     rule_id: uuid.UUID,
     body: OutboundRuleIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     from sqlalchemy import select
     from fastapi import HTTPException as _HTTPException
@@ -359,7 +361,7 @@ async def update_outbound_rule(
 async def delete_outbound_rule(
     rule_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     from sqlalchemy import delete
     await session.execute(
@@ -381,7 +383,7 @@ class OpenAPIIn(BaseModel):
 @router.post("/connectors/from-openapi")
 async def from_openapi(
     body: OpenAPIIn,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("devconn.rules.write")),
 ):
     result = await service.generate_from_openapi(body.spec, body.connector_name)
     return result

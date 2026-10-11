@@ -9,6 +9,9 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +85,7 @@ async def get_status():
 async def generate_case_type(
     body: GenerateRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Generate a case type definition from natural language."""
     settings = get_settings()
@@ -114,10 +118,16 @@ async def generate_case_type(
         from velaris_shared.db import repository as repo
         import uuid as _uuid
 
+        # 8i: the caller's tenant (a default only for the platform
+        # operator), with the same privilege check as POST /case-types.
+        from case_service.api.routers.case_types import authorize_create
+        from velaris_shared.db.models import case_type_tenant_key
+        owner = await authorize_create(session, user, None)
         try:
             # Prefer user-supplied name override; fall back to AI-generated name
             deploy_name = (body.name_override or "").strip() or result["name"]
-            existing = await repo.get_case_type_by_name(session, deploy_name)
+            existing = await repo.get_case_type_by_name(
+                session, deploy_name, tenant_key=case_type_tenant_key(owner))
             version = "1.0.0"
             if existing:
                 version = f"1.0.{int(existing.version.split('.')[-1]) + 1}"
@@ -125,6 +135,7 @@ async def generate_case_type(
             data = {
                 "name": deploy_name,
                 "version": version,
+                "tenant_id": owner,
                 "lifecycle_process_id": None,
                 "definition_json": {
                     "stages": result["stages"],
@@ -152,6 +163,7 @@ async def generate_case_type(
 async def generate_full(
     body: GenerateRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """NLP Builder — Full mode.
 
@@ -177,15 +189,22 @@ async def generate_full(
     deployed_id = None
     if body.deploy:
         from velaris_shared.db import repository as repo
+        # 8i: the caller's tenant (a default only for the platform
+        # operator), with the same privilege check as POST /case-types.
+        from case_service.api.routers.case_types import authorize_create
+        from velaris_shared.db.models import case_type_tenant_key
+        owner = await authorize_create(session, user, None)
         try:
             deploy_name = (body.name_override or "").strip() or result["name"]
-            existing = await repo.get_case_type_by_name(session, deploy_name)
+            existing = await repo.get_case_type_by_name(
+                session, deploy_name, tenant_key=case_type_tenant_key(owner))
             version = "1.0.0"
             if existing:
                 version = f"1.0.{int(existing.version.split('.')[-1]) + 1}"
             ct = await repo.create_case_type(session, data={
                 "name": deploy_name,
                 "version": version,
+                "tenant_id": owner,
                 "lifecycle_process_id": None,
                 "definition_json": {
                     "stages": result["stages"],

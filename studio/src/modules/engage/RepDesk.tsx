@@ -29,11 +29,13 @@
  * Copyright (c) 2024-2026 Velaris Contributors
  * SPDX-License-Identifier: BSL-1.1
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import {
   engage360,
   engageOnBehalf,
+  engageRedeemJoinLink,
   engageReveal,
   engageScreenPop,
   engageTransfer,
@@ -48,8 +50,13 @@ import {
   Banner, Button, Card, EmptyState, ErrorNote, MONO, Pill, SectionTitle, Select,
   Spinner, SubPanel, Tabs, TextInput, type PillTone,
 } from "@shared/components";
+import ActionRail from "./ActionRail";
+import JoinLinks from "./JoinLinks";
 import { NextActions, Recap, WrapUpPicker } from "./CallInsights";
 import FloorAnalytics from "./FloorAnalytics";
+import ProfileBackfill from "./ProfileBackfill";
+import RailSettings from "./RailSettings";
+import RelatedPeople from "./RelatedPeople";
 
 const TIER_LABEL: Record<string, string> = {
   none: "Anonymous", partial: "Partially verified", full: "Verified",
@@ -224,12 +231,39 @@ export default function RepDesk() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [view_, setViewTab] = useState<"desk" | "floor">("desk");
+  const [view_, setViewTab] = useState<"desk" | "floor" | "backfill" | "rails">("desk");
 
   useEffect(() => {
     getEngageStatus().then(setStatus).catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  // Oct item 1: opened from a colleague's join link, carried in the FRAGMENT
+  // (`#join=`) so the credential never reaches a server log. Redeemed ONCE —
+  // the token is single-use, so it leaves the address bar straight away and a
+  // reload does not retry a used link.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const joinToken = new URLSearchParams(location.hash.replace(/^#/, "")).get("join");
+  const redeemed = useRef(false);
+  useEffect(() => {
+    if (!joinToken || !status?.enabled || redeemed.current) return;
+    redeemed.current = true;
+    navigate({ pathname: location.pathname, search: location.search, hash: "" },
+             { replace: true });
+    (async () => {
+      setBusy(true); setError(null);
+      try {
+        const out = await engageRedeemJoinLink(joinToken);
+        setPop(out);
+        setNote(out.mode === "cold"
+          ? "You have taken over this contact. Your colleague has left it."
+          : "You joined your colleague on this contact. You are both on it.");
+        if (out.customer_id) setView(await engage360(out.customer_id, out.interaction_id));
+      } catch (e) { setError(String(e)); }
+      finally { setBusy(false); }
+    })();
+  }, [joinToken, status, location.pathname, location.search, navigate]);
 
   const refresh = useCallback(async () => {
     if (!pop?.customer_id) return;
@@ -285,12 +319,15 @@ export default function RepDesk() {
       {/* No page title here: `AppLayout` already renders one from `nav-data`. */}
       <Tabs ariaLabel="Rep desk" value={view_} onChange={setViewTab}
             tabs={[{ key: "desk" as const, label: "Desk" },
-                   { key: "floor" as const, label: "Floor" }]} />
+                   { key: "floor" as const, label: "Floor" },
+                   { key: "backfill" as const, label: "Backfill" },
+                   { key: "rails" as const, label: "Rails" }]} />
 
-      {view_ === "floor" ? (
+      {view_ !== "desk" ? (
         <div style={{ flex: 1, overflowY: "auto", padding: "var(--space-lg) var(--space-2xl)",
                       boxSizing: "border-box" }}>
-          <FloorAnalytics />
+          {view_ === "floor" ? <FloorAnalytics />
+            : view_ === "rails" ? <RailSettings /> : <ProfileBackfill />}
         </div>
       ) : (<>
 
@@ -311,7 +348,8 @@ export default function RepDesk() {
             {/* Displayed, never chosen. */}
             <Pill tone={TIER_TONE[tier]}>{TIER_LABEL[tier]}</Pill>
             {pop.inherited_verification && (
-              <Pill tone="ok">transferred — already verified</Pill>
+              <Pill tone="ok">{pop.joined_from ? `joined (${pop.mode}) — already verified`
+                                                : "transferred — already verified"}</Pill>
             )}
           </div>
         )}
@@ -418,7 +456,19 @@ export default function RepDesk() {
                   }}>Warm transfer</Button>
 
                 </div>
-                <div style={{ marginTop: "var(--space-sm)" }}>
+                {/* Oct item 1: a link that brings a named colleague, or a queue,
+                    onto THIS contact — warm or cold. */}
+                <div style={{ marginTop: "var(--space-md)" }}>
+                  <SectionTitle style={{ margin: "0 0 var(--space-sm)" }}>Bring in a colleague</SectionTitle>
+                  <JoinLinks interactionId={pop.interaction_id} />
+                </div>
+                {/* Oct item 2: everything else a rep does for the customer, each
+                    disabled with its reason when consent, role or tier says no. */}
+                <div style={{ marginTop: "var(--space-md)" }}>
+                  <ActionRail customerId={pop.customer_id} interactionId={pop.interaction_id}
+                              tier={tier} />
+                </div>
+                <div style={{ marginTop: "var(--space-md)" }}>
                   {/* The tenant's codes when it named some; free text when not. */}
                   <WrapUpPicker busy={busy} onWrap={async (code) => {
                     setBusy(true);
@@ -442,6 +492,7 @@ export default function RepDesk() {
                 <Identifiers view={view} customerId={pop.customer_id}
                              interactionId={pop.interaction_id} onChanged={refresh} />
               )}
+              {view && <RelatedPeople view={view} customerId={pop.customer_id} onChanged={refresh} />}
 
               {view?.panels.interactions && (
                 <Card>

@@ -395,9 +395,18 @@ async def submit_case(
             )
 
     token = uuid.uuid4()
+    from case_service.rollouts import service as _rollouts
+    ct, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=ct, tenant=tenant.id,
+        subject=_rollouts.subject_of(body.submitter_email),
+        data={"subject": body.subject, **(body.extra_data or {})})
     case = CaseInstanceModel(
-        case_type_id=body.case_type_id,
+        case_type_id=ct.id,
         case_type_version=ct.version,
+        # Found 2026-09-29 (item 18a): a portal case was stored with NO tenant,
+        # and a NULL-tenant case is readable by every tenant. It belongs to the
+        # tenant whose portal it came through.
+        tenant_id=tenant.id,
         status="new",
         priority=body.priority,
         created_by=f"portal:{body.submitter_email}",
@@ -415,6 +424,8 @@ async def submit_case(
     )
     session.add(case)
     await session.flush()
+    await _rollouts.record(session, case_id=case.id, res=_rollout, tenant=tenant.id,
+                           via="portal")
 
     # HxConsent (§8.1): submitting is the consent act for processing this
     # case, so the basis is recorded at the moment it arises rather than
@@ -1225,6 +1236,12 @@ async def list_portal_tenants(
     session: AsyncSession = Depends(get_session),
 ):
     tenants = (await session.execute(select(TenantModel))).scalars().all()
+    # 8d (2026-09-29): every tenant's portal settings, to any portal admin.
+    from case_service.tenancy.identity import is_platform_operator, same_tenant
+
+    if not await is_platform_operator(session, _):
+        tenants = [t for t in tenants
+                   if await same_tenant(session, t.id, getattr(_, "tenant_id", None))]
     result = []
     for t in tenants:
         ps = _portal_settings(t)
@@ -1250,6 +1267,26 @@ async def list_portal_tenants(
     return result
 
 
+async def _config_tenant(slug: str, session: AsyncSession, user: AuthenticatedUser) -> TenantModel:
+    """The slug's tenant, if the caller may configure its portal.
+
+    8h (2026-09-29): these two routes took the tenant from the URL and nothing
+    else, so any tenant's admin could rewrite another tenant's portal — its
+    welcome text, its colours, its logo, whether it is on at all. Its own staff
+    may; so may the platform operator, who provisions tenants. Nobody else,
+    refused as 404 so a slug says nothing.
+    """
+    from case_service.tenancy.identity import is_platform_operator, same_tenant
+    tenant = (await session.execute(
+        select(TenantModel).where(TenantModel.slug == slug)
+    )).scalar_one_or_none()
+    if not tenant or not (
+            await same_tenant(session, tenant.id, getattr(user, "tenant_id", None) or "default")
+            or await is_platform_operator(session, user)):
+        raise coded(404, PORTAL_NOTFOUND_404, f"Tenant '{slug}' not found")
+    return tenant
+
+
 @admin_router.patch("/tenants/{slug}")
 async def update_portal_settings(
     slug: str,
@@ -1257,11 +1294,7 @@ async def update_portal_settings(
     _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
-    tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == slug)
-    )).scalar_one_or_none()
-    if not tenant:
-        raise coded(404, PORTAL_NOTFOUND_404, f"Tenant '{slug}' not found")
+    tenant = await _config_tenant(slug, session, _)
 
     settings = dict(tenant.settings or {})
     portal = dict(settings.get("portal", {}))
@@ -1980,11 +2013,7 @@ async def upload_portal_logo(
     _: AuthenticatedUser = Depends(hxguard.guard("portal.config.write")),
     session: AsyncSession = Depends(get_session),
 ):
-    tenant = (await session.execute(
-        select(TenantModel).where(TenantModel.slug == slug)
-    )).scalar_one_or_none()
-    if not tenant:
-        raise coded(404, PORTAL_NOTFOUND_404, f"Tenant '{slug}' not found")
+    tenant = await _config_tenant(slug, session, _)
     ctype = (file.content_type or "").lower()
     if ctype not in _LOGO_TYPES:
         raise coded(400, PORTAL_UPLOAD_400, "Logo must be a PNG, JPEG, or WebP image")

@@ -89,6 +89,8 @@ async def sync_to_crm(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         rec = await crm_svc.sync_to_crm(
             session, case_id, body.step_id,
@@ -116,6 +118,8 @@ async def list_crm_records(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     rows = await crm_svc.list_crm_records(session, case_id)
     return [CrmSyncOut.from_model(r) for r in rows]
 
@@ -177,6 +181,8 @@ async def generate_invoice(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         rec = await crm_svc.generate_invoice(
             session, case_id, body.step_id,
@@ -208,6 +214,8 @@ async def list_invoices(
     # SD-8: determine caller privilege once, then apply uniformly to all rows.
     # finance and admin roles see full line-item financials; all other roles
     # receive totals-only with unit_price, amount, and description redacted.
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     full_access = _has_sensitive_access(user)
     rows = await crm_svc.list_invoices(session, case_id)
     # Xero owns invoice status once the invoice exists; refresh still-open ones
@@ -232,6 +240,11 @@ async def list_all_crm_records(
     q = select(CrmSyncRecordModel).order_by(CrmSyncRecordModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(CrmSyncRecordModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(CrmSyncRecordModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return [CrmSyncOut.from_model(r) for r in rows]
 
@@ -251,5 +264,10 @@ async def list_all_invoices(
     q = select(InvoiceRecordModel).order_by(InvoiceRecordModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(InvoiceRecordModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(InvoiceRecordModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return [InvoiceOut.from_model(r, full_access=full_access) for r in rows]

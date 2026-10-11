@@ -1,0 +1,9 @@
+{
+  "id": "velaris/banking-dispute-rail",
+  "name": "Banking — Card Dispute Rep Desk",
+  "vertical": "banking",
+  "version": "1.0.0",
+  "bundle_schema_version": "1",
+  "summary": "A rep-desk rail for card disputes: evidence request first, a Full-verified caller before anything is promised, and a follow-up that reminds the rep of the chargeback clock.",
+  "author": "Velaris"
+}

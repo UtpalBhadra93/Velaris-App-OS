@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 # during the walk. Real metering arrives with the WASM host (Phase 2).
 MAX_NODES = 250
 MAX_DEPTH = 30
+# Value bounds: a CONFORMING expression is attribute-free, but `9 ** 9 ** 9` or
+# `"a" * 10 ** 10` still stalls the event loop or exhausts memory. HxFusion
+# scripts (Oct 8b) chain up to 50 assignments, so `s = s + s` would compound.
+MAX_SEQUENCE_LEN = 1_000_000
+MAX_INT_BITS = 65_536
+MAX_POW_EXPONENT = 10_000
 
 
 # ─── Whitelisted callables ────────────────────────────────────────
@@ -212,7 +218,9 @@ def _eval_node(node: ast.AST, names: dict[str, Any]) -> Any:
         fn = _BINOP_FN.get(type(node.op))
         if fn is None:
             raise ExpressionError(f"operator {type(node.op).__name__} not allowed")
-        return fn(_eval_node(node.left, names), _eval_node(node.right, names))
+        left, right = _eval_node(node.left, names), _eval_node(node.right, names)
+        _check_binop_bounds(node.op, left, right)
+        return _check_value_bounds(fn(left, right))
     if isinstance(node, ast.UnaryOp):
         fn = _UNARYOP_FN.get(type(node.op))
         if fn is None:
@@ -254,6 +262,41 @@ def _eval_node(node: ast.AST, names: dict[str, Any]) -> Any:
         args = [_eval_node(a, names) for a in node.args]
         return _SAFE_CALLS[node.func.id](*args)
     raise ExpressionError(f"node {type(node).__name__} not allowed")
+
+
+def _size_of(value: Any) -> int:
+    """Rough 'how big would this be' for bound checks (0 for unbounded kinds)."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value.bit_length()
+    return 0
+
+
+def _check_binop_bounds(op: ast.operator, left: Any, right: Any) -> None:
+    """Refuse an operation whose RESULT would be unreasonably large — before computing it."""
+    if isinstance(op, ast.Pow):
+        if isinstance(right, int) and not isinstance(right, bool):
+            if abs(right) > MAX_POW_EXPONENT:
+                raise ExpressionError(f"exponent {right} exceeds {MAX_POW_EXPONENT}")
+            if isinstance(left, int) and _size_of(left) * abs(right) > MAX_INT_BITS:
+                raise ExpressionError("result of '**' would be too large")
+    elif isinstance(op, ast.Mult):
+        for seq, n in ((left, right), (right, left)):
+            if isinstance(seq, (str, bytes, list, tuple)) and isinstance(n, int):
+                if len(seq) * n > MAX_SEQUENCE_LEN:
+                    raise ExpressionError("result of '*' would be too long")
+        if isinstance(left, int) and isinstance(right, int):
+            if _size_of(left) + _size_of(right) > MAX_INT_BITS:
+                raise ExpressionError("result of '*' would be too large")
+
+
+def _check_value_bounds(value: Any) -> Any:
+    if isinstance(value, (str, bytes, list, tuple)) and len(value) > MAX_SEQUENCE_LEN:
+        raise ExpressionError(f"value longer than {MAX_SEQUENCE_LEN}")
+    if isinstance(value, int) and _size_of(value) > MAX_INT_BITS:
+        raise ExpressionError(f"integer larger than {MAX_INT_BITS} bits")
+    return value
 
 
 # ─── Public entry point ───────────────────────────────────────────

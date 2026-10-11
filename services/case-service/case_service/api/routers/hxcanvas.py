@@ -201,6 +201,10 @@ async def delete_board(
     board = await service.get_board(session, board_id, _tenant(user))
     if not board:
         raise HTTPException(404, "Board not found")
+    # A board attached to a held case goes with its record (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_not_held(
+        session, getattr(board, "case_id", None), "changed by deleting a board attached to it")
     await service.delete_board(session, board)
     await session.commit()
 

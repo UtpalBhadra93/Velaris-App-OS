@@ -82,7 +82,9 @@ async def list_group_mappings(
         stmt = stmt.where(IdentityGroupMappingModel.tenant_id == resolved[0])
     if source:
         stmt = stmt.where(IdentityGroupMappingModel.source == source)
-
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, IdentityGroupMappingModel, session, _user)
     rows = (await session.execute(
         stmt.order_by(IdentityGroupMappingModel.external_group)
     )).scalars().all()
@@ -361,7 +363,9 @@ async def list_provision_log(
         stmt = stmt.where(IdentityProvisionLogModel.username == username)
     if action:
         stmt = stmt.where(IdentityProvisionLogModel.action == action)
-
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, IdentityProvisionLogModel, session, _user)
     rows = (await session.execute(
         stmt.order_by(desc(IdentityProvisionLogModel.created_at)).limit(limit)
     )).scalars().all()

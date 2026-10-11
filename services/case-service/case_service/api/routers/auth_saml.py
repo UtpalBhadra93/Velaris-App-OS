@@ -778,6 +778,22 @@ class SamlTestRequest(BaseModel):
     saml_response: str = Field(..., description="Base64 SAMLResponse, as the IdP posts it")
 
 
+async def _may_administer_tenant(session: AsyncSession, user: AuthenticatedUser, tenant: str) -> bool:
+    """The platform operator, or an admin of exactly the tenant in the URL.
+
+    Not `tenant_for_write`: that reads the literal "default" as "no opinion,
+    mine" — right for a create body, wrong for a URL naming whose config to
+    read. The first fix used it and a `dev` admin still tested `default`'s IdP
+    (found live, 2026-09-30)."""
+    from velaris_shared.tenancy.identity import (
+        DEFAULT_TENANT, is_platform_operator, resolve_tenant)
+    if await is_platform_operator(session, user):
+        return True
+    mine = await resolve_tenant(session, getattr(user, "tenant_id", None) or DEFAULT_TENANT)
+    theirs = await resolve_tenant(session, tenant)
+    return mine is not None and theirs is not None and mine[0] == theirs[0]
+
+
 @router.post("/{tenant}/test")
 async def saml_test(
     tenant: str,
@@ -795,6 +811,11 @@ async def saml_test(
     already holds `identity.sso.configure`; without it, diagnosing a mapping
     means reading server logs.
     """
+    # The tenant came from the URL and was trusted until 2026-09-30: any
+    # tenant's admin could run assertions against another tenant's IdP config
+    # and learn which of its accounts exist. Another tenant answers as absent.
+    if not await _may_administer_tenant(session, _user, tenant):
+        raise coded(404, AUTH_SSO_UNCONFIGURED_404, "SAML is not configured here.")
     _row, cfg, tenant_token = await _provider_for(session, tenant)
     try:
         assertion = saml.verify_response(body.saml_response, cfg=cfg, acs_url=cfg.acs_url)

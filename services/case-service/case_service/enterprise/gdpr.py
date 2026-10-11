@@ -254,6 +254,15 @@ async def anonymize_user_data(
     )
     import hashlib
 
+    # Anonymizing rewrites who created, worked and is recorded on a case. On a
+    # case under a legal hold that is altering evidence (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    held = await _legal_hold.user_held_cases(session, user_id)
+    if held:
+        raise _legal_hold.LegalHoldError(
+            f"This user is recorded on {held} case(s) under a legal hold. They cannot "
+            "be anonymized until the hold is released.")
+
     anon_id = "anon-" + hashlib.sha256(user_id.encode()).hexdigest()[:12]
 
     counts = {}
@@ -344,11 +353,13 @@ async def create_request(
     request_type: str,
     requested_by: str | None = None,
     reason: str | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Record a GDPR data subject request."""
     from velaris_shared.db.models import GDPRRequestModel
 
     req = GDPRRequestModel(
+        tenant_id=tenant_id,          # 8e: the tenant that recorded it
         subject_id=subject_id,
         request_type=request_type,
         status="pending",

@@ -211,7 +211,7 @@ async def transfer(
         # seconds ago by a colleague is the thing everybody complains about.
         verification_level=interaction.verification_level,
         verified_by=interaction.verified_by, verified_at=interaction.verified_at,
-        status="open")
+        status="open", handoff_kind="transfer")
     session.add(row)
     await session.flush()
     return row
@@ -304,21 +304,39 @@ async def consent_gate(
     if ident is not None:
         email = ident.value_normalised
 
+    from case_service.compliance import consent as consent_mod
+
+    # Studio has always sent `case_management`, which is not in the ledger's
+    # closed vocabulary. Kept working as the name it meant.
+    purpose = {"case_management": consent_mod.CASE_PROCESSING}.get(purpose, purpose)
+
     granted = False
     reason = "no consent record was found for this purpose"
     try:
-        from case_service.compliance import consent as consent_mod
-
-        if email and hasattr(consent_mod, "has_consent"):
-            granted = bool(await consent_mod.has_consent(
-                session, tenant_id=tenant_token, subject=email, purpose=purpose))
+        if purpose == consent_mod.CASE_PROCESSING:
+            # Case work rests on contract, not consent (`GATED_PURPOSES` leaves
+            # it out for exactly that reason), so silence is lawful. Only a
+            # recorded withdrawal stops it.
+            state = (await consent_mod.current_state(session, email, tenant_id=tenant_token)
+                     if email else {})
+            entry = state.get(purpose)
+            granted = entry is None or bool(entry["granted"])
+            reason = "" if granted else "they withdrew consent for case processing"
+        elif email:
+            # Until 2026-09-29 this passed `subject=` to a function whose
+            # parameter is `subject_ref`. The TypeError was caught below, so
+            # every call answered "consent could not be read" — a recorded
+            # grant was never seen, and nothing said so.
+            granted = await consent_mod.has_consent(
+                session, email, purpose, tenant_id=tenant_token)
             reason = "" if granted else "consent for this purpose is not on record"
     except Exception as exc:                                     # noqa: BLE001
         log.info("engage: consent unreadable: %s", exc)
+        granted = False
         reason = "consent could not be read, so it is treated as absent"
 
     if granted:
-        return {"granted": True, "action": None}
+        return {"granted": True, "action": None, "purpose": purpose}
     return {
         "granted": False,
         "reason": reason,

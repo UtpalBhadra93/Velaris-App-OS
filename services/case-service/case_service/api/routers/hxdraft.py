@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import caller_tenant_uuid
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.core.error_codes import (
     DRAFT_AI_503,
@@ -254,7 +255,7 @@ async def apply_draft(
     if body.kind == "case_type":
         return await _apply_case_type(body.draft, session, user)
     if body.kind == "form":
-        return await _apply_form(body.draft, session)
+        return await _apply_form(body.draft, session, user)
     if body.kind == "sla":
         return await _apply_sla(body.draft, background_tasks, session, user)
     if body.kind == "user":
@@ -322,8 +323,9 @@ async def _apply_routing(draft: dict, background_tasks: BackgroundTasks,
     """Surgical server-side patch of ONE step's assignment — canonical case-type
     write gate + checksum, then the standard case-type PATCH hooks."""
     ct = await _get_case_type_or_404(session, draft.get("target_id") or "")
-    from case_service.api.routers.case_types import _assert_can_write_case_type
-    _assert_can_write_case_type(user, ct.tenant_id, action="update")
+    # 8i: a default edited by a tenant is edited in that tenant's fork.
+    from case_service.api.routers.case_types import authorize_edit
+    ct = await authorize_edit(session, user, ct)
     if draft.get("base_checksum") != _checksum(ct.definition_json):
         raise coded(409, DRAFT_STALE_409,
                     "Case type changed since this draft was generated "
@@ -382,6 +384,9 @@ async def _apply_user(draft: dict, session: AsyncSession, user: AuthenticatedUse
         password_change_required=True,
     )
     session.add(new_user)
+    await session.flush()
+    from case_service.api.routers.auth_real import place_in_callers_tenant
+    await place_in_callers_tenant(session, user, new_user)
     await session.commit()
     await session.refresh(new_user)
     log.info("hxdraft: user %r created via draft by %s", clean["username"],
@@ -560,8 +565,9 @@ async def _apply_sla(draft: dict, background_tasks: BackgroundTasks,
     modify-existing: canonical write gate, base-checksum conflict check, then the
     same background hooks the manual case-type PATCH fires."""
     ct = await _get_case_type_or_404(session, draft.get("case_type_id") or "")
-    from case_service.api.routers.case_types import _assert_can_write_case_type
-    _assert_can_write_case_type(user, ct.tenant_id, action="update")
+    # 8i: a default edited by a tenant is edited in that tenant's fork.
+    from case_service.api.routers.case_types import authorize_edit
+    ct = await authorize_edit(session, user, ct)
 
     if draft.get("base_checksum") != _checksum(ct.definition_json):
         raise coded(409, DRAFT_STALE_409,
@@ -601,13 +607,13 @@ async def _apply_sla(draft: dict, background_tasks: BackgroundTasks,
             "name": clean["name"]}
 
 
-async def _assert_rule_name_free(session: AsyncSession, name: str, version: str) -> None:
-    """Rules are unique on (name, version) — fail with a clean 409, not a DB 500."""
+async def _assert_rule_name_free(session: AsyncSession, name: str, version: str,
+                                 owner=None) -> None:
+    """Rules are unique on (owner, name, version) since 8e — a clean 409, not a DB 500."""
     from velaris_shared.db.models import RuleDefinitionModel
-    existing = (await session.execute(
-        select(RuleDefinitionModel).where(RuleDefinitionModel.name == name,
-                                          RuleDefinitionModel.version == version)
-    )).scalar_one_or_none()
+    from velaris_shared.tenancy import inherit
+    existing = await inherit.name_taken(session, RuleDefinitionModel, owner,
+                                        name=name, version=version)
     if existing:
         raise coded(409, DRAFT_EXISTS_409,
                     f"A rule named '{name}' v{version} already exists — "
@@ -631,9 +637,11 @@ async def _apply_rule(draft: dict, background_tasks: BackgroundTasks,
     if errors:
         raise coded(400, DRAFT_VALIDATION_400,
                     "Draft failed validation: " + "; ".join(errors))
-    await _assert_rule_name_free(session, clean["name"], clean["version"])
+    owner = await _draft_owner(session, user)
+    await _assert_rule_name_free(session, clean["name"], clean["version"], owner)
 
     rule = await repo.create_rule(session, data={
+        "tenant_id": owner,
         "name": clean["name"], "version": clean["version"], "rule_type": "when",
         "scope": clean["scope"], "scope_target_id": clean["scope_target_id"],
         # provenance lives inside definition_json (the rule row has no description col)
@@ -650,20 +658,21 @@ async def _apply_rule(draft: dict, background_tasks: BackgroundTasks,
 
 async def _apply_case_type(draft: dict, session: AsyncSession, user: AuthenticatedUser):
     # exactly the canonical case-type create authorization (global type)
-    from case_service.api.routers.case_types import _assert_can_write_case_type
-    _assert_can_write_case_type(user, None, action="create")
+    # 8i: the caller's tenant — a default only for the platform operator.
+    from case_service.api.routers.case_types import authorize_create, name_taken
+    owner = await authorize_create(session, user, None)
 
     name = str(draft.get("name") or "").strip()[:255]
     version = str(draft.get("version") or "1.0.0").strip()[:50]
     definition = draft.get("definition_json")
     if not name or not isinstance(definition, dict) or not definition.get("stages"):
         raise HTTPException(400, "Draft needs a name and a definition with stages")
-    if await repo.get_case_type_by_name(session, name, version):
+    if await name_taken(session, owner, name, version):
         raise coded(409, DRAFT_EXISTS_409,
                     f"Case type '{name}' v{version} already exists")
 
     ct = await repo.create_case_type(session, data={
-        "name": name, "version": version, "tenant_id": None,
+        "name": name, "version": version, "tenant_id": owner,
         "default_priority": str(definition.get("default_priority") or "medium"),
         "definition_json": definition,
         "description": str(draft.get("description") or "Drafted by HxNexus (HxDraft)")[:500],
@@ -711,8 +720,9 @@ async def _apply_rule_modify(draft: dict, background_tasks: BackgroundTasks,
 async def _apply_case_type_modify(draft: dict, background_tasks: BackgroundTasks,
                                   session: AsyncSession, user: AuthenticatedUser):
     ct = await _get_case_type_or_404(session, draft.get("target_id") or "")
-    from case_service.api.routers.case_types import _assert_can_write_case_type
-    _assert_can_write_case_type(user, ct.tenant_id, action="update")
+    # 8i: a default edited by a tenant is edited in that tenant's fork.
+    from case_service.api.routers.case_types import authorize_edit
+    ct = await authorize_edit(session, user, ct)
     if draft.get("base_checksum") != _checksum(ct.definition_json):
         raise coded(409, DRAFT_STALE_409,
                     "Case type changed since this draft was generated "
@@ -833,9 +843,11 @@ async def stage_draft(
     if errors:
         raise coded(400, DRAFT_VALIDATION_400,
                     "Draft failed validation: " + "; ".join(errors))
-    await _assert_rule_name_free(session, clean["name"], clean["version"])
+    owner = await _draft_owner(session, user)
+    await _assert_rule_name_free(session, clean["name"], clean["version"], owner)
 
     rule = await repo.create_rule(session, data={
+        "tenant_id": owner,
         "name": clean["name"], "version": clean["version"], "rule_type": "when",
         "scope": clean["scope"], "scope_target_id": clean["scope_target_id"],
         "definition_json": {**clean["definition_json"],
@@ -861,6 +873,7 @@ async def stage_draft(
         content_snapshot={**snapshot, "enabled": True},
         created_by=user.username, owner_id=user.user_id,
         access_group_id=uuid.UUID(ag.id) if ag and ag.id else None,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(branch)
     await session.flush()
@@ -920,6 +933,7 @@ async def _stage_escalation(draft: dict, session: AsyncSession,
         content_snapshot={**snapshot, "is_active": True},
         created_by=user.username, owner_id=user.user_id,
         access_group_id=uuid.UUID(ag.id) if ag and ag.id else None,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(branch)
     await session.flush()
@@ -933,7 +947,17 @@ async def _stage_escalation(draft: dict, session: AsyncSession,
             "is_active": False}
 
 
-async def _apply_form(draft: dict, session: AsyncSession):
+async def _draft_owner(session: AsyncSession, user) -> Any:
+    """8e: what a draft creates is the caller's tenant's; a default only for
+    the platform operator, as before."""
+    from velaris_shared.tenancy import inherit
+    try:
+        return await inherit.owner_for_create(session, user)
+    except inherit.InheritError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
+async def _apply_form(draft: dict, session: AsyncSession, user):
     clean = form_builder.normalize_form_draft(
         {"name": draft.get("name"),
          "fields": (draft.get("definition_json") or {}).get("fields")})
@@ -946,6 +970,7 @@ async def _apply_form(draft: dict, session: AsyncSession):
         raise coded(400, DRAFT_VALIDATION_400,
                     "Draft failed validation: " + "; ".join(errors))
     form = await repo.create_form(session, data={
+        "tenant_id": await _draft_owner(session, user),
         "name": clean["name"], "version": clean["version"],
         "definition_json": clean["definition_json"],
     })

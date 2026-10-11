@@ -205,6 +205,24 @@ async def _get_tenant_by_slug(slug: str, session: AsyncSession) -> TenantModel:
     return tenant
 
 
+async def _admin_tenant(slug: str, session: AsyncSession,
+                        user: AuthenticatedUser) -> TenantModel:
+    """The slug's tenant, and ONLY if the caller belongs to it.
+
+    8h (2026-09-29, found live): every admin route here took the tenant from
+    the URL and nothing else, so a `dev` admin listed — and could create, read
+    and erase — the `default` tenant's portal customers by typing its slug.
+    Portal customers are a tenant's personal data: its own staff, or a
+    superadmin, and nobody else. Refused as 404, the same as a missing portal.
+    """
+    from case_service.tenancy.identity import is_superadmin, same_tenant
+    tenant = await _get_tenant_by_slug(slug, session)
+    if not is_superadmin(user) and not await same_tenant(
+            session, tenant.id, getattr(user, "tenant_id", None) or "default"):
+        raise HTTPException(404, "Portal not found")
+    return tenant
+
+
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class RegisterBody(BaseModel):
@@ -500,6 +518,69 @@ async def portal_update_account(
     return {"ok": True}
 
 
+#: A customer downloading their own data: generous for a person, useless as a
+#: way to hammer the database.
+_export_rl = rate_limit(max_calls=5, window_seconds=3600, name="portal-self-export")
+
+
+@public_router.get("/{slug}/account/export", dependencies=[Depends(_export_rl)])
+async def portal_export_account(
+    slug: str,
+    customer: PortalCustomerModel = Depends(_require_customer),
+    session: AsyncSession = Depends(get_session),
+):
+    """GDPR Art. 15 — the customer downloads what this organisation holds about them.
+
+    Oct item 8f. Found by their OWN account only — never by an address they
+    type, which would let anyone with a login ask about someone else's email.
+    Internal staff notes are never included here; an organisation reviews those
+    before releasing them through its own export.
+    """
+    import json as _json
+
+    from fastapi.responses import Response as _Response
+
+    from velaris_shared.db import security_events
+    from case_service.privacy import customer_export
+
+    data = await customer_export.build(session, tenant=customer.tenant_id,
+                                       portal_customer_ids=[customer.id],
+                                       include_internal=False)
+    await security_events.log_security_event(
+        session, event_type="gdpr.customer_self_export", severity="info",
+        user_id=f"portal:{customer.id}", resource_type="customer",
+        resource_id=str(customer.id), action="export", outcome="success",
+        details={"counts": customer_export.counts(data)})
+    await session.commit()
+    return _Response(
+        content=_json.dumps(data, indent=2, default=str), media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="my-data.json"'})
+
+
+async def _record_refused_self_erasure(session: AsyncSession, customer) -> None:
+    """An erasure request staff must answer by hand. One open request per subject."""
+    from velaris_shared.db import security_events
+    from velaris_shared.db.models import GDPRRequestModel
+    from case_service.enterprise import gdpr
+
+    subject = str(customer.primary_email or customer.id)
+    already = (await session.execute(select(GDPRRequestModel.id).where(
+        GDPRRequestModel.tenant_id == customer.tenant_id,
+        GDPRRequestModel.subject_id == subject,
+        GDPRRequestModel.request_type == "erasure",
+        GDPRRequestModel.status == "pending"))).first()
+    if already is None:
+        await gdpr.create_request(
+            session, subject_id=subject, request_type="erasure",
+            requested_by=f"portal:{customer.id}", tenant_id=customer.tenant_id,
+            reason="Self-service erasure refused: a case of this customer is under a "
+                   "legal hold. Review and answer the customer.")
+    await security_events.log_security_event(
+        session, event_type="gdpr.erasure_refused_legal_hold", severity="warning",
+        user_id=f"portal:{customer.id}", resource_type="customer",
+        resource_id=str(customer.id), action="erase", outcome="denied", details={})
+
+
 @public_router.delete("/{slug}/account")
 async def portal_delete_account(
     slug: str,
@@ -507,6 +588,25 @@ async def portal_delete_account(
     session: AsyncSession = Depends(get_session),
 ):
     """GDPR Art. 17 — customer self-erasure. Anonymises the record."""
+    # The rep desk's copy of this person goes too — profile, identifiers, call
+    # numbers and backfill proposals (2026-09-29; erasure reached none of it).
+    from case_service.engage import erasure as _engage_erasure
+    from case_service.legal_hold.service import LegalHoldError
+    try:
+        await _engage_erasure.forget(
+            session, tenant_uuid=customer.tenant_id,
+            emails=[customer.primary_email, customer.alt_email], phones=[customer.phone],
+            portal_customer_ids=[str(customer.id)], reason="portal self-erasure")
+    except LegalHoldError:
+        # One of their cases is under a legal hold (Oct item 13). The customer
+        # is NOT told that — a hold can concern an investigation of the very
+        # person asking. The request is recorded for staff instead of lost.
+        await _record_refused_self_erasure(session, customer)
+        await session.commit()
+        raise HTTPException(
+            409, "We could not delete your account automatically. Your request has "
+                 "been recorded and we will contact you.") from None
+
     customer.display_name    = "Deleted User"
     customer.primary_email   = f"deleted_{customer.id}@deleted"
     customer.alt_email       = None
@@ -585,7 +685,7 @@ async def admin_create_customer(
     Unlike self-registration this does not depend on the toggle: the toggle
     governs whether *the public* may create accounts, not whether staff may.
     """
-    tenant = await _get_tenant_by_slug(slug, session)
+    tenant = await _admin_tenant(slug, session, current_user)
     email = body.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(400, "A valid email address is required.")
@@ -654,7 +754,7 @@ async def admin_list_customers(
     current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.read")),
     session: AsyncSession = Depends(get_session),
 ):
-    tenant = await _get_tenant_by_slug(slug, session)
+    tenant = await _admin_tenant(slug, session, current_user)
     stmt = (
         select(PortalCustomerModel)
         .where(PortalCustomerModel.tenant_id == tenant.id)
@@ -695,7 +795,7 @@ async def admin_get_customer(
     current_user: AuthenticatedUser = Depends(hxguard.guard("portal.customers.read")),
     session: AsyncSession = Depends(get_session),
 ):
-    tenant = await _get_tenant_by_slug(slug, session)
+    tenant = await _admin_tenant(slug, session, current_user)
     customer = await session.get(PortalCustomerModel, customer_id)
     if not customer or customer.tenant_id != tenant.id:
         raise HTTPException(404, "Customer not found")
@@ -742,10 +842,18 @@ async def admin_delete_customer(
     session: AsyncSession = Depends(get_session),
 ):
     """GDPR Art. 17 — admin-initiated anonymisation."""
-    tenant = await _get_tenant_by_slug(slug, session)
+    tenant = await _admin_tenant(slug, session, current_user)
     customer = await session.get(PortalCustomerModel, customer_id)
     if not customer or customer.tenant_id != tenant.id:
         raise HTTPException(404, "Customer not found")
+
+    # The rep desk's copy of this person goes too — profile, identifiers, call
+    # numbers and backfill proposals (2026-09-29; erasure reached none of it).
+    from case_service.engage import erasure as _engage_erasure
+    await _engage_erasure.forget(
+        session, tenant_uuid=customer.tenant_id,
+        emails=[customer.primary_email, customer.alt_email], phones=[customer.phone],
+        portal_customer_ids=[str(customer.id)], reason="portal admin erasure")
 
     customer.display_name   = "Deleted User"
     customer.primary_email  = f"deleted_{customer.id}@deleted"

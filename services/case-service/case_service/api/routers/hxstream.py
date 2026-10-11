@@ -99,12 +99,31 @@ async def post_ui_event(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Record a frontend user interaction (fire-and-forget from the UI)."""
+    """Record a frontend user interaction (fire-and-forget from the UI).
+
+    2026-09-30, login-only sweep: `event_type` and `case_id` were written as
+    sent, so any signed-in user could put a `case.closed` — or anything else —
+    into another tenant's case trace. Studio only ever sends `ui_interaction`;
+    anything that is not a UI event is recorded as one, and a case the caller
+    cannot see is dropped rather than attached.
+    """
+    if not body.event_type.startswith("ui"):
+        body.event_type = "ui_interaction"
+    if body.case_id:
+        from velaris_shared.db.models import CaseInstanceModel
+        from velaris_shared.tenancy.identity import case_visible_to, is_superadmin
+        try:
+            case = await session.get(CaseInstanceModel, uuid.UUID(str(body.case_id)))
+        except ValueError:
+            case = None
+        if case is None or not await case_visible_to(
+                session, case.tenant_id, getattr(user, "tenant_id", None),
+                is_superadmin_caller=is_superadmin(user)):
+            body.case_id = None
     client_ip = request.client.host if request.client else None
-    tenant_id = (
-        str(user.active_access_group.id)
-        if user.active_access_group else "default"
-    )
+    # 8k: this was the ACCESS GROUP's id, written into the tenant column.
+    # The tenant claim, as every other emitter here records it.
+    tenant_id = getattr(user, "tenant_id", None) or "default"
     await emit_trace(
         body.event_type, body.payload,
         case_id=body.case_id, tenant_id=tenant_id,
@@ -196,6 +215,8 @@ async def replay_case(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     _require_hxstream_access(user)
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     stmt = (
         select(TraceEventModel)
         .where(TraceEventModel.case_id == case_id)

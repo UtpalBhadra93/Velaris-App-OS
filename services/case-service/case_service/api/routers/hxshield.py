@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from velaris_shared.auth.models import AuthenticatedUser
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,8 +29,12 @@ async def list_rules(
     enabled: bool | None = None,
     tenant_id: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(SecurityRuleModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, SecurityRuleModel, session, user)
     if enabled is not None:
         q = q.where(SecurityRuleModel.enabled == enabled)
     if tenant_id:
@@ -93,8 +98,12 @@ async def list_incidents(
     actor_id: str | None = None,
     limit: int = Query(50, le=200),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(SecurityIncidentModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, SecurityIncidentModel, session, user)
     if status:
         q = q.where(SecurityIncidentModel.status == status)
     if severity:
@@ -157,8 +166,12 @@ async def list_events(
     min_score: float = Query(0.0, ge=0.0, le=1.0),
     limit: int = Query(100, le=500),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(ShieldEventModel).where(ShieldEventModel.score >= min_score)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, ShieldEventModel, session, user)
     if actor_id:
         q = q.where(ShieldEventModel.actor_id == actor_id)
     result = await session.execute(q.order_by(ShieldEventModel.recorded_at.desc()).limit(limit))

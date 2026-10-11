@@ -4,6 +4,8 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,14 +29,32 @@ router = APIRouter(prefix="/fusion", tags=["HxFusion"], dependencies=[Depends(hx
 
 # ── Process Definitions ───────────────────────────────────────────────────────
 
+def _refuse_unsafe_scripts(bpmn_xml: str | None) -> None:
+    """Oct 8b: a scriptTask outside the safe-script grammar is refused at upload."""
+    from case_service.hxfusion.script_guard import check_bpmn
+
+    refused = check_bpmn(bpmn_xml or "")
+    if refused:
+        raise HTTPException(422, {
+            "error": "unsafe_script",
+            "message": "scriptTask scripts may only be 'name = expression' lines "
+                       "(no attribute access, dunders or imports).",
+            "refused": refused,
+        })
+
+
 @router.get("/definitions", response_model=list[ProcessDefinitionOut])
 async def list_definitions(
     status: str | None = None,
     case_type_id: str | None = None,
     tenant_id: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(ProcessDefinitionModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, ProcessDefinitionModel, session, user)
     if status:
         q = q.where(ProcessDefinitionModel.status == status)
     if case_type_id:
@@ -58,12 +78,21 @@ async def create_definition(
         .where(ProcessDefinitionModel.tenant_id == body.tenant_id)
     )
     max_ver = ver_q.scalar() or 0
+    _refuse_unsafe_scripts(body.bpmn_xml)
 
     defn = ProcessDefinitionModel(**body.model_dump(), version=max_ver + 1)
     session.add(defn)
     await session.commit()
     await session.refresh(defn)
     return defn
+
+
+@router.get("/definitions/script-scan")
+async def script_scan(session: AsyncSession = Depends(get_session)):
+    """Oct 8b: stored processes whose scripts the safe-script check now refuses."""
+    from case_service.hxfusion.script_guard import scan_definitions
+    found = await scan_definitions(session)
+    return {"count": len(found), "definitions": found}
 
 
 @router.get("/definitions/{defn_id}", response_model=ProcessDefinitionOut)
@@ -83,6 +112,8 @@ async def update_definition(
     defn = await session.get(ProcessDefinitionModel, defn_id)
     if not defn:
         raise HTTPException(404, "Definition not found")
+    if body.bpmn_xml is not None:
+        _refuse_unsafe_scripts(body.bpmn_xml)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(defn, k, v)
     await session.commit()
@@ -104,6 +135,7 @@ async def delete_definition(defn_id: uuid.UUID, session: AsyncSession = Depends(
 @router.post("/definitions/validate")
 async def validate_bpmn(body: dict):
     from case_service.hxfusion.parser import parse
+    from case_service.hxfusion.script_guard import check_bpmn
     bpmn_xml = body.get("bpmn_xml", "")
     try:
         process = parse(bpmn_xml)
@@ -115,6 +147,7 @@ async def validate_bpmn(body: dict):
             "flow_count": len(process.flows),
             "start_events": process.start_events,
             "node_types": list({n.node_type for n in process.nodes.values()}),
+            "refused_scripts": check_bpmn(bpmn_xml),
         }
     except Exception as exc:
         return {"valid": False, "error": str(exc)}
@@ -129,8 +162,12 @@ async def list_instances(
     definition_id: uuid.UUID | None = None,
     limit: int = Query(50, le=200),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(ProcessInstanceModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, ProcessInstanceModel, session, user)
     if status:
         q = q.where(ProcessInstanceModel.status == status)
     if case_id:
@@ -145,8 +182,16 @@ async def list_instances(
 async def start_instance(
     body: StartProcessRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     from case_service.hxfusion.engine import start_instance as _start
+    from velaris_shared.tenancy.identity import tenant_for_write
+    # The instance's tenant becomes the tenant of every case it spawns, and it
+    # was taken from the body as sent until 2026-09-30.
+    try:
+        body.tenant_id = await tenant_for_write(session, user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     try:
         instance = await _start(
             definition_id=body.definition_id,
@@ -232,8 +277,13 @@ async def list_bindings(
     instance_id: uuid.UUID | None = None,
     status: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     q = select(ProcessCaseBindingModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, ProcessCaseBindingModel, session, user,
+                              via=(ProcessCaseBindingModel.instance_id, ProcessInstanceModel))
     if case_id:
         q = q.where(ProcessCaseBindingModel.case_id == case_id)
     if instance_id:

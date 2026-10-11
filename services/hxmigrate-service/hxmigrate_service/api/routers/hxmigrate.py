@@ -49,6 +49,19 @@ def _tenant(user: AuthenticatedUser) -> str:
     return getattr(user, "tenant_id", None) or "default"
 
 
+async def _run_or_404(session: AsyncSession, user: AuthenticatedUser, run_id: uuid.UUID):
+    """A run, if it is the caller's tenant's. Until 2026-09-29 any signed-in user
+    could read, apply or fetch the result of any tenant's migration run by id —
+    found by the cross-tenant probe (8d), intermittently, because the probe
+    picked one candidate table for `run_id` at random."""
+    from velaris_shared.tenancy.identity import may_reach_tenant
+
+    run = await service.get_run(session, run_id)
+    if not run or not await may_reach_tenant(session, user, run.tenant_id):
+        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
+    return run
+
+
 def _get_auth_options(user: AuthenticatedUser) -> dict:
     """SEC-6: determine which auth options are available for the Creator module."""
     has_service_token = bool(os.getenv("VELARIS_SERVICE_TOKEN", "").strip())
@@ -157,7 +170,7 @@ async def start_run(
     creator_mode: str = Form("generate"),
     creator_auth_type: str = Form("auto"),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.run")),
     pipeline_factory = Depends(get_pipeline_factory),
 ):
     # SEC-10: platform allowlist
@@ -211,7 +224,7 @@ async def start_run(
 @router.get("/runs", response_model=list[RunOut])
 async def list_runs(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
     rows = await service.list_runs(session, _tenant(user))
     return [RunOut.from_model(r) for r in rows]
@@ -221,11 +234,9 @@ async def list_runs(
 async def get_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
-    run = await service.get_run(session, run_id)
-    if not run:
-        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
+    run = await _run_or_404(session, user, run_id)
     return RunOut.from_model(run)
 
 
@@ -235,7 +246,7 @@ async def apply_run(
     creator_auth_type: str = Form("auto"),
     background_tasks: BackgroundTasks = None,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.run")),
     pipeline_factory = Depends(get_pipeline_factory),
 ):
     """Trigger the Creator module on a completed generate-mode run.
@@ -247,9 +258,7 @@ async def apply_run(
     if creator_auth_type not in _AUTH_TYPES:
         raise coded(400, MIGRATE_CREATOR_AUTH_400, "Invalid creator_auth_type.")
 
-    run = await service.get_run(session, run_id)
-    if not run:
-        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
+    run = await _run_or_404(session, user, run_id)
     if run.status != "completed":
         raise coded(400, MIGRATE_RUN_STATE_400, f"Run must be completed before applying (status: {run.status})")
 
@@ -348,11 +357,9 @@ async def _run_creator_apply(
 async def get_result(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
-    run = await service.get_run(session, run_id)
-    if not run:
-        raise coded(404, MIGRATE_NOTFOUND_404, "Run not found")
+    run = await _run_or_404(session, user, run_id)
     if run.status not in ("completed", "partial"):
         raise coded(400, MIGRATE_RUN_STATE_400, f"Run not complete (status: {run.status})")
 

@@ -153,7 +153,12 @@ async def index_document(
         log.info("HxNexus: no extractable text from document %s", document_id)
         return 0
 
-    chunks = chunk_text(text)
+    # Unset means the fixed window every install has always indexed with.
+    # Switching it changes how the NEXT document is cut and touches no row
+    # already stored — re-indexing is an operator's action, never an update's.
+    from velaris_shared.config import get_settings
+    chunks = chunk_text(
+        text, strategy=getattr(get_settings(), "hxnexus_chunk_strategy", ""))
     indexed = 0
     # `hxnexus_document_chunks.tenant_id` is a VARCHAR while `cases.tenant_id`
     # is a GUID, so the case-wide index route handed this a UUID object and
@@ -238,10 +243,18 @@ async def qa_over_documents(
 
     q_embedding = await llm.embed(question)
 
+    # Rerank (off unless configured): retrieve wider, re-order, keep `top_k`.
+    # It runs here, ahead of the egress layers below, and is local arithmetic
+    # only — see `rerank.py`. Off, `fetch_k == top_k` and nothing differs.
+    from .rerank import LEXICAL, candidate_count, rerank_lexical, resolve_mode
+    rerank_on = resolve_mode(getattr(settings, "hxnexus_rerank", "")) == LEXICAL
+    fetch_k = candidate_count(
+        top_k, getattr(settings, "hxnexus_rerank_candidates", 20)) if rerank_on else top_k
+
     # Retrieve relevant chunks
     if vector_store is not None:
         chunks = await vector_store.query(
-            q_embedding, top_k=top_k,
+            q_embedding, top_k=fetch_k,
             filter_metadata={"case_id": str(case_id),
                              # str(): the route passes `case.tenant_id`, a UUID
                              # object, and the store compares it to the string
@@ -263,7 +276,12 @@ async def qa_over_documents(
               "score": _cosine(q_embedding, r.embedding or []),
               "metadata": {"document_id": str(r.document_id)}} for r in rows],
             key=lambda x: x["score"], reverse=True,
-        )[:top_k]
+        )[:fetch_k]
+
+    if rerank_on:
+        chunks = rerank_lexical(
+            question, chunks, top_k,
+            weight=getattr(settings, "hxnexus_rerank_lexical_weight", 0.3))
 
     if not chunks:
         return {"answer": "No indexed documents found for this case.", "sources": [], "external_ai": False}
@@ -283,8 +301,12 @@ async def qa_over_documents(
         chunks = kept
 
         # Layer 6: pseudonymize everything that may leave
-        from .pseudonymizer import Pseudonymizer
+        from .pseudonymizer import Pseudonymizer, add_confirmed_fields
         pseudo = Pseudonymizer()
+        # A document names the customer in prose; the case knows the name.
+        from velaris_shared.db.models import CaseInstanceModel
+        await add_confirmed_fields(
+            pseudo, session, await session.get(CaseInstanceModel, case_id))
         question_out = pseudo.redact(question)
         chunk_texts = [pseudo.redact(c["text"] or "") for c in chunks]
     else:

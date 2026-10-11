@@ -34,6 +34,7 @@ from velaris_shared.db.models import HelixUserModel, AuthOtpModel, SsoProviderMo
 from velaris_shared import hxguard
 from velaris_shared.db.session import get_auth_session as get_session
 from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.auth.jwt_handler import create_dev_token
 from velaris_shared.config import get_settings
@@ -408,6 +409,7 @@ async def register_user(
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(409, "Username or email already in use.")
+    _assert_role_grant(user, body.roles)
 
     new_user = HelixUserModel(
         username=body.username,
@@ -418,12 +420,70 @@ async def register_user(
         password_change_required=body.password_change_required,
     )
     session.add(new_user)
+    await session.flush()
+    await place_in_callers_tenant(session, user, new_user)
     await session.commit()
     await session.refresh(new_user)
     return _user_dict(new_user)
 
 
 # ── Superadmin guard ──────────────────────────────────────────────
+
+
+async def place_in_callers_tenant(session: AsyncSession, actor: AuthenticatedUser,
+                                  new_user: HelixUserModel) -> None:
+    """A tenant's admin creates accounts in THEIR tenant.
+
+    Without a directory row an account belonged to nobody, which the platform
+    reads as the default tenant — the install's own — so a tenant's admin could
+    mint accounts inside it (8d, 2026-09-29). The operator keeps the old
+    behaviour.
+    """
+    from case_service.tenancy.identity import is_platform_operator
+    from velaris_shared.db.models import UserDirectoryModel
+
+    if await is_platform_operator(session, actor) or not getattr(actor, "tenant_id", None):
+        return
+    session.add(UserDirectoryModel(
+        id=uuid.uuid4(), user_id=str(new_user.id), email=new_user.email,
+        display_name=new_user.display_name or new_user.username,
+        tenant_id=str(actor.tenant_id), is_active=True,
+        metadata_json={"created_by": getattr(actor, "user_id", None)}))
+
+
+def _assert_role_grant(actor: AuthenticatedUser, requested: list[str],
+                       held: list[str] | None = None) -> None:
+    """Only a superadmin may grant `superadmin`.
+
+    Until 2026-09-29 `roles` was taken verbatim on register and on PATCH, and
+    login copies it into the token — so any holder of `identity.users.write`,
+    every tenant's admin, could make themselves or a new account superadmin:
+    the one role that crosses every tenant boundary. Compared case-insensitively
+    because the role checks elsewhere are.
+    """
+    wants = {str(r).strip().lower() for r in requested or []}
+    had = {str(r).strip().lower() for r in held or []}
+    if "superadmin" in wants and "superadmin" not in had and not _is_superadmin_user(actor):
+        raise HTTPException(403, "Only a superadmin may grant the superadmin role.")
+
+
+async def _target_in_reach(session: AsyncSession, actor: AuthenticatedUser,
+                           target: HelixUserModel) -> None:
+    """A tenant's admin manages their own tenant's accounts; the install's
+    operator manages all. An account's tenant is its directory row's (by id or
+    username) — none, or NULL, is the platform's default tenant (8d)."""
+    from case_service.tenancy.identity import (
+        DEFAULT_TENANT, is_platform_operator, same_tenant,
+    )
+    from velaris_shared.db.models import UserDirectoryModel
+
+    if await is_platform_operator(session, actor):
+        return
+    row = (await session.execute(select(UserDirectoryModel).where(
+        UserDirectoryModel.user_id.in_([str(target.id), target.username])))).scalars().first()
+    owner = (row.tenant_id if row is not None else None) or DEFAULT_TENANT
+    if not await same_tenant(session, owner, getattr(actor, "tenant_id", None)):
+        raise HTTPException(404, "User not found")
 
 def _is_superadmin_user(actor: AuthenticatedUser) -> bool:
     return "superadmin" in (actor.roles or [])
@@ -454,6 +514,22 @@ async def list_users(
         .where(HelixUserModel.is_superadmin == False)  # noqa: E712
         .order_by(HelixUserModel.username)
     )).scalars().all()
+    # Every tenant's users, to every tenant's admin, until 2026-09-29 (8d). A
+    # user's tenant is their directory row's (by id or username); one with no
+    # row is the platform's and shown to its operator only.
+    from case_service.tenancy.identity import is_platform_operator, same_tenant
+
+    if not await is_platform_operator(session, user):
+        from velaris_shared.db.models import UserDirectoryModel
+        dirs = {d.user_id: d.tenant_id for d in (await session.execute(
+            select(UserDirectoryModel))).scalars().all()}
+        token = getattr(user, "tenant_id", None)
+        mine = []
+        for r in rows:
+            owner = dirs.get(str(r.id), dirs.get(r.username))
+            if owner is not None and await same_tenant(session, owner, token):
+                mine.append(r)
+        rows = mine
     return {"users": [_user_dict(r) for r in rows], "total": len(rows)}
 
 
@@ -466,6 +542,7 @@ async def get_user(
     u = await session.get(HelixUserModel, user_id)
     if not u or getattr(u, "is_superadmin", False):
         raise HTTPException(404, "User not found")
+    await _target_in_reach(session, user, u)
     return _user_dict(u)
 
 
@@ -479,7 +556,10 @@ async def update_user(
     u = await session.get(HelixUserModel, user_id)
     if not u:
         raise HTTPException(404, "User not found")
+    await _target_in_reach(session, actor, u)
     _assert_can_modify(actor, u)
+    if body.roles is not None:
+        _assert_role_grant(actor, body.roles, u.roles)
 
     if body.display_name is not None:
         u.display_name = body.display_name
@@ -506,6 +586,7 @@ async def delete_user(
     u = await session.get(HelixUserModel, user_id)
     if not u:
         raise HTTPException(404, "User not found")
+    await _target_in_reach(session, actor, u)
     _assert_can_modify(actor, u)
     await session.delete(u)
     await session.commit()
@@ -1103,9 +1184,11 @@ async def manage_sso_providers(
     Separate from the anonymous `GET /sso/providers`, which a login page calls
     and which must not disclose `tenant_id`, `config` or disabled rows.
     """
-    rows = (await session.execute(
-        select(SsoProviderModel).order_by(SsoProviderModel.provider)
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(SsoProviderModel).order_by(SsoProviderModel.provider),
+        SsoProviderModel, session, user))).scalars().all()
     return {"providers": [_provider_admin_dict(r) for r in rows]}
 
 
@@ -1120,6 +1203,13 @@ async def create_sso_provider(
     # wired when a user clicks it. `google`/`github` are built in; anything else
     # is accepted once it brings its own (SSRF-checked) endpoints.
     await _validated_custom_provider(body.provider, dict(body.config or {}))
+    # The provider's tenant is the tenant its sign-ins JOIN. Stored as sent
+    # until 2026-09-30: a tenant admin could register their own IdP for another
+    # tenant and sign accounts into it.
+    try:
+        body.tenant_id = await tenant_for_write(session, user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     p = SsoProviderModel(
         tenant_id=body.tenant_id,
         provider=body.provider,
@@ -1167,7 +1257,10 @@ async def update_sso_provider(
     if body.enabled is not None:
         p.enabled = body.enabled
     if body.tenant_id is not None:
-        p.tenant_id = body.tenant_id or None
+        try:
+            p.tenant_id = await tenant_for_write(session, user, body.tenant_id or None)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
     if body.config is not None:
         cfg = _validated_provider_config(body.config)
         # Re-run the endpoint contract: an edit can remove the very URLs that

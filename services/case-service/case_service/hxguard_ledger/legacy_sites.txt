@@ -59,10 +59,14 @@
 # exactly what the four hxnexus routes above it use. Recorded rather than
 # migrated for the same reason those four were.
 
+# 2026-09-29 (8d): `_assert_role_grant` — only a superadmin grants superadmin
+# (break-glass, kind 1). realtime `__init__`/`get_presence` carry roles into
+# a socket caller solely for `is_superadmin`.
 access_groups.py::list_access_groups
 access_groups.py::list_access_roles
 access_groups.py::list_portals
 auth_real.py::_assert_can_modify
+auth_real.py::_assert_role_grant
 auth_real.py::_is_superadmin_user
 auth_real.py::_make_tokens
 auth_real.py::_user_dict
@@ -79,6 +83,8 @@ auth_real.py::update_my_profile
 auth_real.py::update_user
 auth_real.py::webauthn_login_verify
 case_types.py::_assert_can_write_case_type
+case_types.py::authorize_create
+case_types.py::authorize_edit
 case_types.py::deploy_case_type
 case_types.py::update_case_type
 cases.py::list_cases
@@ -133,6 +139,8 @@ hxnexus.py::suggest
 hxnexus.py::upload_and_index
 identity_admin.py::list_account_links
 payments.py::reveal_bank_reference
+realtime.py::__init__
+realtime.py::get_presence
 releases.py::_require_superadmin
 releases.py::create_release
 releases.py::delete_release

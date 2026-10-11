@@ -1,0 +1,9 @@
+{
+  "id": "velaris/telco-portout-rail",
+  "name": "Telco — Number Port-Out Rep Desk",
+  "vertical": "telco",
+  "version": "1.0.0",
+  "bundle_schema_version": "1",
+  "summary": "A rep-desk rail for port-out requests: identity first, a documented reason, and any final-bill payment taken only from a Full-verified caller.",
+  "author": "Velaris"
+}

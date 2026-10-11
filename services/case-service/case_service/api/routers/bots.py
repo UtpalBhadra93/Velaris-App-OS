@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from case_service.core.tenant_path_guard import platform_operator_only as _platform_operator_only
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -424,9 +425,14 @@ async def list_tenant_limits(
     from velaris_shared.config import get_settings
     from velaris_shared.db.models import BotTenantLimitModel
 
-    rows = (await session.execute(
-        select(BotTenantLimitModel).order_by(BotTenantLimitModel.tenant_id)
-    )).scalars().all()
+    # "Every tenant's ceiling" is the platform operator's view; a tenant's admin
+    # sees their own (8d, 2026-09-29).
+    from case_service.tenancy.identity import is_platform_operator, scope_to_caller
+
+    stmt = select(BotTenantLimitModel).order_by(BotTenantLimitModel.tenant_id)
+    if not await is_platform_operator(session, user):
+        stmt = await scope_to_caller(stmt, BotTenantLimitModel, session, user)
+    rows = (await session.execute(stmt)).scalars().all()
     return {
         "default": int(getattr(get_settings(), "bot_tenant_max_concurrent", 4)),
         "limits": [{"tenant_id": r.tenant_id,
@@ -437,7 +443,7 @@ async def list_tenant_limits(
     }
 
 
-@router.put("/limits")
+@router.put("/limits", dependencies=[Depends(_platform_operator_only)])
 async def set_tenant_limit(
     body: TenantLimitIn,
     session: AsyncSession = Depends(get_session),

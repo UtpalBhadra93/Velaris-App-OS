@@ -23,6 +23,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import caller_tenant_uuid
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db import repository as repo
@@ -344,15 +345,21 @@ async def stage_insight(
         errors = rule_builder.validate_rule_draft(proposal)
         if errors:
             raise HTTPException(409, "Proposal no longer valid: " + "; ".join(errors))
-        existing = (await session.execute(
-            select(RuleDefinitionModel).where(
-                RuleDefinitionModel.name == proposal["name"],
-                RuleDefinitionModel.version == proposal.get("version", "1.0.0"))
-        )).scalar_one_or_none()
+        # 8e: the rule is the deciding admin's tenant's (a default only for
+        # the platform operator); the name is unique within that owner.
+        from velaris_shared.tenancy import inherit
+        try:
+            owner = await inherit.owner_for_create(session, user)
+        except inherit.InheritError as exc:
+            raise HTTPException(exc.status, str(exc))
+        existing = await inherit.name_taken(
+            session, RuleDefinitionModel, owner,
+            name=proposal["name"], version=proposal.get("version", "1.0.0"))
         if existing:
             raise HTTPException(409, f"A rule named '{proposal['name']}' already "
                                      f"exists — re-scan")
         rule = await repo.create_rule(session, data={
+            "tenant_id": owner,
             "name": proposal["name"], "version": proposal.get("version", "1.0.0"),
             "rule_type": "when", "scope": proposal.get("scope", "case_type"),
             "scope_target_id": proposal.get("scope_target_id") or str(ct.id),
@@ -416,6 +423,7 @@ async def stage_insight(
         base_snapshot=base, content_snapshot=content,
         created_by=user.username, owner_id=user.user_id,
         access_group_id=uuid.UUID(ag.id) if ag and ag.id else None,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(branch)
     await session.flush()

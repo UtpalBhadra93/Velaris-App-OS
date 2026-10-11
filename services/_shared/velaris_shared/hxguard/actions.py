@@ -922,6 +922,41 @@ _reg(_a("field.conflicts.resolve", "endpoint", ['admin', 'manager', 'case_worker
         "Decides one field/hub conflict. Case work: nothing sensitive merges itself."))
 
 
+# 8g (2026-09-29) — outbound case-event webhooks. Every route needed a login
+# and nothing else, so a viewer could subscribe an address of their choice to
+# every tenant's case events. Admin and developer, as the Studio screen that
+# manages them always assumed.
+_reg(_a("webhooks.subscriptions.read", "endpoint", ['admin', 'developer'],
+        "Lists outbound case-event webhook subscriptions and their deliveries."))
+_reg(_a("webhooks.subscriptions.write", "endpoint", ['admin', 'developer'],
+        "Creates, changes, tests and deletes outbound case-event webhook subscriptions."))
+
+
+# Oct item 8f — a CUSTOMER's subject-access export (GDPR Art. 15). Separate
+# from reading any one case: it gathers everything the tenant holds about a
+# person, across cases, calls, messages, orders and consent, into one file
+# that leaves the platform. Administrators, as for the staff export's erasure.
+_reg(_a("privacy.customers.export", "endpoint", ['admin'],
+        "Exports everything the tenant holds about one customer (GDPR Art. 15)."))
+
+
+# Oct item 18a — staged rollout of content versions. Requesting and approving
+# are separate actions AND separate people (the service refuses the requester
+# as approver), the same shape HxDeploy promotion has. Changing the percentage
+# is day-to-day operation; closing (promote, roll back, supersede) is the
+# decision that sticks, so it sits with the people who approve.
+_reg(_a("content.rollouts.read", "endpoint", ['admin', 'devops', 'developer', 'manager'],
+        "Reads staged rollouts, their arm counts and their history."))
+_reg(_a("content.rollouts.request", "endpoint", ['admin', 'devops', 'developer'],
+        "Requests a staged rollout of a new case type version. No effect until approved."))
+_reg(_a("content.rollouts.approve", "endpoint", ['admin'],
+        "Approves a requested rollout, and may override its strategy and percent."))
+_reg(_a("content.rollouts.change", "endpoint", ['admin', 'devops'],
+        "Changes a rollout's percentage, or switches a flag or blue-green rollout."))
+_reg(_a("content.rollouts.close", "endpoint", ['admin', 'devops'],
+        "Promotes, rolls back or supersedes a rollout."))
+
+
 # F-11 — intent-based process execution.
 #
 # WRITING a fragment is separated from CONFIRMING a plan, and the gap is the
@@ -992,6 +1027,35 @@ _reg(_a("engage.interactions.write", "endpoint", ['admin', 'manager', 'case_work
         "Opens a screen-pop, records verification, transfers and wraps up a contact."))
 _reg(_a("engage.actions.on_behalf", "endpoint", ['admin', 'manager', 'case_worker'],
         "Raises work in a customer's name, attributed to the rep and stamped with the tier."))
+# 2026-09-29, Oct item 2. Recording a person's consent is a legal record about
+# them, made on their word over the phone — separate from raising work for them,
+# so a floor can let reps do one and not the other.
+# 2026-09-29, Oct item 3. Running a backfill reads every portal account and
+# case submitter in the tenant — an administrator's act. Deciding a proposal
+# creates or enriches a person on the record, which a supervisor may do; a
+# MERGE proposal additionally needs `engage.profile.merge`.
+# 2026-10-11, Oct item 13 — legal holds. PLACING freezes a case against
+# deletion, anonymization, erasure and transfer; RELEASING is what lets it be
+# destroyed again, so it is the narrower one: an operator who may protect a
+# record has not thereby been given the power to unprotect it. READING the
+# matter and the reason is a third thing — a hold names a dispute, so a manager
+# does not hold it by default; whoever can read a case is still told THAT it is
+# held (`GET /legal-holds/cases/{id}`), which is all their work needs.
+_reg(_a("legal.holds.read", "endpoint", ['admin', 'security'],
+        "Reads legal holds: which cases are frozen, for which matter, why, and by whom."))
+_reg(_a("legal.holds.place", "endpoint", ['admin', 'security'],
+        "Places a legal hold on a case: it cannot be deleted, anonymized, erased or moved until released."))
+_reg(_a("legal.holds.release", "endpoint", ['admin'],
+        "Releases a legal hold, after which retention and erasure apply to the case again."))
+# Erasing a customer from the rep desk is irreversible and legal in weight.
+_reg(_a("engage.profile.erase", "endpoint", ['admin'],
+        "Erases a customer from the rep desk: profile anonymised, identifiers and call numbers removed."))
+_reg(_a("engage.backfill.run", "endpoint", ['admin'],
+        "Starts a profile backfill scan. It writes proposals only — it applies nothing."))
+_reg(_a("engage.backfill.decide", "endpoint", ['admin', 'manager'],
+        "Accepts or rejects a backfill proposal; accepting creates or enriches a profile."))
+_reg(_a("engage.actions.consent", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Records the customer's consent answer given on a verified call, bound to the interaction."))
 # 2026-09-17: item 12 P5. Analytics reads every rep's handling time and wrap-up
 # mix, which is a supervisor's view of the floor rather than case work; naming
 # the tenant's wrap-up codes changes what every rep may record, so it is admin.
@@ -1069,6 +1133,91 @@ _reg(_a("case.actions.bulk_stage", "endpoint", ['admin', 'manager'],
 # tenant to approve it, and a holder in the destination to accept it.
 _reg(_a("case.actions.transfer_tenant", "endpoint", ['admin'],
         "Request, approve, accept or refuse moving a case into another tenant."))
+
+# ── 2026-09-29: payments ─────────────────────────────────────────────────────
+#
+# Until today every `/payments` route depended on `get_current_user` and nothing
+# else — no privilege and no tenant check — so any signed-in user of any role in
+# any tenant could record a disbursement on another tenant's case, mark it sent
+# (a ledger posting) or refund its payment. Proven in-process before the fix.
+# There was no gate to keep parity with, so these follow blast radius: asking
+# for money and recording that it is owed are case work; giving money BACK and
+# confirming it LEFT are not, and a case worker who does them is granted it
+# from data. Connectors and webhook events describe the tenant's payment
+# plumbing, not a case.
+_reg(_a("payments.requests.read", "endpoint", ['admin', 'manager', 'case_worker', 'finance'],
+        "Reads payment requests and disbursements on cases the caller can see."))
+_reg(_a("payments.requests.write", "endpoint", ['admin', 'manager', 'case_worker', 'finance'],
+        "Asks a customer for a payment on a case step (a checkout link)."))
+_reg(_a("payments.refunds.write", "endpoint", ['admin', 'manager', 'finance'],
+        "Refunds a succeeded payment, fully or in part."))
+_reg(_a("payments.disbursements.write", "endpoint", ['admin', 'manager', 'case_worker', 'finance'],
+        "Records a pay-to-customer disbursement on a case step and completes the step."))
+_reg(_a("payments.disbursements.execute", "endpoint", ['admin', 'manager', 'finance'],
+        "Confirms a disbursement left the bank, which posts it to the ledger."))
+_reg(_a("payments.connectors.read", "endpoint", ['admin', 'manager', 'finance'],
+        "Lists the tenant's payment connectors (credentials masked) and webhook events."))
+_reg(_a("payments.connectors.test", "endpoint", ['admin'],
+        "Tests a payment connector's credentials against the provider."))
+
+
+# ── 2026-09-30: the login-only sweep ─────────────────────────────────────────
+#
+# A scan of the built route table (every route whose only gate is a login, with
+# helper calls followed three deep) found 270 routes. Proven in-process before
+# the fix, as a VIEWER: created a platform-wide region, created a work queue
+# (stored with NO tenant, so every tenant's Work Center saw it), and listed
+# connectors, sync destinations, platform logs, branches and MCP tokens. The
+# case-type DELETE took no identity parameter at all: any login hard-deleted a
+# case type. There was no gate to keep parity with, so each list follows the
+# Studio screen that manages the thing (nav-data.ts) — nobody who reaches the
+# screen today loses it — and a write is never wider than its read.
+_reg(_a("platform.regions.read", "endpoint", ['admin'],
+        "Reads the region registry, region health and the tenant placement map."))
+_reg(_a("platform.regions.write", "endpoint", ['admin'],
+        "Adds, changes or removes a region, places a tenant, or moves one. Platform operator only."))
+_reg(_a("platform.sovereignty.write", "endpoint", ['admin'],
+        "Writes a tenant's data-sovereignty rules: where its data may live."))
+_reg(_a("integration.sync.read", "endpoint", ['admin', 'integration', 'devops'],
+        "Reads outbound data-sync destinations, their mappings, redaction rules and runs."))
+_reg(_a("integration.sync.write", "endpoint", ['admin', 'integration'],
+        "Creates or changes a destination that copies case data out of the platform."))
+_reg(_a("integration.sync.run", "endpoint", ['admin', 'integration'],
+        "Runs or tests a sync — sends case data to the destination now."))
+_reg(_a("integration.connectors.read", "endpoint", ['admin', 'integration', 'designer', 'developer', 'devops'],
+        "Reads connector definitions (credentials masked), call history, events and the DLQ."))
+_reg(_a("integration.connectors.write", "endpoint", ['admin', 'integration'],
+        "Creates, changes or deletes a connector, or retries a dead-lettered call."))
+_reg(_a("integration.connectors.execute", "endpoint", ['admin', 'integration'],
+        "Calls a connector's endpoint by hand (test or sandbox execute)."))
+_reg(_a("devconn.rules.read", "endpoint", ['admin', 'integration', 'designer', 'developer'],
+        "Reads inbound/outbound developer-connector rules, custom connectors and their events."))
+_reg(_a("devconn.rules.write", "endpoint", ['admin', 'integration', 'designer'],
+        "Creates, changes or deletes a developer-connector rule."))
+_reg(_a("design.branches.read", "endpoint", ['admin', 'designer', 'developer', 'devops'],
+        "Reads artifact branches, their diffs, reviews, audit and commits."))
+_reg(_a("design.branches.write", "endpoint", ['admin', 'designer', 'developer'],
+        "Creates, edits, deletes or pulls an artifact branch, or records a commit."))
+_reg(_a("design.forms.write", "endpoint", ['admin', 'designer'],
+        "Creates, changes or deletes a form definition."))
+_reg(_a("casework.queues.write", "endpoint", ['admin', 'manager'],
+        "Creates a work queue in the caller's tenant."))
+_reg(_a("platform.logs.read", "endpoint", ['admin', 'security', 'designer'],
+        "Reads the platform's own service logs and has HxNexus analyse them."))
+_reg(_a("compliance.audit.read", "endpoint", ['admin', 'security'],
+        "Reads the audit chain's status, anchors and verification."))
+_reg(_a("compliance.reports.read", "endpoint", ['admin', 'security'],
+        "Lists and downloads generated compliance reports."))
+_reg(_a("platform.migration.read", "endpoint", ['admin', 'devops', 'designer'],
+        "Reads BPM import and HxMigrate jobs, runs and their results."))
+_reg(_a("platform.realtime.read", "endpoint", ['admin', 'designer'],
+        "Live websocket connection statistics (the Live Activity screen). Operator only."))
+_reg(_a("comms.email.send", "endpoint", ['admin', 'manager', 'case_worker'],
+        "Sends an email to any address from the tenant's outbound mailbox."))
+_reg(_a("design.graph.sync", "endpoint", ['admin', 'designer'],
+        "Rebuilds HxGraph from the database and re-embeds every node with the AI model."))
+_reg(_a("platform.migration.run", "endpoint", ['admin', 'devops', 'designer'],
+        "Uploads a BPM export or runs a migration that writes case types into the platform."))
 
 
 def resource_of(action: str) -> str:

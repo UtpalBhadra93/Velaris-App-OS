@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from velaris_shared.auth.models import AuthenticatedUser
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,8 @@ from case_service.api.schemas.cases import (
     WorkQueueCreate,
     WorkQueueResponse,
 )
+from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import DEFAULT_TENANT, is_platform_operator, resolve_tenant
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.db import repository as repo
 from velaris_shared.db.models import CaseAssignmentModel, CaseSLAInstanceModel
@@ -31,13 +34,25 @@ router = APIRouter(prefix="/queues", tags=["queues"], dependencies=[Depends(get_
 async def create_queue(
     body: WorkQueueCreate,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("casework.queues.write")),
 ):
+    # 2026-09-30: the body's `tenant_id` was stored verbatim, so a tenant
+    # manager's queue made without one belonged to NO tenant and showed in
+    # every tenant's Work Center. The caller's own tenant now; the platform
+    # operator keeps what it sent, as before.
+    tenant_id = body.tenant_id
+    if not await is_platform_operator(session, _user):
+        mine = await resolve_tenant(session, getattr(_user, "tenant_id", None) or DEFAULT_TENANT)
+        own = mine[0] if mine is not None else None
+        if body.tenant_id is not None and str(body.tenant_id) != str(own):
+            raise HTTPException(403, "A queue may only be created in your own tenant.")
+        tenant_id = own
     queue = await repo.create_work_queue(
         session,
         data={
             "name": body.name,
             "description": body.description,
-            "tenant_id": body.tenant_id,
+            "tenant_id": tenant_id,
             "filter_criteria": body.filter_criteria,
             "sort_fields": body.sort_fields,
             "sort_ascending": body.sort_ascending,
@@ -54,8 +69,20 @@ async def create_queue(
 async def list_queues(
     tenant_id: uuid.UUID | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
-    return await repo.list_work_queues(session, tenant_id=tenant_id)
+    # 8d (2026-09-29): with no `tenant_id` this listed every tenant's queues,
+    # and any caller could name another tenant's. Now the caller's own plus the
+    # platform-shared (NULL) ones — an install's pre-tenancy queues are NULL,
+    # and hiding them would empty the Work Center on upgrade. Only superadmin
+    # may name a tenant.
+    from case_service.tenancy.identity import is_superadmin, same_tenant
+
+    if is_superadmin(user):
+        return await repo.list_work_queues(session, tenant_id=tenant_id)
+    token = getattr(user, "tenant_id", None)
+    return [q for q in await repo.list_work_queues(session)
+            if await same_tenant(session, q.tenant_id, token)]
 
 
 @router.get("/{queue_id}", response_model=WorkQueueResponse)

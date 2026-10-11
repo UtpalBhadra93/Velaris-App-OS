@@ -318,6 +318,10 @@ async def delete_document(
             "Only the case owner or an admin can delete this document.",
         )
 
+    # A document on a case under a legal hold is evidence (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_not_held(session, doc.case_id, "changed by deleting a document")
+
     await service.delete(session, document_id, deleted_by=user.user_id)
     return Response(status_code=204)
 
@@ -381,6 +385,11 @@ async def delete_document_version(
             403,
             "Only the case owner or an admin can delete versions.",
         )
+
+    # A version of a document on a held case is evidence too (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_not_held(
+        session, doc.case_id, "changed by deleting a document version")
 
     try:
         updated = await service.delete_version(session, document_id, version)

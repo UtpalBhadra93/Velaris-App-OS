@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -350,6 +350,33 @@ class Settings(BaseSettings):
     ai_egress_min_score: float = 0.25           # relevance floor for external context
     ai_egress_max_context_chars: int = 6000     # total context cap per external call
 
+    # HxNexus document Q&A — how a document is cut, and how hits are ordered.
+    # Both default to what every install already does; neither re-indexes
+    # anything. An unrecognised value is treated as the default, never an error.
+    #   hxnexus_chunk_strategy: "" | window — fixed 512-char windows
+    #                           structure   — headings > paragraphs > sentences;
+    #                                         applies to documents indexed AFTER
+    #                                         it is set
+    #   hxnexus_rerank:         "" | off    — cosine top-k
+    #                           lexical     — cosine blended with a keyword
+    #                                         (BM25) score; local, no model call
+    hxnexus_chunk_strategy: str = ""
+    hxnexus_rerank: str = ""
+    hxnexus_rerank_candidates: int = 20         # retrieved before the rerank
+    hxnexus_rerank_lexical_weight: float = 0.3  # keyword share of the blend, 0..1
+
+    @field_validator("hxnexus_rerank_candidates", "hxnexus_rerank_lexical_weight",
+                     mode="before")
+    @classmethod
+    def _hxnexus_number_or_default(cls, value, info):
+        # `KEY=` or `KEY=abc` in .env must not stop the service booting over a
+        # ranking knob: an unreadable number is the default, like an unset one.
+        default = cls.model_fields[info.field_name].default
+        try:
+            return type(default)(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+
     # §5.3 LLM hardening: model-DoS guard — max chars (prompt + system) per LLM
     # call, enforced at the universal choke point. ~50k tokens. Configurable.
     ai_max_prompt_chars: int = 200_000
@@ -452,6 +479,34 @@ class Settings(BaseSettings):
     pii_redact_exports: bool = Field(
         default=False, validation_alias="VELARIS_CASE_PII_REDACT_EXPORTS"
     )
+    # HxPrivacy, further surfaces (Oct item 11). Each is its own switch and each
+    # is OFF unless set — none of them is implied by `pii_redact_exports`, so an
+    # install that already redacts its billing export sees no change on upgrade.
+    #   table exports — the Database Manager's raw table export
+    #   AI egress     — values of confirmed fields masked wherever they appear in
+    #                   text sent to an EXTERNAL provider (restored in the answer)
+    #   case text     — retention's `anonymize` also blanks the case's messages,
+    #                   channel messages and HxNexus conversations. Irreversible.
+    pii_redact_table_exports: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_PII_REDACT_TABLE_EXPORTS"
+    )
+    pii_mask_ai_egress: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_PII_MASK_AI_EGRESS"
+    )
+    retention_anonymize_case_text: bool = Field(
+        default=False, validation_alias="VELARIS_CASE_RETENTION_ANONYMIZE_CASE_TEXT"
+    )
+
+    @field_validator("pii_redact_table_exports", "pii_mask_ai_egress",
+                     "retention_anonymize_case_text", mode="before")
+    @classmethod
+    def _switch_or_off(cls, value):
+        # `KEY=` or `KEY=maybe` must not stop the service booting, and must
+        # never read as on: anything that is not plainly yes is off.
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     # HxLedger (§8.4) — post captured payments and refunds into the books.
     # ON by default, for the same reason the health sampler is: a ledger with
     # no postings is worthless, and `/ledger/reconcile` reports every captured

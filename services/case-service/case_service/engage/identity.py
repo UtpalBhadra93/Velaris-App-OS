@@ -238,18 +238,58 @@ async def resolve(
     }
 
 
+# The adoption rungs read OTHER tables, so each carries the tenant clause itself.
+# Until 2026-09-29 rungs 3 and 4 had none: a number or address that appeared on
+# ANOTHER tenant's case or chat adopted a profile here named after that tenant's
+# customer — their name on this tenant's screen, and a phantom person besides.
+# Rung 2 compared a UUID column to the tenant token string, so on PostgreSQL it
+# never matched at all. (Found building Oct item 3, which reads the same sources.)
+
+
+async def _conversation_tenants(session, tenant_uuid, tenant_token) -> list[str]:
+    from velaris_shared.tenancy.identity import resolve_tenant
+
+    out = {str(tenant_token), str(tenant_uuid)}
+    resolved = await resolve_tenant(session, str(tenant_token))
+    if resolved is not None:
+        out |= {str(resolved[0]), str(resolved[1])}
+    return sorted(out)
+
+
+def phone_matches(stored: str | None, normalised: str) -> bool:
+    """Compare a free-text stored phone with a normalised one. Never raises."""
+    if not stored:
+        return False
+    try:
+        return normalise("phone", stored).lstrip("+") == normalised.lstrip("+")
+    except IdentityError:
+        return False
+
+
 async def _from_portal_customer(session, tenant_uuid, tenant_token, kind, normalised):
+    from sqlalchemy import func, or_
+
     from velaris_shared.db.models import PortalCustomerModel
 
-    if kind not in ("email", "phone"):
+    if kind == "email":
+        row = (await session.execute(
+            select(PortalCustomerModel).where(
+                PortalCustomerModel.tenant_id == tenant_uuid,
+                or_(func.lower(PortalCustomerModel.primary_email) == normalised,
+                    func.lower(PortalCustomerModel.alt_email) == normalised),
+            ).limit(1))).scalars().first()
+    elif kind == "phone":
+        # Stored free-text, so narrowed by the last digits in SQL and compared
+        # normalised in Python.
+        tail = normalised.lstrip("+")[-6:]
+        rows = (await session.execute(
+            select(PortalCustomerModel).where(
+                PortalCustomerModel.tenant_id == tenant_uuid,
+                PortalCustomerModel.phone.like(f"%{tail[-2:]}"),
+            ).limit(500))).scalars().all()
+        row = next((r for r in rows if phone_matches(r.phone, normalised)), None)
+    else:
         return None
-    column = PortalCustomerModel.primary_email if kind == "email" else None
-    if column is None:
-        return None
-    row = (await session.execute(
-        select(PortalCustomerModel).where(
-            PortalCustomerModel.tenant_id == tenant_token,
-            column == normalised))).scalars().first()
     if row is None:
         return None
     return {"display_name": getattr(row, "display_name", None) or normalised,
@@ -257,13 +297,16 @@ async def _from_portal_customer(session, tenant_uuid, tenant_token, kind, normal
 
 
 async def _from_case_submitter(session, tenant_uuid, tenant_token, kind, normalised):
+    from sqlalchemy import func
+
     from velaris_shared.db.models import CaseInstanceModel
 
     if kind != "email":
         return None
     row = (await session.execute(
         select(CaseInstanceModel).where(
-            CaseInstanceModel.portal_submitter_email == normalised)
+            CaseInstanceModel.tenant_id == tenant_uuid,
+            func.lower(CaseInstanceModel.portal_submitter_email) == normalised)
         .limit(1))).scalars().first()
     if row is None:
         return None
@@ -275,6 +318,8 @@ async def _from_conversation(session, tenant_uuid, tenant_token, kind, normalise
 
     row = (await session.execute(
         select(ChannelConversationModel).where(
+            ChannelConversationModel.tenant_id.in_(
+                await _conversation_tenants(session, tenant_uuid, tenant_token)),
             ChannelConversationModel.peer_address == normalised)
         .limit(1))).scalars().first()
     if row is None:
@@ -334,6 +379,13 @@ async def relate(
         raise IdentityError(f"a relation is one of {', '.join(RELATIONS)}")
     if from_id == to_id:
         raise IdentityError("a party cannot be related to itself")
+    # Idempotent: confirming the same connection twice records it once.
+    existing = (await session.execute(select(CustomerRelationModel).where(
+        CustomerRelationModel.from_customer_id == from_id,
+        CustomerRelationModel.to_customer_id == to_id,
+        CustomerRelationModel.relation == relation))).scalars().first()
+    if existing is not None:
+        return existing
     row = CustomerRelationModel(
         id=uuid.uuid4(), tenant_id=tenant_uuid, from_customer_id=from_id,
         to_customer_id=to_id, relation=relation, may_act_for=bool(may_act_for),

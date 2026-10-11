@@ -17,13 +17,19 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import ImportJobModel
 from velaris_shared.db.session import get_session, get_session_factory
+from velaris_shared.tenancy.identity import caller_tenant_uuid, scope_to_caller
+from velaris_shared.tenancy.row_guard import owned_rows
 from hxmigrate_service.bpm_importer.pipeline import run_pipeline
 
-router = APIRouter(prefix="/importer", tags=["bpm-importer"])
+# 8e (2026-10-01): import jobs are their tenant's. The id routes below answer
+# 404 for another tenant's job; the list and the upload are scoped in place.
+router = APIRouter(prefix="/importer", tags=["bpm-importer"],
+                   dependencies=[Depends(owned_rows({"job_id": ImportJobModel}))])
 
 SUPPORTED_TOOLS = {"pega", "camunda", "appian", "servicenow"}
 
@@ -36,7 +42,7 @@ async def upload_bpm_export(
     file: UploadFile = File(...),
     tool: str = Form(...),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.run")),
 ):
     """Upload a BPM export file and start the five-pass import pipeline."""
     if tool.lower() not in SUPPORTED_TOOLS:
@@ -58,6 +64,7 @@ async def upload_bpm_export(
         filename=filename,
         status="pending",
         created_by=user.user_id,
+        tenant_id=await caller_tenant_uuid(session, user),
     )
     session.add(job)
     await session.commit()
@@ -89,9 +96,10 @@ async def list_jobs(
     tool:   Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
     stmt = select(ImportJobModel).order_by(desc(ImportJobModel.created_at))
+    stmt = await scope_to_caller(stmt, ImportJobModel, session, user)
     if tool:
         stmt = stmt.where(ImportJobModel.tool == tool.lower())
     if status:
@@ -106,7 +114,7 @@ async def list_jobs(
 async def get_job(
     job_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
     job = await _get_or_404(session, job_id)
     result = _job_summary(job)
@@ -127,7 +135,7 @@ async def get_job(
 async def get_report(
     job_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
     job = await _get_or_404(session, job_id)
     if job.status not in ("complete", "failed"):
@@ -141,7 +149,7 @@ async def get_report(
 async def get_result(
     job_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.migration.read")),
 ):
     """Return the generated Helix objects (case_types, forms, migration SQL)."""
     job = await _get_or_404(session, job_id)
@@ -166,7 +174,7 @@ async def get_result(
 async def delete_job(
     job_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.migration.run")),
 ):
     job = await _get_or_404(session, job_id)
     await session.delete(job)

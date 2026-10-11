@@ -74,6 +74,8 @@ ANONYMIZE = "anonymize"
 #: A re-run must not re-scrub an already-scrubbed case, and an auditor asking
 #: "why is this case empty" deserves an answer in the row itself.
 ANON_MARKER = "_anonymized_at"
+#: Second marker, for the free-text sweep (Oct 11f) — see `_anonymize_cases`.
+ANON_TEXT_MARKER = "_anonymized_text_at"
 
 #: Payload keys stripped regardless of what HxPrivacy has confirmed. These are
 #: structural — the intake service writes them on every portal-originated case,
@@ -121,9 +123,19 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
         q = q.where(CaseInstanceModel.tenant_id == tenant_id)
     elif exclude_tenants:
         q = q.where(_not_overridden(CaseInstanceModel, exclude_tenants))
+    # A case under a legal hold is evidence: never anonymized, however old.
+    free = await _not_held(session, CaseInstanceModel.id)
+    if free is not None:
+        q = q.where(free)
     rows = (await session.execute(q)).scalars().all()
 
     pending = [c for c in rows if not (c.data or {}).get(ANON_MARKER)]
+    # Oct 11f, off unless switched on: the case's free text. A case anonymized
+    # before the switch existed carries `ANON_MARKER` and is never revisited by
+    # the line above, so it gets its own marker and its own sweep.
+    text_on = _case_text_enabled()
+    text_due = [c for c in rows
+                if text_on and not (c.data or {}).get(ANON_TEXT_MARKER)]
     # Already-marked cases were scrubbed before the submitter COLUMNS were part
     # of this routine, so they still carry the customer's name and address. The
     # marker check above means they are never revisited — they have to be swept
@@ -132,8 +144,9 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
                 if (c.data or {}).get(ANON_MARKER)
                 and (c.portal_submitter_email or c.portal_submitter_name
                      or c.portal_tracking_token)]
+    touched = {c.id for c in pending + backfill + text_due}
     if not apply:
-        return len(pending) + len(backfill)
+        return len(touched)
 
     strip = set(ALWAYS_STRIP) | await _confirmed_pii_keys(session)
     now = datetime.now(timezone.utc)
@@ -167,8 +180,81 @@ async def _anonymize_cases(session: AsyncSession, cutoff: datetime, apply: bool,
     # retention policy's business, not this one's — what goes here is only the
     # copy this platform made for the AI.
     await _delete_chunks_for(session, [c.id for c in pending + backfill])
+    # And the uploads still WAITING to become chunks (mig 206): a background
+    # upload's bytes sit in storage until the drain runs, which may be never.
+    await _discard_queued_uploads_for(session, [c.id for c in pending + backfill])
 
-    return len(pending) + len(backfill)
+    if text_due:
+        await _anonymize_case_text(session, [c.id for c in text_due])
+        for case in text_due:
+            data = dict(case.data or {})
+            data[ANON_TEXT_MARKER] = now.isoformat()
+            case.data = data
+            session.add(case)
+
+    return len(touched)
+
+
+def _case_text_enabled() -> bool:
+    try:
+        from velaris_shared.config import get_settings
+        return bool(get_settings().retention_anonymize_case_text)
+    except Exception:  # noqa: BLE001 — unreadable config is "off", as before
+        return False
+
+
+async def _anonymize_case_text(session: AsyncSession, case_ids: Sequence) -> None:
+    """Blank what was WRITTEN about a case, not only what was filled in.
+
+    `case.data` is the form. The customer's name, address and account number
+    are just as present in the messages exchanged on the case, in the SMS and
+    WhatsApp thread, and in what somebody asked HxNexus about it — and none of
+    those were reached, so an "anonymized" case could still be read in full.
+
+    Rows are kept and their text replaced: that a message was sent, when, and
+    in which direction is the case's history; what it said is the identity.
+
+    **Not reached, deliberately:** `case_events`. It is the append-only stream
+    the case row is a projection of, and nothing in the codebase updates it;
+    rewriting it here would trade one guarantee for another without anyone
+    having decided to. Recorded as open in `Oct_TODO.md` §11. The conversation's
+    `customer_id` is left too: it is a link, and the customer record has its
+    own erasure.
+    """
+    if not case_ids:
+        return
+    from sqlalchemy import update
+    from velaris_shared.db.models import (
+        CaseMessageModel, ChannelConversationModel, ChannelMessageModel,
+        CopilotConversationModel, CopilotMessageModel,
+    )
+
+    ids = list(case_ids)
+    blank = "[anonymized]"
+    await session.execute(
+        update(CaseMessageModel).where(CaseMessageModel.case_id.in_(ids))
+        .values(body=blank, author_name=None)
+        .execution_options(synchronize_session=False))
+    await session.execute(
+        update(ChannelMessageModel).where(ChannelMessageModel.case_id.in_(ids))
+        .values(body=blank, peer_address=blank, media=[], raw_payload={})
+        .execution_options(synchronize_session=False))
+    # The thread itself holds the customer's number, and it is what inbound
+    # routing matches on. Blanked whole, not to its last four digits: four
+    # digits beside a date, a channel and a tenant still point at one person.
+    # Closed as well, so the next message from that number opens a NEW
+    # conversation rather than being appended to a case that was anonymized.
+    await session.execute(
+        update(ChannelConversationModel).where(ChannelConversationModel.case_id.in_(ids))
+        .values(peer_address=blank, status="closed", metadata_json={})
+        .execution_options(synchronize_session=False))
+    conversations = select(CopilotConversationModel.id).where(
+        CopilotConversationModel.case_id.in_(ids))
+    await session.execute(
+        update(CopilotMessageModel)
+        .where(CopilotMessageModel.conversation_id.in_(conversations))
+        .values(content=blank)
+        .execution_options(synchronize_session=False))
 
 
 async def _delete_chunks_for(session: AsyncSession, case_ids: Sequence) -> int:
@@ -182,6 +268,30 @@ async def _delete_chunks_for(session: AsyncSession, case_ids: Sequence) -> int:
         .execution_options(synchronize_session=False)
     )
     return int(result.rowcount or 0)
+
+
+async def _discard_queued_uploads_for(session: AsyncSession, case_ids: Sequence) -> int:
+    """Cancel pending background uploads for these cases and delete their bytes."""
+    from velaris_shared.db.models import DocumentIndexJobModel
+    from case_service.hxnexus import index_queue
+
+    if not case_ids:
+        return 0
+    jobs = (await session.execute(
+        select(DocumentIndexJobModel).where(
+            DocumentIndexJobModel.case_id.in_(list(case_ids)),
+            DocumentIndexJobModel.status == "pending",
+            DocumentIndexJobModel.staged_storage_key.is_not(None),
+        )
+    )).scalars().all()
+    for job in jobs:
+        await index_queue.discard_staged(job.staged_storage_key)
+        job.status = "cancelled"
+        job.active_key = None
+        job.finished_at = datetime.now(timezone.utc)
+        job.last_error = "cancelled: the case was anonymized before indexing"
+        session.add(job)
+    return len(jobs)
 
 
 def _strip_submitter_columns(case) -> None:
@@ -243,6 +353,10 @@ async def _resolved_cases(session: AsyncSession, cutoff: datetime, apply: bool,
         where.append(CaseInstanceModel.tenant_id == tenant_id)
     elif exclude_tenants:
         where.append(_not_overridden(CaseInstanceModel, exclude_tenants))
+    # A case under a legal hold is evidence: never deleted, however old.
+    free = await _not_held(session, CaseInstanceModel.id)
+    if free is not None:
+        where.append(free)
     where = tuple(where)
     if not apply:
         return int((await session.execute(
@@ -259,22 +373,29 @@ async def _audit_log(session: AsyncSession, cutoff: datetime, apply: bool,
     """`case_audit_log` — the mutable operational log, NOT the sealed chain.
 
     The two are separate tables and only one is prunable. The chain keeps its
-    own hashed rows and stays verifiable after this runs; what is lost is the
-    unsealed operational detail, which is what a retention period is about.
+    own hashed rows, and stays verifiable because the delete goes through
+    `audit_chain.prune_audit_rows`, which seals a prune record naming the rows
+    it removed (mig 216). Until 2026-10-11 this was a bare DELETE and every
+    sealed row it removed verified as `missing_audit_row` — Oct_TODO §11h.
+
+    The audit rows of a case under a legal hold are not pruned.
     """
     from velaris_shared.db.models import CaseAuditLogModel
 
     where = [CaseAuditLogModel.timestamp < cutoff]
     if tenant_id and hasattr(CaseAuditLogModel, "tenant_id"):
         where.append(CaseAuditLogModel.tenant_id == tenant_id)
+    free = await _not_held(session, CaseAuditLogModel.case_id)
+    if free is not None:
+        where.append(free)
     where = tuple(where)
     if not apply:
         return int((await session.execute(
             select(func.count()).select_from(CaseAuditLogModel).where(*where)
         )).scalar_one() or 0)
-    return int((await session.execute(
-        delete(CaseAuditLogModel).where(*where)
-    )).rowcount or 0)
+    from case_service.compliance import audit_chain
+    return await audit_chain.prune_audit_rows(
+        session, where, reason="retention", actor="system:retention", cutoff=cutoff)
 
 
 async def _event_log(session: AsyncSession, cutoff: datetime, apply: bool,
@@ -289,6 +410,9 @@ async def _event_log(session: AsyncSession, cutoff: datetime, apply: bool,
             where.append(CaseEventLogModel.tenant_id == tenant_id)
         elif exclude_tenants:
             where.append(_not_overridden(CaseEventLogModel, exclude_tenants))
+    free = await _not_held(session, CaseEventLogModel.case_id)
+    if free is not None:
+        where.append(free)
     where = tuple(where)
     if not apply:
         return int((await session.execute(
@@ -315,6 +439,33 @@ async def _security_events(session: AsyncSession, cutoff: datetime, apply: bool,
     return int((await session.execute(
         delete(SecurityEventModel).where(*where)
     )).rowcount or 0)
+
+
+async def _not_held(session: AsyncSession, case_id_column):
+    """Leave out cases under a legal hold (Oct item 13). None = nothing is held."""
+    from case_service.legal_hold import service as legal_hold
+
+    return await legal_hold.not_held(session, case_id_column)
+
+
+async def _held_due(session: AsyncSession, cutoff: datetime, tenant_id: str | None,
+                    exclude_tenants: Sequence[str] | None) -> int:
+    """Cases this policy WOULD have reached, kept because of a legal hold.
+
+    Reported, so a run that skips a case says so — a policy that quietly leaves
+    rows behind looks, to whoever reads the report, like one that failed.
+    """
+    from velaris_shared.db.models import CaseInstanceModel
+    from case_service.legal_hold import service as legal_hold
+
+    q = select(CaseInstanceModel.id).where(
+        CaseInstanceModel.status.in_(("closed", "resolved", "cancelled", "rejected")),
+        CaseInstanceModel.updated_at < cutoff)
+    if tenant_id:
+        q = q.where(CaseInstanceModel.tenant_id == tenant_id)
+    elif exclude_tenants:
+        q = q.where(_not_overridden(CaseInstanceModel, exclude_tenants))
+    return await legal_hold.count_held(session, q)
 
 
 def _not_overridden(model, exclude_tenants: Sequence[str]):
@@ -420,6 +571,7 @@ async def apply_policy(
             result["excluded_tenants"] = len(exclude_tenants or ())
         result["rows"] = await _anonymize_cases(
             session, cutoff, apply, scope, exclude_tenants)
+        result["held_by_legal_hold"] = await _held_due(session, cutoff, scope, exclude_tenants)
         result["applied"] = apply
         if apply:
             policy.last_run_at = datetime.now(timezone.utc)
@@ -452,6 +604,8 @@ async def apply_policy(
         # default was narrowed and by how much.
         result["excluded_tenants"] = len(exclude_tenants or ())
     result["rows"] = await handler(session, cutoff, apply, scope, exclude_tenants)
+    if policy.resource_type == "resolved_cases":
+        result["held_by_legal_hold"] = await _held_due(session, cutoff, scope, exclude_tenants)
     result["applied"] = apply
 
     if apply:

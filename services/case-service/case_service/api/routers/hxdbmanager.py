@@ -63,7 +63,13 @@ from velaris_shared.db.session import get_session
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/hxdbmanager", tags=["hxdbmanager"])
+from case_service.core.tenant_path_guard import platform_operator_only  # noqa: E402
+
+# 8d (2026-09-29): raw table browsing and DML read every tenant's rows at once,
+# and `platform.dbmanager.access` seeds to `admin` — every tenant's admin. The
+# database is the install's, so the whole router is the platform operator's.
+router = APIRouter(prefix="/hxdbmanager", tags=["hxdbmanager"],
+                   dependencies=[Depends(platform_operator_only)])
 
 _QUERY_TIMEOUT_MS = 30_000
 _ROW_LIMIT        = 10_000
@@ -1242,6 +1248,17 @@ async def export_table(
     # always=True + exclude=True: sensitive columns are completely removed from
     # exports — column name and value both absent from the downloaded file.
     masked_rows, _, _ = _mask_rows(raw_rows, always=True, exclude=True)
+
+    # HxPrivacy (Oct 11a): off unless switched on. Confirmed personal-data
+    # fields are masked by key, INSIDE JSON columns too — a case's fields live
+    # in `data`, not in columns. Every tenant's findings apply: this export can
+    # cross tenants, and over-masking is the safe direction for a file.
+    from velaris_shared.config import get_settings as _gs
+    if _gs().pii_redact_table_exports:
+        from velaris_shared.db import pii_redaction as _pii
+
+        masked_rows = _pii.redact_rows_deep(
+            masked_rows, await _pii.confirmed_field_paths(session))
 
     await _log_query(session, str(getattr(current_user, "tenant_id", "system")),
                      current_user.user_id, f"EXPORT {table_name} AS {fmt}", "success", None, len(masked_rows))

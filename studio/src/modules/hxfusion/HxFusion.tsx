@@ -61,7 +61,20 @@ type DirectorResponse = {
 type ValidationResult = {
   valid: boolean; error?: string; process_id?: string; process_name?: string;
   node_count?: number; flow_count?: number; node_types?: string[];
+  refused_scripts?: { node_id: string; node_name: string; reason: string }[];
 };
+
+/** A 422 `detail` may be an object (unsafe_script) or a pydantic list — never render one raw. */
+function detailText(detail: unknown): string | undefined {
+  if (detail == null) return undefined;
+  if (typeof detail === "string") return detail;
+  const d = detail as { message?: string; refused?: { node_id: string; reason: string }[] };
+  if (d.message) {
+    const nodes = (d.refused ?? []).map(r => `${r.node_id}: ${r.reason}`).join("; ");
+    return nodes ? `${d.message} — ${nodes}` : d.message;
+  }
+  return JSON.stringify(detail);
+}
 type CaseType = { id: string; name: string; definition_json?: any };
 type Stage    = { id: string; name: string };
 
@@ -238,7 +251,7 @@ function DefinitionsTab() {
       await load();
     } else {
       const d = await r.json().catch(() => ({}));
-      setErr(d.detail ?? "Create failed"); setErrObj(codedFrom(d) ?? null);
+      setErr(detailText(d.detail) ?? "Create failed"); setErrObj(codedFrom(d) ?? null);
     }
     setLoading(false);
   };
@@ -254,7 +267,7 @@ function DefinitionsTab() {
       }),
     });
     if (r.ok) { setEditingId(null); await load(); }
-    else { const d = await r.json().catch(() => ({})); setErr(d.detail ?? "Update failed"); }
+    else { const d = await r.json().catch(() => ({})); setErr(detailText(d.detail) ?? "Update failed"); }
     setLoading(false);
   };
 
@@ -324,6 +337,11 @@ function DefinitionsTab() {
               {validation.valid
                 ? <span style={{ color: "#22c55e" }}>✓ Valid — {validation.node_count} nodes, {validation.flow_count} flows {validation.node_types && `(${validation.node_types.join(", ")})`}</span>
                 : <span style={{ color: "#ef4444" }}>✗ {validation.error}</span>}
+              {validation.valid && validation.refused_scripts && validation.refused_scripts.length > 0 && (
+                <div style={{ color: "#ef4444", marginTop: 4 }}>
+                  ✗ Save will be refused — unsafe script in {validation.refused_scripts.map(r => `${r.node_id}: ${r.reason}`).join("; ")}
+                </div>
+              )}
             </div>
           )}
           <div style={{ display: "flex", gap: 8 }}>

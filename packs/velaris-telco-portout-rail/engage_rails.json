@@ -1,0 +1,19 @@
+[
+  {
+    "key": "number-port-out",
+    "name": "Number port-out",
+    "industry": "telco",
+    "summary": "A customer leaving with their number.",
+    "guidance": "A port-out is a common fraud route (SIM-swap). Complete Full verification before confirming any porting code, and never read the code out to anyone but the verified account holder.",
+    "applies_to_case_types": ["Port Out", "Number Transfer"],
+    "actions": [
+      {"key": "live_session", "label": "Start an ID check", "min_tier": "partial",
+       "defaults": {"title": "Identity check before port-out"}},
+      {"key": "payment", "label": "Send final-bill payment link",
+       "defaults": {"description": "Final bill before number transfer", "currency": "gbp"}},
+      {"key": "reply", "label": "Send porting update", "min_tier": "full"},
+      {"key": "follow_up", "defaults": {"note": "Confirm the port completed with the gaining provider."}},
+      {"key": "document_request", "hidden": true}
+    ]
+  }
+]

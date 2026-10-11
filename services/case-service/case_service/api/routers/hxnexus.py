@@ -365,6 +365,8 @@ async def cancel_index_job(
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()
     from case_service.hxnexus import index_queue
+    # A cancelled background upload's bytes are not kept (mig 206).
+    await index_queue.discard_staged(job.staged_storage_key)
     return index_queue.as_dict(job)
 
 
@@ -398,6 +400,10 @@ async def retry_index_job(
         raise HTTPException(404, "Index job not found")
     if job.status not in ("failed", "cancelled"):
         raise HTTPException(409, f"Job is {job.status}; only a failed or cancelled job is retried")
+    if job.staged_storage_key:
+        # Its bytes were deleted when the job ended — they are kept only as
+        # long as the work needs them — so there is nothing left to index.
+        raise HTTPException(409, "This was a background upload and the file was not kept; upload it again")
 
     new, created = await index_queue.enqueue_document(
         session, document_id=job.document_id, case_id=case_id,
@@ -491,7 +497,8 @@ async def list_all_index_jobs(
         "count": len(rows),
         "counts": counts,
         "drain_scheduled": drain_scheduled,
-        "jobs": [{**index_queue.as_dict(job), "filename": filename,
+        "jobs": [{**index_queue.as_dict(job),
+                  "filename": filename or job.staged_filename,
                   "case_number": case_number}
                  for job, filename, case_number in rows],
     }
@@ -508,10 +515,18 @@ async def upload_and_index(
     #: find one of them. Accepting both keeps every existing caller working and
     #: makes the one that was silently wrong right.
     case_id_form: Optional[str] = Form(None, alias="case_id"),
+    #: Oct item 7 / mig 206. **Default False — indexed inside the request,
+    #: exactly as before.** True parks the bytes and queues a job, drained by a
+    #: `document_index` schedule; worth it for scans, where OCR can take
+    #: `OCR_TIMEOUT_SECONDS`. Accepted in the query string or the form, like
+    #: `case_id`, and requires a case: the queue's screens list jobs by case,
+    #: so a case-less job would be one nobody could see.
+    background: bool = Query(False),
+    background_form: Optional[bool] = Form(None, alias="background"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Upload a document (PDF, DOCX, TXT) and immediately index it for RAG.
+    """Upload a document (PDF, DOCX, TXT) and index it for RAG.
 
     **`case_id` is checked, and it is the case that decides the tenant.**
     Until 2026-09-10 this route took a case id from the query string, indexed
@@ -557,6 +572,40 @@ async def upload_and_index(
         tenant_id = getattr(case, "tenant_id", None)
 
     doc_id = uuid.uuid4()
+
+    if background or background_form:
+        if cid is None:
+            raise HTTPException(400, "background upload needs a case_id")
+        from case_service.hxnexus import index_queue
+
+        # Access and the case's tenant were settled above, exactly as for the
+        # synchronous path; the job row carries both because the drain has no
+        # caller to ask.
+        # The job row FIRST, then the bytes. The other order leaves a window —
+        # a crash between the two — where the customer's file sits in storage
+        # with nothing pointing at it and nothing that will ever delete it. This
+        # way the worst case is a job whose bytes never arrived: the drain fails
+        # it with the reason on the row, which is visible, not lost.
+        key = index_queue.staged_key_for(doc_id)
+        job, _created = await index_queue.enqueue_document(
+            session, document_id=doc_id, case_id=cid, tenant_id=tenant_id,
+            requested_by=current_user.user_id,
+            staged={"storage_key": key, "filename": filename,
+                    "content_type": content_type},
+        )
+        try:
+            await get_storage_backend().put(key, data, content_type)
+        except Exception as exc:
+            log.warning("hxnexus: staging upload failed: %s", exc)
+            await index_queue.abandon_staged(session, job.id, doc_id,
+                                             "the upload could not be stored")
+            raise HTTPException(503, "Could not store the upload for background indexing")
+        return {"document_id": str(doc_id), "filename": filename,
+                "content_type": content_type, "queued": True,
+                "job": index_queue.as_dict(job),
+                "note": ("Queued. Indexed by a `document_index` schedule; "
+                         "without one, nothing drains the queue.")}
+
     n = await index_document(
         session, doc_id, cid, data, content_type, tenant_id,
     )
@@ -849,6 +898,10 @@ async def delete_conversation(
     conv = await session.get(CopilotConversationModel, conversation_id)
     if not conv or conv.user_id != current_user.user_id:
         raise coded(404, LLM_NOTFOUND_404, "Conversation not found")
+    # What was asked of the AI about a held case is part of its record (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_not_held(
+        session, getattr(conv, "case_id", None), "changed by deleting a conversation about it")
     await session.delete(conv)
     await session.commit()
 

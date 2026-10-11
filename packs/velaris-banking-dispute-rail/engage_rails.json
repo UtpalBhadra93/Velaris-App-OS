@@ -1,0 +1,23 @@
+[
+  {
+    "key": "card-dispute",
+    "name": "Card dispute",
+    "industry": "banking",
+    "summary": "Disputed card transaction, from first call to evidence and follow-up.",
+    "guidance": "Confirm the card's last four digits and the disputed transaction date and amount before discussing the outcome. Never ask for the full card number or the CVV.",
+    "applies_to_case_types": ["Card Dispute", "Chargeback"],
+    "actions": [
+      {"key": "document_request", "label": "Request dispute evidence",
+       "guidance": "Receipts, merchant correspondence, or a delivery screenshot.",
+       "min_tier": "full",
+       "defaults": {"message": "To progress your dispute, please upload any receipts or messages from the merchant. Sign in here: {portal_link}"}},
+      {"key": "follow_up", "label": "Set a chargeback follow-up",
+       "defaults": {"note": "Check merchant response before the chargeback window closes."}},
+      {"key": "reply", "label": "Message the customer", "min_tier": "full"},
+      {"key": "callback", "label": "Book a callback", "defaults": {"minutes": 15}},
+      {"key": "consent", "label": "Record consent"},
+      {"key": "live_session", "hidden": true},
+      {"key": "payment", "hidden": true}
+    ]
+  }
+]

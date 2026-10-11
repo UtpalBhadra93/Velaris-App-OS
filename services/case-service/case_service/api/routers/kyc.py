@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import ESignRequestModel, IdentityVerificationModel
@@ -61,6 +62,8 @@ async def initiate_verification(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         iv = await kyc_svc.create_identity_verification(
             session, case_id, body.step_id,
@@ -84,6 +87,8 @@ async def list_verifications(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     rows = await kyc_svc.list_verifications(session, case_id)
     return [VerificationOut.from_model(r) for r in rows]
 
@@ -150,6 +155,8 @@ async def send_esign(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         es = await kyc_svc.create_esign_request(
             session, case_id, body.step_id,
@@ -175,6 +182,8 @@ async def list_esign(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     rows = await kyc_svc.list_esign_requests(session, case_id)
     return [ESignOut.from_model(r) for r in rows]
 
@@ -204,6 +213,11 @@ async def list_all_verifications(
     q = select(IdentityVerificationModel).order_by(IdentityVerificationModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(IdentityVerificationModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(IdentityVerificationModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return [VerificationOut.from_model(r) for r in rows]
 
@@ -220,5 +234,10 @@ async def list_all_esign_requests(
     q = select(ESignRequestModel).order_by(ESignRequestModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(ESignRequestModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(ESignRequestModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return [ESignOut.from_model(r) for r in rows]

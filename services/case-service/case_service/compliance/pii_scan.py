@@ -164,9 +164,17 @@ async def review(
     return row
 
 
-async def summary(session: AsyncSession) -> dict[str, Any]:
-    """Counts by status and category, plus the special-category total."""
-    rows = (await session.execute(select(PIIFindingModel))).scalars().all()
+async def summary(session: AsyncSession, where=None) -> dict[str, Any]:
+    """Counts by status and category, plus the special-category total.
+
+    `where`: the caller's tenant clause. The route scoped its LIST from
+    2026-09-17 but not this summary, so every tenant's counts by category
+    still reached every tenant's admin (8d, 2026-09-29).
+    """
+    q = select(PIIFindingModel)
+    if where is not None:
+        q = q.where(where)
+    rows = (await session.execute(q)).scalars().all()
 
     by_status: dict[str, int] = {}
     by_category: dict[str, int] = {}

@@ -212,6 +212,23 @@ class TestPostEvent:
             _clear()
         assert r.status_code == 202
 
+    async def test_event_records_the_tenant_not_the_access_group(self, client, session):
+        """8k: the access group's id used to land in `tenant_id`."""
+        user = _admin()
+        user.tenant_id = "dev"
+        _override(user)
+        try:
+            await client.post("/api/v1/hxstream/event", json={
+                "event_type": "ui_interaction", "payload": {"action": "tenant_probe"}})
+        finally:
+            _clear()
+        session.expire_all()
+        rows = (await session.execute(
+            select(TraceEventModel).where(TraceEventModel.event_type == "ui_interaction")
+        )).scalars().all()
+        row = next(r for r in rows if r.payload.get("action") == "tenant_probe")
+        assert row.tenant_id == "dev"
+
     async def test_event_stored_in_db(self, client, session, case_inst):
         _override(_admin())
         try:

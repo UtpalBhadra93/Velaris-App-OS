@@ -30,7 +30,7 @@ router = APIRouter(prefix="/compliance", tags=["compliance"])
 @router.get("/audit/status")
 async def get_audit_status(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.audit.read")),
 ):
     return await chain_status(session)
 
@@ -48,7 +48,7 @@ async def seal_chain(
 async def verify_audit_chain(
     limit: Optional[int] = Query(None, ge=1, le=1_000_000),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.audit.read")),
 ):
     return await verify_chain(session, limit=limit)
 
@@ -59,7 +59,7 @@ async def verify_audit_chain(
 async def get_audit_anchors(
     limit: int = Query(50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.audit.read")),
 ):
     return await list_anchors(session, limit=limit)
 
@@ -92,6 +92,14 @@ async def list_frameworks(
     return {k: v["name"] for k, v in FRAMEWORKS.items()}
 
 
+async def _report_tenant(session: AsyncSession, user: AuthenticatedUser) -> str | None:
+    from case_service.tenancy.identity import is_platform_operator
+
+    if await is_platform_operator(session, user):
+        return None
+    return str(user.tenant_id)
+
+
 @router.post("/reports/generate")
 async def generate_report(
     body: GenerateReportBody,
@@ -113,10 +121,17 @@ async def generate_report(
     # Seal anything pending so the report covers all writes up to now
     await seal_new_entries(session)
 
+    # Whose pack this is (2026-10-11). The platform operator's is the whole
+    # install, stored with no tenant, exactly as every report was before.
+    # Anybody else's is their own tenant's rows and records that tenant — until
+    # now a tenant's admin got every tenant's counts and admin e-mail addresses.
+    tenant = await _report_tenant(session, user)
+
     result = await generate_evidence_pack(
         session, framework=body.framework,
         period_start=start, period_end=end,
         generated_by=user.user_id, cadence="on_demand",
+        tenant_id=tenant,
     )
 
     # Persist report metadata. Storage of bytes via MinIO is optional
@@ -130,6 +145,7 @@ async def generate_report(
         summary=result["summary"],
         chain_verified=result["chain_verified"],
         cadence="on_demand",
+        tenant_id=tenant,
     )
     session.add(report)
     await session.flush()
@@ -150,11 +166,21 @@ async def list_reports(
     framework: Optional[str] = None,
     limit: int = Query(50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.reports.read")),
 ):
     q = select(ComplianceReportModel).order_by(ComplianceReportModel.generated_at.desc()).limit(limit)
     if framework:
         q = q.where(ComplianceReportModel.framework == framework)
+    # Every tenant's rows until 2026-09-29 (8d). A report with NO tenant is an
+    # install-wide pack, and its summary says so in numbers — the operator's.
+    from case_service.tenancy.identity import (
+        caller_tenant_tokens, is_platform_operator, scope_to_caller,
+    )
+    if await is_platform_operator(session, user):
+        q = await scope_to_caller(q, ComplianceReportModel, session, user)
+    else:
+        q = q.where(ComplianceReportModel.tenant_id.in_(
+            await caller_tenant_tokens(session, user)))
     res = await session.execute(q)
     return [
         {
@@ -177,10 +203,19 @@ async def download_report(
     report_id: uuid.UUID,
     fmt: str = Query("json", pattern=r"^(json|pdf)$"),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("compliance.reports.read")),
 ):
     report = await session.get(ComplianceReportModel, report_id)
     if report is None:
+        raise HTTPException(404, "Report not found")
+    # The path guard already refuses another tenant's report; it passes one
+    # with no tenant, which is install-wide and so the operator's alone. Both
+    # are checked here as well — MCP tools call this handler directly.
+    from case_service.tenancy.identity import is_platform_operator, may_reach_tenant
+    if report.tenant_id is None:
+        if not await is_platform_operator(session, user):
+            raise HTTPException(404, "Report not found")
+    elif not await may_reach_tenant(session, user, report.tenant_id):
         raise HTTPException(404, "Report not found")
 
     # Re-generate fresh bytes for the requested format. Reports are
@@ -190,6 +225,7 @@ async def download_report(
         session, framework=report.framework,
         period_start=report.period_start, period_end=report.period_end,
         generated_by=report.generated_by, cadence=report.cadence,
+        tenant_id=report.tenant_id,
     )
     fname = f"helix-{report.framework}-{report.period_start.date()}-to-{report.period_end.date()}.{fmt}"
     if fmt == "json":
@@ -213,6 +249,8 @@ async def get_lineage(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     timeline = await get_case_lineage(session, case_id, limit=limit)
     return {"case_id": str(case_id), "events": timeline, "count": len(timeline)}
 
@@ -365,19 +403,23 @@ async def list_pii_findings(
     # `admin` seeds to a wildcard that passes every privilege, so every tenant's
     # admin read every tenant's findings. Superadmin only now.
     from case_service.tenancy.identity import is_superadmin as _is_superadmin
+    scope = None
     if not _is_superadmin(user):
         if user.tenant_id:
-            q = q.where(PIIFindingModel.tenant_id == str(user.tenant_id))
+            # Either spelling of the caller's tenant (slug or id).
+            from case_service.tenancy.identity import caller_tenant_tokens
+            scope = PIIFindingModel.tenant_id.in_(await caller_tenant_tokens(session, user))
         else:
             # No tenant claim = the default tenant, never every tenant (2026-09-17).
             from sqlalchemy import or_ as _or
             from case_service.tenancy.identity import default_tenant_tokens
-            q = q.where(_or(PIIFindingModel.tenant_id.is_(None),
-                            PIIFindingModel.tenant_id.in_(await default_tenant_tokens(session))))
+            scope = _or(PIIFindingModel.tenant_id.is_(None),
+                        PIIFindingModel.tenant_id.in_(await default_tenant_tokens(session)))
+        q = q.where(scope)
 
     rows = (await session.execute(q)).scalars().all()
     return {
-        "summary": await pii_scan.summary(session),
+        "summary": await pii_scan.summary(session, scope),
         "findings": [{
             "id": str(r.id),
             "resource_type": r.resource_type,

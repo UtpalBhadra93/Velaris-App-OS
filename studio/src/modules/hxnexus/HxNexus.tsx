@@ -271,6 +271,8 @@ export default function HxNexus() {
   const [qaExternal, setQaExternal] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadResult, setUploadResult] = useState<string | null>(null);
+  // Oct item 7: queue the indexing instead of waiting for it (needs a case).
+  const [uploadBackground, setUploadBackground] = useState(false);
 
   useEffect(() => {
     apiJSON<BackendStatus>("/api/v1/hxnexus/status")
@@ -494,6 +496,7 @@ export default function HxNexus() {
       const form = new FormData();
       form.append("file", uploadFile);
       if (qaCaseId.trim()) form.append("case_id", qaCaseId.trim());
+      if (uploadBackground && qaCaseId.trim()) form.append("background", "true");
       const token = getAccessToken();
       const r = await fetch("/api/v1/hxnexus/documents/upload", {
         method: "POST", body: form,
@@ -501,7 +504,9 @@ export default function HxNexus() {
       });
       if (!r.ok) throw new Error(await r.text());
       const res = await r.json();
-      setUploadResult(`✓ Indexed ${res.chunks_indexed} chunks from "${res.filename}"`);
+      setUploadResult(res.queued
+        ? `✓ Queued "${res.filename}" for background indexing — see the Index Queue tab`
+        : `✓ Indexed ${res.chunks_indexed} chunks from "${res.filename}"`);
       setUploadFile(null);
     } catch (e: any) {
       setUploadResult(`Error: ${e.message}`);
@@ -786,11 +791,19 @@ export default function HxNexus() {
                 placeholder="Case ID (optional)"
                 style={{ padding: "7px 10px", border: "1px solid var(--border-default)", borderRadius: 6, fontSize: 13, width: 220 }}
               />
+              <label title="Scans with OCR can take a while. Queued uploads are indexed by a document_index schedule."
+                     style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-secondary)",
+                              opacity: qaCaseId.trim() ? 1 : 0.5 }}>
+                <input type="checkbox" checked={uploadBackground && !!qaCaseId.trim()}
+                       disabled={!qaCaseId.trim()}
+                       onChange={e => setUploadBackground(e.target.checked)} />
+                Index in background
+              </label>
               <button
                 onClick={uploadDocument} disabled={uploadLoading || !uploadFile}
                 style={{ padding: "7px 16px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: 13, opacity: uploadLoading || !uploadFile ? 0.5 : 1 }}
               >
-                {uploadLoading ? "Indexing…" : "Upload & Index"}
+                {uploadLoading ? (uploadBackground && qaCaseId.trim() ? "Uploading…" : "Indexing…") : "Upload & Index"}
               </button>
             </div>
             {uploadResult && (

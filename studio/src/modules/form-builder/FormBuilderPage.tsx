@@ -7,7 +7,8 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import FormBuilder, { FormDefinition } from "./FormBuilder";
 import { listForms, createForm, updateForm, deleteForm, createBranch } from "@shared/api/client";
 import { useCommit, useBranchMode, useCurrentUserGroups } from "@shared/hooks";
-import { CommitModal, CommitHistory, BranchModeBanner, ReviewerPicker } from "@shared/components";
+import { CommitModal, CommitHistory, BranchModeBanner, ReviewerPicker, OwnershipPill } from "@shared/components";
+import type { Ownership } from "@shared/components";
 import type { CommitRecord } from "@shared/components/CommitHistory";
 
 type FormRecord = {
@@ -15,7 +16,7 @@ type FormRecord = {
   name: string;
   version: string;
   definition_json: Record<string, unknown>;
-};
+} & Ownership;
 
 const EMPTY_DEF: FormDefinition = { sections: [] };
 
@@ -254,7 +255,9 @@ export default function FormBuilderPage() {
                 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>v{f.version}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                    v{f.version} <OwnershipPill row={f} />
+                  </div>
                 </div>
                 <button
                   onClick={e => { e.stopPropagation(); openBranchForm(f); }}

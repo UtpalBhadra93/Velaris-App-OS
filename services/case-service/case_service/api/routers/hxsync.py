@@ -17,6 +17,8 @@ from velaris_shared.db.models import (
     SyncRunModel,
 )
 from velaris_shared.db.session import get_analytics_session as get_session
+from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from case_service.hxsync import destinations as _dest_mod  # noqa: F401
@@ -99,11 +101,13 @@ def _redaction(r: SyncRedactionRuleModel) -> dict:
 @router.get("/destinations")
 async def list_destinations(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
-    rows = (await session.execute(
-        select(SyncDestinationModel).order_by(SyncDestinationModel.created_at)
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(SyncDestinationModel).order_by(SyncDestinationModel.created_at),
+        SyncDestinationModel, session, _))).scalars().all()
     return {"destinations": [_dest(d) for d in rows], "total": len(rows)}
 
 
@@ -111,14 +115,18 @@ async def list_destinations(
 async def create_destination(
     body: CreateDestinationRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     if body.dest_type not in DEST_TYPES:
         raise HTTPException(400, f"Invalid dest_type. Must be one of: {DEST_TYPES}")
+    # The owner decides which cases a run may export (pipeline). The platform
+    # operator's stays platform-wide, exactly as before; everybody else's is
+    # their own tenant's. Until 2026-09-30 no destination recorded an owner.
+    owner = await tenant_for_write(session, user, None)
     d = SyncDestinationModel(
         name=body.name, dest_type=body.dest_type,
         connection_config=body.connection_config, enabled=body.enabled,
-        created_by=user.user_id,
+        created_by=user.user_id, tenant_id=owner,
     )
     session.add(d)
     await session.commit()
@@ -130,7 +138,7 @@ async def create_destination(
 async def get_destination_endpoint(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
     return _dest(await _dest_or_404(session, dest_id))
 
@@ -140,7 +148,7 @@ async def update_destination(
     dest_id: uuid.UUID,
     body: UpdateDestinationRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     d = await _dest_or_404(session, dest_id)
     if body.name is not None:
@@ -159,7 +167,7 @@ async def update_destination(
 async def delete_destination(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     d = await _dest_or_404(session, dest_id)
     await session.delete(d)
@@ -170,7 +178,7 @@ async def delete_destination(
 async def test_destination(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.run")),
 ):
     d = await _dest_or_404(session, dest_id)
     adapter = get_destination(d.dest_type, d.connection_config)
@@ -185,7 +193,7 @@ async def trigger_sync(
     dest_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.run")),
 ):
     """Trigger an async sync run. Returns immediately with run_id."""
     await _dest_or_404(session, dest_id)
@@ -203,7 +211,7 @@ async def trigger_sync(
 async def trigger_sync_blocking(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.run")),
 ):
     """Synchronous sync run — waits for completion. Good for small datasets or testing."""
     await _dest_or_404(session, dest_id)
@@ -216,11 +224,15 @@ async def trigger_sync_blocking(
 async def list_runs(
     destination_id: Optional[uuid.UUID] = None,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
     q = select(SyncRunModel).order_by(desc(SyncRunModel.started_at))
     if destination_id:
         q = q.where(SyncRunModel.destination_id == destination_id)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, SyncRunModel, session, _,
+                              via=(SyncRunModel.destination_id, SyncDestinationModel))
     rows = (await session.execute(q)).scalars().all()
     return {"runs": [_run(r) for r in rows], "total": len(rows)}
 
@@ -229,7 +241,7 @@ async def list_runs(
 async def get_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
     r = await session.get(SyncRunModel, run_id)
     if not r:
@@ -242,9 +254,12 @@ async def get_run(
 @router.get("/health")
 async def sync_health(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
-    dests = (await session.execute(select(SyncDestinationModel))).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    dests = (await session.execute(await scope_to_caller(
+        select(SyncDestinationModel), SyncDestinationModel, session, _))).scalars().all()
     items = []
     for d in dests:
         try:
@@ -267,7 +282,7 @@ async def sync_health(
 async def list_field_mappings(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
     await _dest_or_404(session, dest_id)
     rows = (await session.execute(
@@ -281,7 +296,7 @@ async def create_field_mapping(
     dest_id: uuid.UUID,
     body: CreateFieldMappingRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     await _dest_or_404(session, dest_id)
     m = SyncFieldMappingModel(
@@ -302,7 +317,7 @@ async def create_field_mapping(
 async def delete_field_mapping(
     mapping_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     m = await session.get(SyncFieldMappingModel, mapping_id)
     if not m:
@@ -317,7 +332,7 @@ async def delete_field_mapping(
 async def list_redaction_rules(
     dest_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.read")),
 ):
     await _dest_or_404(session, dest_id)
     rows = (await session.execute(
@@ -331,7 +346,7 @@ async def create_redaction_rule(
     dest_id: uuid.UUID,
     body: CreateRedactionRuleRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     await _dest_or_404(session, dest_id)
     if body.action not in ("hash", "drop", "mask"):
@@ -353,7 +368,7 @@ async def create_redaction_rule(
 async def delete_redaction_rule(
     rule_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.sync.write")),
 ):
     r = await session.get(SyncRedactionRuleModel, rule_id)
     if not r:

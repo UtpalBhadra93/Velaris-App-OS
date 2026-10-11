@@ -1,0 +1,9 @@
+{
+  "id": "velaris/clinic-booking-rail",
+  "name": "Healthcare — Clinic Booking Rep Desk",
+  "vertical": "healthcare",
+  "version": "1.0.0",
+  "bundle_schema_version": "1",
+  "summary": "A rep-desk rail for clinic bookings: booking first, forms before the visit, and nothing clinical sent to a caller who is not Full-verified.",
+  "author": "Velaris"
+}

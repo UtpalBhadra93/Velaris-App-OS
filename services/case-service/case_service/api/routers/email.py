@@ -361,7 +361,7 @@ async def render_preview(
 async def send_email(
     body: SendIn,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("comms.email.send")),
 ):
     # A mailbox is its tenant's identity to the outside world: a caller sends
     # only through their own tenant's. Naming another tenant's mailbox is a 404,

@@ -115,6 +115,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return parseBody<T>(res);
 }
 
+/** A structured `detail` (e.g. a lock refusal carrying the open rollout) says
+ *  what happened in its `message`; a bare `[object Object]` says nothing. */
+export function detailText(detail: unknown): string {
+  if (detail == null) return "";
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string") {
+    return (detail as { message: string }).message;
+  }
+  return JSON.stringify(detail);
+}
+
 export class ApiError extends Error {
   /**
    * Stable error code from `core/error_codes.py`, e.g. `VEL-DOC-STORAGE-503`.
@@ -332,7 +343,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
       }
       if (!retry.ok) {
         const body = await retry.json().catch(() => ({ detail: retry.statusText }));
-        throw new ApiError(retry.status, body.detail || retry.statusText, codedFrom(body));
+        throw new ApiError(retry.status, detailText(body.detail) || retry.statusText, codedFrom(body));
       }
       return parseBody<T>(retry);
     }
@@ -342,7 +353,7 @@ async function caseRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, body.detail || res.statusText, codedFrom(body));
+    throw new ApiError(res.status, detailText(body.detail) || res.statusText, codedFrom(body));
   }
 
   return parseBody<T>(res);
@@ -3662,12 +3673,22 @@ export interface EngageSummary {
   display_name: string | null; display_name_masked: string | null;
   open_cases: number; status: string;
 }
+export interface SuggestedRelation {
+  customer_id: string; name_initial: string; display_name_masked: string;
+  suggested: string; because: string[]; score: number; hops: number;
+  already_related: boolean; suggestion: true; may_act_for: false;
+}
 export interface ThreeSixty {
   customer_id: string; party_kind: string; verification: string;
   panels: {
     summary?: EngageSummary;
     identifiers?: EngageIdentifier[];
     relations?: { to: string; relation: string; may_act_for: boolean; note: string | null }[];
+    /** Oct item 4: HxGraph-derived — SUGGESTIONS, never may_act_for. */
+    suggested_relations?: {
+      suggestions: SuggestedRelation[];
+      skipped_as_too_common: Record<string, number>; max_hops: number;
+    };
     interactions?: { id: string; channel: string; direction: string;
                      started_at: string | null; verification_level: string;
                      disposition_code: string | null; status: string;
@@ -3687,6 +3708,90 @@ export interface ScreenPop {
                 confidence?: string; verified?: boolean };
   stub: { actions: string[]; prefill: Record<string, string>; note: string } | null;
   inherited_verification: boolean;
+  /** Set when this contact was opened from a colleague's join link. */
+  joined_from?: string; mode?: "warm" | "cold";
+}
+
+export interface JoinLink {
+  id: string; interaction_id: string; mode: "warm" | "cold";
+  for_user_id: string | null; for_queue: string | null;
+  created_by: string; created_at: string | null; expires_at: string | null;
+  state: "open" | "used" | "revoked" | "expired";
+  redeemed_by: string | null; redeemed_at: string | null;
+  joined_interaction_id: string | null;
+}
+
+/** The token is in this response only — it is stored as a hash. */
+export async function engageCreateJoinLink(interactionId: string, body: {
+  mode: "warm" | "cold"; for_user_id?: string | null; for_queue?: string | null;
+  ttl_minutes?: number;
+}): Promise<JoinLink & { token: string; path: string; note: string }> {
+  return caseRequest(`/engage/interactions/${interactionId}/join-links`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function engageListJoinLinks(interactionId: string): Promise<{ links: JoinLink[] }> {
+  return caseRequest(`/engage/interactions/${interactionId}/join-links`);
+}
+
+export async function engageRevokeJoinLink(joinId: string): Promise<JoinLink> {
+  return caseRequest(`/engage/join-links/${joinId}`, { method: "DELETE" });
+}
+
+export async function engageRedeemJoinLink(token: string): Promise<ScreenPop> {
+  return caseRequest("/engage/join-links/redeem",
+    { method: "POST", body: JSON.stringify({ token }) });
+}
+
+// ── Profile backfill (Oct item 3) ────────────────────────────────────────────
+
+export type BackfillKind = "create_profile" | "enrich_profile" | "merge_profiles";
+export type BackfillStatus = "proposed" | "accepted" | "rejected" | "superseded";
+export interface BackfillIdentifier {
+  kind: string; value: string; display: string; verified: boolean; via: string;
+}
+export interface BackfillProposal {
+  id: string; kind: BackfillKind; status: BackfillStatus;
+  payload: {
+    display_name?: string; primary_email?: string; customer_id?: string;
+    identifiers?: BackfillIdentifier[]; case_ids?: string[];
+    winner_id?: string; loser_ids?: string[];
+    profiles?: { id: string; display_name: string }[]; shared?: BackfillIdentifier[];
+  };
+  evidence: { sources?: string[]; portal_customer_id?: string | null; case_count?: number };
+  decided_by: string | null; decided_at: string | null; reason: string | null;
+  result: Record<string, unknown> | null; updated_at: string | null;
+}
+export interface BackfillRun {
+  id: string; started_by: string; started_at: string | null; finished_at: string | null;
+  counts: Record<string, number>;
+}
+
+/** Scans history and writes PROPOSALS. It applies nothing. */
+export async function engageStartBackfill(): Promise<BackfillRun> {
+  return caseRequest("/engage/backfill/runs", { method: "POST" });
+}
+export async function engageBackfillRuns(): Promise<{ runs: BackfillRun[] }> {
+  return caseRequest("/engage/backfill/runs");
+}
+export async function engageBackfillProposals(params: {
+  status?: BackfillStatus; kind?: BackfillKind; limit?: number; offset?: number;
+} = {}): Promise<{ total: number; proposals: BackfillProposal[] }> {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined) q.set(k, String(v)); });
+  return caseRequest(`/engage/backfill/proposals?${q}`);
+}
+export async function engageAcceptProposal(id: string, reason?: string): Promise<{
+  proposal: BackfillProposal; result: Record<string, unknown>;
+}> {
+  return caseRequest(`/engage/backfill/proposals/${id}/accept`,
+    { method: "POST", body: JSON.stringify({ reason: reason ?? null }) });
+}
+export async function engageRejectProposal(id: string, reason: string): Promise<{
+  proposal: BackfillProposal;
+}> {
+  return caseRequest(`/engage/backfill/proposals/${id}/reject`,
+    { method: "POST", body: JSON.stringify({ reason }) });
 }
 
 export async function getEngageStatus(): Promise<EngageStatus> {
@@ -3713,6 +3818,16 @@ export async function engageVerify(
   return caseRequest(`/engage/interactions/${interactionId}/verify`,
     { method: "POST", body: JSON.stringify(body) });
 }
+/** Record a relation a rep agrees with. `may_act_for` is never set from a
+ *  suggestion — acting for somebody is a separate, deliberate grant. */
+export async function engageRelate(customerId: string, body: {
+  to_customer_id: string; relation: "related_to" | "member_of" | "contact_for";
+  note?: string | null;
+}): Promise<unknown> {
+  return caseRequest(`/engage/profiles/${customerId}/relations`,
+    { method: "POST", body: JSON.stringify({ ...body, may_act_for: false }) });
+}
+
 export async function engageReveal(
   customerId: string, body: { field_path: string; reason: string;
                               interaction_id?: string | null },
@@ -3744,6 +3859,84 @@ export async function engageOnBehalf(
   return caseRequest(`/engage/profiles/${customerId}/on-behalf`,
     { method: "POST", body: JSON.stringify(body) });
 }
+// ── Rep desk action rail (Oct item 2, 2026-09-29) ────────────────────────────
+
+export type RailBlockKind = "privilege" | "tier" | "consent" | "prerequisite";
+export interface RailAction {
+  key: "reply" | "document_request" | "payment" | "callback" | "live_session"
+     | "consent" | "follow_up";
+  label: string;
+  enabled: boolean;
+  /** Separate reasons, because the fixes differ. */
+  blocked_by: { kind: RailBlockKind; reason: string }[];
+  notes: string[];
+  min_tier: string;
+  privilege: string | null;
+  rides_on: string;
+  /** Oct item 5: an industry rail's wording and presets. */
+  guidance?: string;
+  defaults?: Record<string, string | number>;
+}
+export interface RailConversation {
+  id: string; channel: string; peer_hint: string | null;
+  opted_out: boolean; template_only: boolean;
+}
+export interface RailCase {
+  id: string; case_number: string; status: string;
+  conversations: RailConversation[];
+  payment_steps: { id: string; name: string }[];
+}
+export type ConsentState = "granted" | "withdrawn" | "none";
+export interface ActionRailView {
+  interaction_id: string; customer_id: string; verification_level: string;
+  cases: RailCase[];
+  consent: Record<"email" | "phone",
+    { readable: boolean; purposes?: Record<string, ConsentState> } | null>;
+  actions: RailAction[];
+  capturable_purposes: string[];
+  portal_link: string | null;
+  rail?: { key: string; name: string; industry: string; guidance: string } | null;
+  available_rails?: { key: string; name: string; industry: string }[];
+}
+
+export async function engageActionRail(customerId: string, interactionId: string,
+                                       rail?: string | null): Promise<ActionRailView> {
+  const q = new URLSearchParams({ interaction_id: interactionId });
+  if (rail) q.set("rail", rail);
+  return caseRequest(`/engage/profiles/${customerId}/action-rail?${q}`);
+}
+
+// ── Industry rails (Oct item 5) ──────────────────────────────────────────────
+
+export interface EngageRail {
+  key: string; name: string; industry: string; source: "pack" | "tenant";
+  package_id: string | null; pack_version: string | null; enabled: boolean;
+  edited: boolean; config: Record<string, unknown>; updated_at: string | null;
+}
+export async function engageRails(): Promise<{ rails: EngageRail[] }> {
+  return caseRequest("/engage/rails");
+}
+export async function engagePutRail(key: string, config: Record<string, unknown>,
+                                    enabled = true): Promise<EngageRail> {
+  return caseRequest(`/engage/rails/${encodeURIComponent(key)}`,
+    { method: "PUT", body: JSON.stringify({ config, enabled }) });
+}
+export async function engageToggleRail(key: string, enabled: boolean): Promise<EngageRail> {
+  return caseRequest(`/engage/rails/${encodeURIComponent(key)}`,
+    { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+export async function engageDeleteRail(key: string): Promise<{ deleted?: boolean; disabled?: boolean }> {
+  return caseRequest(`/engage/rails/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+export async function engageCaptureConsent(customerId: string, body: {
+  interaction_id: string; purpose: string; action: "granted" | "withdrawn";
+  subject_kind: "email" | "phone";
+}): Promise<{ id: string; purpose: string; action: string }> {
+  return caseRequest(`/engage/profiles/${customerId}/consent`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+
 // ── Rep desk P5/P6 (2026-09-17) ──────────────────────────────────────────────
 
 export interface NextAction { key: string; title: string; why: string; cites: string[] }
@@ -3803,4 +3996,249 @@ export async function engageAddIdentifier(
 ): Promise<{ identifier: { id: string; kind: string; verified: boolean; value: string } }> {
   return caseRequest(`/engage/profiles/${customerId}/identifiers`,
     { method: "POST", body: JSON.stringify(body) });
+}
+
+// ── Moving a case between tenants (mig 205; Studio screen = Oct item 6) ─────
+
+export type TenantTransferState =
+  "requested" | "approved" | "accepted" | "refused" | "cancelled";
+
+export interface TenantTransfer {
+  id: string; case_id: string; case_number: string | null;
+  case_type_name: string | null; state: TenantTransferState; reason: string;
+  source_tenant_id: string; destination_tenant_id: string;
+  requested_at: string | null; approved_at: string | null;
+  decided_at: string | null; completed_at: string | null;
+  decision_note: string | null;
+  /** What moved, closed, was severed — the tombstone, once accepted. */
+  manifest: Record<string, unknown> | null;
+  /** Source side only; the destination never sees source staff ids. */
+  requested_by?: string | null; approved_by?: string | null;
+  decided_by?: string | null; cancelled_by?: string | null;
+  side?: "source" | "destination";
+}
+
+export interface TenantTransferPreflight {
+  case_id: string; destination_tenant_id: string;
+  can_move: boolean; blockers: string[]; open_transfer_id: string | null;
+}
+
+export async function preflightTenantTransfer(caseId: string, destination: string) {
+  return caseRequest<TenantTransferPreflight>(
+    `/cases/${caseId}/tenant-transfers/preflight?destination_tenant=${encodeURIComponent(destination)}`);
+}
+
+export async function requestTenantTransfer(caseId: string, destination: string, reason: string) {
+  return caseRequest<TenantTransfer>(`/cases/${caseId}/tenant-transfers`, {
+    method: "POST", body: JSON.stringify({ destination_tenant: destination, reason }),
+  });
+}
+
+export async function listTenantTransfers(direction: "all" | "outgoing" | "incoming" = "all") {
+  return caseRequest<{ items: TenantTransfer[] }>(`/case-tenant-transfers?direction=${direction}`);
+}
+
+export async function decideTenantTransfer(
+  id: string, action: "approve" | "cancel" | "accept" | "refuse", note?: string,
+) {
+  const body = action === "accept" || action === "refuse" ? JSON.stringify({ note: note || null }) : undefined;
+  return caseRequest<TenantTransfer>(`/case-tenant-transfers/${id}/${action}`, { method: "POST", body });
+}
+
+// ── Legal holds (mig 215; Oct item 13) ──────────────────────────────────────
+
+export interface LegalHold {
+  id: string; case_id: string; case_number: string | null; tenant_id: string | null;
+  matter_ref: string; reason: string; status: "active" | "released";
+  placed_by: string; placed_at: string | null;
+  released_by: string | null; released_at: string | null; release_reason: string | null;
+}
+
+/** What anyone who can read the case is told. `holds` only with `legal.holds.read`. */
+export interface CaseLegalHoldStatus {
+  case_id: string; held: boolean; frozen: string[];
+  can_read: boolean; can_place: boolean; can_release: boolean;
+  holds?: LegalHold[]; other_active_holds?: number;
+}
+
+export interface PlaceLegalHoldResult {
+  placed: number; requested: number;
+  results: Array<{ case_id: string; ok: boolean; hold?: LegalHold; code?: string; error?: string }>;
+}
+
+export async function getCaseLegalHold(caseId: string) {
+  return caseRequest<CaseLegalHoldStatus>(`/legal-holds/cases/${caseId}`);
+}
+
+export async function listLegalHolds(opts: { status?: "active" | "released"; matter?: string } = {}) {
+  const q = new URLSearchParams({ limit: "500" });
+  if (opts.status) q.set("status", opts.status);
+  if (opts.matter) q.set("matter_ref", opts.matter);
+  return caseRequest<{ holds: LegalHold[]; count: number; frozen: string[]; can_release: boolean }>(
+    `/legal-holds?${q}`);
+}
+
+export async function placeLegalHold(caseIds: string[], matterRef: string, reason: string) {
+  return caseRequest<PlaceLegalHoldResult>("/legal-holds", {
+    method: "POST", body: JSON.stringify({ case_ids: caseIds, matter_ref: matterRef, reason }),
+  });
+}
+
+export async function releaseLegalHold(holdId: string, reason: string) {
+  return caseRequest<{ hold: LegalHold; case_still_held: boolean }>(
+    `/legal-holds/${holdId}/release`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+export async function releaseLegalMatter(matterRef: string, reason: string) {
+  return caseRequest<{ released: number; matter_ref: string; case_ids: string[] }>(
+    "/legal-holds/matters/release",
+    { method: "POST", body: JSON.stringify({ matter_ref: matterRef, reason }) });
+}
+
+// ── Oct item 18a — staged rollouts of case type versions ─────────────────────
+
+export type RolloutStrategy = "immediate" | "flag" | "percentage" | "blue_green";
+
+export interface ContentRollout {
+  id: string;
+  artifact_kind: string;
+  artifact_name: string;
+  baseline_id: string;
+  candidate_id: string;
+  baseline_version: string | null;
+  candidate_version: string | null;
+  strategy: RolloutStrategy;
+  percent: number;
+  state: "requested" | "dormant" | "rolling" | "promoted" | "rolled_back" | "superseded";
+  open: boolean;
+  source: string;
+  requested_by: string | null;
+  approved_by: string | null;
+  closed_by: string | null;
+  superseded_by: string | null;
+  note: string | null;
+  created_at: string | null;
+  approved_at: string | null;
+  closed_at: string | null;
+  arms: { baseline: number; candidate: number };
+  policy?: RolloutPolicy | null;
+}
+
+export interface RolloutPolicy {
+  shadow: boolean;
+  targeting: { include?: string[]; exclude?: string[]; field?: string; values?: string[] } | null;
+  ramp: { steps: number[]; every_hours: number } | null;
+  guard: { metric: string; max_delta: number; min_cases: number; action: "hold" | "rollback";
+           require_significance: boolean } | null;
+  guard_state: "ok" | "held" | "tripped";
+  guard_detail: Record<string, unknown> | null;
+  next_step_at: string | null;
+}
+
+export interface RolloutMetric {
+  baseline: number | null; candidate: number | null; delta: number | null;
+  p_value: number | null; verdict: string;
+}
+export interface RolloutOutcomes {
+  arms: Record<"baseline" | "candidate", { cases: number; resolved: number; open: number;
+                                           sla_breached: number; reopened: number }>;
+  metrics: Record<string, RolloutMetric>;
+  min_cases: number;
+  note: string;
+}
+
+export interface ContentRolloutEvent {
+  action: string; from_state: string | null; to_state: string | null;
+  from_percent: number | null; to_percent: number | null;
+  actor: string | null; reason: string | null; at: string | null;
+}
+
+export async function listRollouts(state: "open" | "closed" | "all" = "all"):
+    Promise<{ rollouts: ContentRollout[]; count: number }> {
+  return caseRequest(`/rollouts?state=${state}`);
+}
+export async function getRollout(id: string):
+    Promise<{ rollout: ContentRollout; events: ContentRolloutEvent[] }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}`);
+}
+export async function requestRollout(body: {
+  baseline_id: string; candidate_id: string; strategy: RolloutStrategy;
+  percent?: number; note?: string;
+}): Promise<{ rollout: ContentRollout }> {
+  return caseRequest("/rollouts", { method: "POST", body: JSON.stringify(body) });
+}
+export async function approveRollout(id: string, body: {
+  strategy?: RolloutStrategy; percent?: number; reason?: string;
+} = {}): Promise<{ rollout: ContentRollout }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/approve`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+export async function setRolloutPercent(id: string, percent: number, reason?: string):
+    Promise<{ rollout: ContentRollout }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/percent`,
+    { method: "PATCH", body: JSON.stringify({ percent, reason }) });
+}
+export async function closeRollout(id: string, how: "promote" | "rollback", reason?: string):
+    Promise<{ rollout: ContentRollout }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/${how}`,
+    { method: "POST", body: JSON.stringify({ reason }) });
+}
+export async function supersedeRollout(id: string, body: {
+  candidate_id: string; strategy: RolloutStrategy; percent?: number; reason?: string;
+}): Promise<{ rollout: ContentRollout }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/supersede`,
+    { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function setRolloutPolicy(id: string, body: {
+  shadow?: boolean; targeting?: RolloutPolicy["targeting"]; ramp?: RolloutPolicy["ramp"];
+  guard?: Partial<NonNullable<RolloutPolicy["guard"]>> | null;
+}): Promise<{ rollout: ContentRollout }> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/policy`,
+    { method: "PUT", body: JSON.stringify(body) });
+}
+export async function rolloutOutcomes(id: string): Promise<RolloutOutcomes> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/outcomes`);
+}
+export async function rolloutShadow(id: string): Promise<{
+  evaluated: number; diverged: number; by_determinacy: Record<string, number>;
+  examples: { case_id: string; determinacy: string; detail: Record<string, unknown> }[];
+}> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/shadow`);
+}
+export async function rebaseRollout(id: string, reason: string, dryRun = true): Promise<{
+  dry_run: boolean; note: string;
+  movable: { case_id: string; case_number: string | null }[];
+  blocked: { case_id: string; case_number: string | null; problems: string[] }[];
+}> {
+  return caseRequest(`/rollouts/${encodeURIComponent(id)}/rebase`,
+    { method: "POST", body: JSON.stringify({ reason, dry_run: dryRun }) });
+}
+export async function rolloutVersions(): Promise<{ versions: {
+  case_type_id: string; name: string | null; version: string | null; status: string;
+  rollout_id: string; new_cases_go_to: string | null }[] }> {
+  return caseRequest("/rollouts/versions");
+}
+
+// ── Oct item 8f — a customer's subject-access export (GDPR Art. 15) ──────────
+
+export interface CustomerExportRequest {
+  emails?: string[]; phones?: string[]; portal_customer_ids?: string[];
+  customer_ids?: string[]; include_internal?: boolean; summary?: boolean; reason: string;
+}
+
+/** With `summary`, the counts object; without, the export JSON as text. */
+export async function customerExport(body: CustomerExportRequest):
+    Promise<{ exists: boolean; counts: Record<string, number>;
+              internal_notes_withheld: number } | string> {
+  const resp = await fetch(`${CASE_BASE}/enterprise/gdpr/customer-export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const b = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new ApiError(resp.status, detailText(b.detail) || resp.statusText, codedFrom(b));
+  }
+  return body.summary ? resp.json() : resp.text();
 }

@@ -66,6 +66,7 @@ async def ingest(
     source_ref: str | None = None,
     source_kind: str = "webhook",
     now: datetime | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Run one inbound payload through filter, mapping and case creation.
 
@@ -123,10 +124,26 @@ async def ingest(
         "_raw_payload": payload,
     }
 
+    # Oct item 18a: channels intake is a create path like any other. The
+    # filters and mapping above are the configured case type's; the rollout
+    # only chooses which version the new case is created on.
+    from case_service.rollouts import service as _rollouts
+    # The case type's tenant, or — for a platform-wide case type — the tenant
+    # of the transport it arrived through. Until 2026-09-30 an SMS on tenant
+    # `dev`'s number made a case with NO tenant, readable by every tenant,
+    # whenever the case type was shared (17 of 18 on the dev box).
+    configured_tenant = ct.tenant_id or tenant_id
+    ct, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=ct, tenant=configured_tenant,
+        subject=_rollouts.subject_of(mapped_fields.get("customer_id"),
+                                     mapped_fields.get("email"),
+                                     mapped_fields.get("customer_email")),
+        data=mapped_fields)
+    case_type_id = ct.id
     case = CaseInstanceModel(
         case_type_id=case_type_id,
         case_type_version=ct.version,
-        tenant_id=ct.tenant_id,
+        tenant_id=configured_tenant,
         status="new",
         priority=ct.default_priority,
         data=case_data,
@@ -134,6 +151,8 @@ async def ingest(
     )
     session.add(case)
     await session.flush()
+    await _rollouts.record(session, case_id=case.id, res=_rollout, tenant=configured_tenant,
+                           via=f"intake_{source_kind}")
 
     event.created_case_id = case.id
     event.status = "created"

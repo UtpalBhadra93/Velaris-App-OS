@@ -86,12 +86,19 @@ async def _open_conversation(
     is per endpoint because a support line and a marketing line reasonably
     differ.
     """
+    # FOR UPDATE: a tenant move closes and detaches this row in its own
+    # transaction (Oct item 8a). Without the lock, a message read just before
+    # that commit would be filed with the moved case's id; with it, the inbound
+    # waits for the move, re-reads the row, finds it closed, and opens a fresh
+    # thread at the source. One endpoint+peer, so the lock is never contended
+    # beyond the customer's own messages. (SQLite ignores it.)
     rows = (await session.execute(
         select(ChannelConversationModel).where(
             ChannelConversationModel.endpoint_id == endpoint.id,
             ChannelConversationModel.peer_address == peer,
             ChannelConversationModel.status != "closed",
         ).order_by(ChannelConversationModel.created_at.desc())
+        .with_for_update()
     )).scalars().all()
 
     ttl = timedelta(hours=max(1, endpoint.conversation_ttl_hours or 72))
@@ -142,10 +149,23 @@ async def _customer_single_open_case(
     if not email:
         return None
 
+    # The endpoint's tenant only. Until 2026-09-28 this looked for the email in
+    # EVERY tenant's cases, so a message to tenant A's number could be filed on
+    # tenant B's case for a customer who happened to have one there — and a case
+    # moved out to another tenant (Oct item 8a) kept catching the source's
+    # inbound. A case with no tenant keeps matching exactly as before, unless
+    # strict reads are on — the same rule `case_visible_to` states.
+    from sqlalchemy import or_
+    from case_service.tenancy.identity import strict_case_reads
+
+    tenant_clause = CaseInstanceModel.tenant_id == resolved[0]
+    if not strict_case_reads():
+        tenant_clause = or_(tenant_clause, CaseInstanceModel.tenant_id.is_(None))
     open_cases = (await session.execute(
         select(CaseInstanceModel).where(
             CaseInstanceModel.portal_submitter_email == email,
             CaseInstanceModel.status.notin_(("closed", "resolved", "cancelled")),
+            tenant_clause,
         )
     )).scalars().all()
     return open_cases[0].id if len(open_cases) == 1 else None
@@ -283,6 +303,13 @@ async def ingest_inbound(
     )
 
 
+async def _endpoint_tenant_uuid(session: AsyncSession, endpoint: ChannelEndpointModel):
+    """The endpoint's tenant as the GUID a case row stores, or None."""
+    from velaris_shared.tenancy.identity import resolve_tenant
+    resolved = await resolve_tenant(session, str(endpoint.tenant_id)) if endpoint.tenant_id else None
+    return resolved[0] if resolved is not None else None
+
+
 async def _create_case(
     session: AsyncSession, endpoint: ChannelEndpointModel, peer: str, body: str,
     *, now: datetime,
@@ -310,6 +337,7 @@ async def _create_case(
             source_ref=peer,
             source_kind=endpoint.channel,
             now=now,
+            tenant_id=await _endpoint_tenant_uuid(session, endpoint),
         )
     except IntakeError as exc:
         log.warning("channel intake refused for endpoint %s: %s", endpoint.id, exc)

@@ -4,10 +4,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.session import get_session
@@ -18,6 +19,18 @@ router = APIRouter(prefix="/comms", tags=["comms"])
 
 def _tenant(user: AuthenticatedUser) -> str:
     return getattr(user, "tenant_id", None) or "default"
+
+
+async def _case_gate(session: AsyncSession, user: AuthenticatedUser,
+                     case_id: uuid.UUID, action: str) -> None:
+    """The case's own gate — tenant boundary first, then the relationship.
+
+    Until 2026-09-28 every route here took a case id and checked nothing: any
+    signed-in user could read another tenant's case SMS/Slack log, and send an
+    SMS recorded against a case they could not open. Found while wiring the
+    tenant move of a case's communications (Oct item 8a).
+    """
+    await hxguard.require_case(session, user, action, case_id)
 
 
 def _actor(user: AuthenticatedUser) -> str:
@@ -51,6 +64,7 @@ async def list_sms(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    await _case_gate(session, user, case_id, "case.read")
     return await service.list_sms(session, case_id)
 
 
@@ -61,6 +75,7 @@ async def send_sms(
     session: AsyncSession = Depends(get_session),
     user:    AuthenticatedUser = Depends(get_current_user),
 ):
+    await _case_gate(session, user, case_id, "case.update")
     try:
         row = await service.send_sms(
             session, case_id, body.step_id,
@@ -104,6 +119,7 @@ async def list_slack(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    await _case_gate(session, user, case_id, "case.read")
     return await service.list_slack(session, case_id)
 
 
@@ -114,6 +130,7 @@ async def send_slack(
     session: AsyncSession = Depends(get_session),
     user:    AuthenticatedUser = Depends(get_current_user),
 ):
+    await _case_gate(session, user, case_id, "case.update")
     try:
         row = await service.send_slack(
             session, case_id, body.step_id,
@@ -151,13 +168,18 @@ async def list_comms_connectors(
 @router.get("/sms/messages", response_model=list[SmsOut])
 async def list_all_sms(
     status: str | None = None,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
     from velaris_shared.db.models import SmsMessageModel
-    q = select(SmsMessageModel).order_by(SmsMessageModel.created_at.desc()).limit(limit)
+    # The caller's tenant only — rows are written with the same token
+    # (`_tenant(user)`), so this is the spelling they carry. Until 2026-09-28 it
+    # listed every tenant's messages, numbers and bodies included.
+    q = (select(SmsMessageModel)
+         .where(SmsMessageModel.tenant_id == _tenant(user))
+         .order_by(SmsMessageModel.created_at.desc()).limit(limit))
     if status:
         q = q.where(SmsMessageModel.status == status)
     rows = (await session.execute(q)).scalars().all()
@@ -167,13 +189,15 @@ async def list_all_sms(
 @router.get("/slack/notifications", response_model=list[SlackOut])
 async def list_all_slack(
     status: str | None = None,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     from sqlalchemy import select
     from velaris_shared.db.models import SlackNotificationModel
-    q = select(SlackNotificationModel).order_by(SlackNotificationModel.created_at.desc()).limit(limit)
+    q = (select(SlackNotificationModel)
+         .where(SlackNotificationModel.tenant_id == _tenant(user))
+         .order_by(SlackNotificationModel.created_at.desc()).limit(limit))
     if status:
         q = q.where(SlackNotificationModel.status == status)
     rows = (await session.execute(q)).scalars().all()

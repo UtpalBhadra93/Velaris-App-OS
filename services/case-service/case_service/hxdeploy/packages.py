@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 #: Fields the push adds to the body in transit. They are not part of what was
 #: sealed, so they are stripped before the checksum is computed at either end —
 #: otherwise every push would fail its own integrity check.
-TRANSPORT_KEYS = ("deployment_run_id", "source_env", "package_checksum", "package_id")
+#: `rollout_request` (Oct item 18a) is the source's REQUEST for how the target
+#: rolls the content out. Outside the seal on purpose: changing how something
+#: goes out is not changing what goes out, and the target's operator decides.
+TRANSPORT_KEYS = ("deployment_run_id", "source_env", "package_checksum", "package_id",
+                  "rollout_request")
 
 
 class PackageError(Exception):

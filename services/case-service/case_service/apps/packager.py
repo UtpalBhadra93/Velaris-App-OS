@@ -236,10 +236,12 @@ async def create_package(
     version: str,
     description: str | None,
     created_by: str | None,
+    tenant_id=None,
 ) -> AppPackageModel:
     """Snapshot current state and save as a new app_package row."""
     bundle, manifest = await capture_bundle(session)
     pkg = AppPackageModel(
+        tenant_id=tenant_id,      # 8e: who made it (the snapshot is platform-wide)
         name=name,
         version=version,
         description=description or "",

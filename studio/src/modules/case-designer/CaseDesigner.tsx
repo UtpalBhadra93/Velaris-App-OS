@@ -19,6 +19,7 @@ import {
   Stat,
   CommitModal,
   ReviewerPicker,
+  OwnershipPill,
 } from "@shared/components";
 import CaseTypeEditor from "./CaseTypeEditor";
 import type { CaseTypeSummary } from "@shared/types";
@@ -274,6 +275,7 @@ function GroupedCaseTypeCard({ versions, onEdit, onView, onDelete }: {
                 <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", padding: "1px 6px", borderRadius: 4, background: "color-mix(in srgb, var(--status-completed) 12%, transparent)", color: "var(--status-completed)" }}>
                   LATEST
                 </span>
+                <OwnershipPill row={latest} />
               </div>
             </div>
           </div>

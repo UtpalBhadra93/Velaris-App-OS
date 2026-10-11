@@ -97,7 +97,11 @@ async def list_intake_events(
         q = q.where(IntakeEventModel.case_type_id == case_type_id)
     if status:
         q = q.where(IntakeEventModel.status == status)
-
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from velaris_shared.db.models import CaseTypeModel
+    q = await scope_to_caller(q, IntakeEventModel, session, _user,
+                              via=(IntakeEventModel.case_type_id, CaseTypeModel))
     rows = (await session.execute(q)).scalars().all()
     return {
         "events": [

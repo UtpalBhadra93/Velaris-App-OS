@@ -141,6 +141,18 @@ async def _run_tool(
     """Execute a tool handler and map its outcome to an MCP result/error."""
     started = time.monotonic()
     try:
+        # A tool calls handler functions directly, so the app's tenant guard
+        # never runs for it; the same check runs here on its arguments (8d).
+        from case_service.core.tenant_path_guard import FIELD_RULES, refuse_foreign_ids
+
+        named = []
+        for key, spec in FIELD_RULES.items():
+            if key in (args or {}):
+                values = args[key] if isinstance(args[key], list) else [args[key]]
+                named += [(key, spec, v) for v in values[:500]
+                          if isinstance(v, (str, int)) and str(v).strip()]
+        if named:
+            await refuse_foreign_ids(session, user, named, where=f"mcp {tool.name}")
         payload = await tool.handler(session, user, args)
     except ToolArgError as exc:
         return _error(msg_id, INVALID_PARAMS, str(exc))

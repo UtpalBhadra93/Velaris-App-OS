@@ -43,7 +43,7 @@ def _tree_to_response(t: EscalationTreeModel) -> EscalationTreeResponse:
 async def create_tree(
     body: EscalationTreeCreate,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
 ):
     if body.scope == "case_type" and body.case_type_id is None:
         raise HTTPException(400, "case_type_id required when scope='case_type'")
@@ -173,6 +173,8 @@ async def pause_sla_with_reason(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,
         CaseSLAInstanceModel.sla_policy_id == policy_id,
@@ -202,6 +204,8 @@ async def resume_sla_v2(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,
         CaseSLAInstanceModel.sla_policy_id == policy_id,
@@ -226,6 +230,8 @@ async def manual_escalate(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.write")),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, _user, "case.read", case_id)
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,
         CaseSLAInstanceModel.sla_policy_id == policy_id,
@@ -251,6 +257,8 @@ async def get_schedule(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("design.escalation.read")),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, _user, "case.read", case_id)
     q = select(CaseSLAInstanceModel).where(
         CaseSLAInstanceModel.case_id == case_id,
         CaseSLAInstanceModel.sla_policy_id == policy_id,

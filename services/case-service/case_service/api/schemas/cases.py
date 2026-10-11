@@ -61,6 +61,10 @@ class CaseTypeResponse(BaseModel):
     process_definition_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
+    # 8i: a tenant's copy-on-write fork of a default, and whether that default
+    # has changed since — offered to the tenant, never applied over its edits.
+    forked_from_id: UUID | None = None
+    update_available: bool = False
 
     model_config = {"from_attributes": True}
 

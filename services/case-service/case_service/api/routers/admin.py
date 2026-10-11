@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,6 +130,7 @@ async def search_audit_log(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Search audit log across all cases with filters."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -149,6 +152,12 @@ async def search_audit_log(
         base = base.where(CaseAuditLogModel.case_id == uuid.UUID(case_id))
         count_base = count_base.where(CaseAuditLogModel.case_id == uuid.UUID(case_id))
 
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from velaris_shared.db.models import CaseInstanceModel
+    _via = (CaseAuditLogModel.case_id, CaseInstanceModel)
+    base = await scope_to_caller(base, CaseAuditLogModel, session, user, via=_via)
+    count_base = await scope_to_caller(count_base, CaseAuditLogModel, session, user, via=_via)
     total = (await session.execute(count_base)).scalar_one()
 
     stmt = (
@@ -178,9 +187,15 @@ async def search_audit_log(
 @router.get("/audit-log/actions")
 async def list_audit_actions(
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """List distinct audit action types."""
     stmt = select(CaseAuditLogModel.action).distinct().order_by(CaseAuditLogModel.action)
+    # Every tenant's until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from velaris_shared.db.models import CaseInstanceModel
+    stmt = await scope_to_caller(stmt, CaseAuditLogModel, session, user,
+                                 via=(CaseAuditLogModel.case_id, CaseInstanceModel))
     result = await session.execute(stmt)
     return {"actions": [r[0] for r in result.all()]}
 
@@ -249,17 +264,35 @@ def _queue_dict(m):
 
 # ─── Calendar admin ─────────────────────────────────────────────
 
+async def _inherit(awaitable):
+    """Run an `inherit` step (8e), answering its refusal as HTTP."""
+    from velaris_shared.tenancy import inherit
+    try:
+        return await awaitable
+    except inherit.InheritError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
 @router.get("/calendars")
-async def list_calendars(session: AsyncSession = Depends(get_session)):
+async def list_calendars(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    from velaris_shared.tenancy import inherit
     stmt = select(BusinessCalendarModel).order_by(BusinessCalendarModel.name)
-    result = await session.execute(stmt)
+    stmt = await inherit.scope_list(stmt, BusinessCalendarModel, session, user)   # 8e
+    cals = list((await session.execute(stmt)).scalars().all())
+    stale = await inherit.updates_available(session, BusinessCalendarModel, cals)   # 8k
     return [
         {
             "id": str(c.id), "name": c.name, "timezone": c.timezone,
             "work_days": c.work_days, "work_start_hour": c.work_start_hour,
             "work_end_hour": c.work_end_hour, "holidays": c.holidays,
+            "tenant_id": str(c.tenant_id) if c.tenant_id else None,
+            "forked_from_id": str(c.forked_from_id) if c.forked_from_id else None,
+            "update_available": c.id in stale,
         }
-        for c in result.scalars().all()
+        for c in cals
     ]
 
 
@@ -279,7 +312,14 @@ async def create_calendar(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(hxguard.guard("platform.calendars.write")),
 ):
+    # 8e: a tenant's calendar is its own; only the operator makes a default.
+    from velaris_shared.tenancy import inherit
+    owner = await _inherit(inherit.owner_for_create(session, user))
+    if await inherit.name_taken(session, BusinessCalendarModel, owner,
+                                name=body.name or "New Calendar"):
+        raise HTTPException(409, f"A calendar named '{body.name or 'New Calendar'}' already exists")
     cal = BusinessCalendarModel(
+        tenant_id=owner,
         name=body.name or "New Calendar",
         timezone=body.timezone,
         work_days=body.work_days,
@@ -309,6 +349,9 @@ async def update_calendar(
     cal = await session.get(BusinessCalendarModel, calendar_id)
     if not cal:
         raise HTTPException(404, "Calendar not found")
+    # 8e: a tenant's edit of a default calendar lands in its fork.
+    from velaris_shared.tenancy import inherit
+    cal = await _inherit(inherit.target_for_write(session, user, BusinessCalendarModel, cal))
     for field, val in body.model_dump(exclude_unset=True).items():
         setattr(cal, field, val)
     await session.commit()

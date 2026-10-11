@@ -714,8 +714,27 @@ step "Step 7/7 — Restarting services..."
 # Stamp new version into velaris.yaml
 sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$LATEST_VERSION\"/" "$VELARIS_DIR/velaris.yaml"
 
-# Restart via the standard startup script (handles all service health checks)
-bash "$VELARIS_DIR/start-velaris.sh"
+# Restart. Two ways, because an install runs one of two ways.
+#
+# Under systemd, start-velaris.sh refuses to start a second copy and exits at
+# once — before its manifest sync, and without restarting anything. Until
+# 2026-10-11 that was the whole of this step there: new code on disk, old
+# processes in memory, Studio still serving the previous build, and the health
+# gate below passing against the old processes. refresh-after-update.sh does
+# what was skipped: manifest, Studio rebuild, restart.
+RESTART_PENDING=false
+if systemctl is-active --quiet velaris-case-service 2>/dev/null \
+   || systemctl is-active --quiet velaris-engine 2>/dev/null; then
+  _refresh_args=()
+  [[ "$AUTO_MODE" == true ]] && _refresh_args+=(--non-interactive)
+  _refresh_rc=0
+  DB_CONTAINER="$DB_CONTAINER" DB_USER="$DB_USER" DB_NAME="$DB_NAME" \
+    bash "$VELARIS_DIR/deploy/systemd/refresh-after-update.sh" "${_refresh_args[@]}" || _refresh_rc=$?
+  [[ "$_refresh_rc" -ne 0 ]] && RESTART_PENDING=true
+else
+  # Restart via the standard startup script (handles all service health checks)
+  bash "$VELARIS_DIR/start-velaris.sh"
+fi
 
 # ── Health gate: never report success on a broken env ─────────────
 # Every API service, not just the gateway. Since 13c-e the platform is four
@@ -762,6 +781,13 @@ if [[ "$HEALTH_OK" == false ]]; then
   exit 1
 fi
 green "  ✓ all services healthy"
+if [[ "$RESTART_PENDING" == true ]]; then
+  # Healthy, but on the PREVIOUS code: say so rather than report an update.
+  red "  ✗ v$LATEST_VERSION is installed but NOT running — the services could not be restarted."
+  red "    Run:  sudo systemctl restart velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio"
+  _write_status "restart_required" "v$LATEST_VERSION installed; services still run the previous code — restart them"
+  exit 1
+fi
 if [[ "$REQUEST_ACTION" == "rollback" ]]; then
   _write_status "rolled_back" "rolled back to v$LATEST_VERSION"
 else

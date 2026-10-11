@@ -590,6 +590,9 @@ async def save_report(
         query_type=body.query_type, query_def=body.query_def,
         chart_type=body.chart_type, is_public=body.is_public,
         created_by=user.user_id,
+        # Unset until 2026-09-29, so every saved report belonged to nobody and
+        # was listed to every tenant (8d).
+        tenant_id=str(user.tenant_id) if getattr(user, "tenant_id", None) else None,
     )
     session.add(r)
     await session.commit()

@@ -382,8 +382,11 @@ async def create_case(
 
     # Verify the case type belongs to this user's tenant or is global.
     # Prevents a user in tenant A from creating cases of tenant B's case types.
+    # A tenant token may be the slug or the id; a literal string compare refused
+    # slug-token users their OWN case types (2026-09-29).
+    from case_service.tenancy.identity import same_tenant as _same_tenant
     if case_type.tenant_id is not None and user.tenant_id:
-        if str(case_type.tenant_id) != str(user.tenant_id):
+        if not await _same_tenant(session, case_type.tenant_id, user.tenant_id):
             raise HTTPException(
                 status_code=403,
                 detail="This case type does not belong to your tenant.",
@@ -419,6 +422,15 @@ async def create_case(
         effective_tenant_id = str(resolved[0])
     elif case_type.tenant_id is not None:
         effective_tenant_id = str(case_type.tenant_id)
+    else:
+        # A caller with no tenant claim IS the default tenant (`same_tenant`
+        # reads it that way on every read). Until 2026-09-30 their case on a
+        # shared case type was stored with NO tenant — readable by every tenant
+        # on the install; 187 of 196 cases on the dev box are that. Where the
+        # install has no default tenant row at all, NULL stays, as before.
+        default = await resolve_tenant(session, DEFAULT_TENANT)
+        if default is not None:
+            effective_tenant_id = str(default[0])
 
     # Under strict reads a NULL-tenant case is visible to NOBODY — not even the
     # person who just created it. Writing one would be manufacturing a case that
@@ -432,10 +444,19 @@ async def create_case(
             "user a tenant in the user directory, or give the case type an "
             "owner, before creating cases here.")
 
+    # Oct item 18a: an open rollout chooses the version for a NEW case —
+    # sticky per customer, or per requester when there is no customer.
+    from case_service.rollouts import service as _rollouts
+    case_type, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=case_type, tenant=effective_tenant_id,
+        subject=_rollouts.subject_of((body.data or {}).get("customer_id"),
+                                     body.created_by or user.user_id),
+        data=body.data)
+
     case = await repo.create_case_instance(
         session,
         data={
-            "case_type_id": body.case_type_id,
+            "case_type_id": case_type.id,
             "case_type_version": case_type.version,
             "status": "new",
             "priority": body.priority or case_type.default_priority,
@@ -445,6 +466,8 @@ async def create_case(
             "tenant_id": effective_tenant_id,
         },
     )
+    await _rollouts.record(session, case_id=case.id, res=_rollout,
+                           tenant=effective_tenant_id, via="api")
 
     await _audit(
         session,
@@ -1127,7 +1150,7 @@ async def _stage_move_apply(
         "stage_transition",
         {"from_stage": prev, "to_stage": target_stage_id},
         case_id=case_id,
-        tenant_id="default",
+        tenant_id=getattr(user, "tenant_id", None) or "default",  # 8k
         actor_user_id=user.user_id,
         session=session,
     )
@@ -1610,19 +1633,38 @@ async def create_child_case(
     case_type = await repo.get_case_type(session, body.case_type_id)
     if case_type is None:
         raise HTTPException(status_code=404, detail="Case type not found")
+    # Found 2026-09-29 (item 18a): this path checked neither. Another tenant's
+    # case type was usable here, and the child was stored with NO tenant —
+    # which every tenant can read. The child lives where its parent lives.
+    from case_service.tenancy.identity import same_tenant as _same_tenant
+    if case_type.tenant_id is not None and user.tenant_id and \
+            not await _same_tenant(session, case_type.tenant_id, user.tenant_id):
+        raise HTTPException(status_code=404, detail="Case type not found")
+
+    from case_service.rollouts import service as _rollouts
+    case_type, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=case_type, tenant=parent.tenant_id,
+        subject=_rollouts.subject_of((body.data or {}).get("customer_id"),
+                                     (parent.data or {}).get("customer_id")
+                                     if isinstance(parent.data, dict) else None,
+                                     parent.created_by, body.created_by),
+        data=body.data)
 
     child = await repo.create_case_instance(
         session,
         data={
-            "case_type_id": body.case_type_id,
+            "case_type_id": case_type.id,
             "case_type_version": case_type.version,
             "status": "new",
             "priority": body.priority or case_type.default_priority,
             "data": body.data,
             "parent_case_id": case_id,
-            "created_by": body.created_by,
+            "created_by": body.created_by or user.user_id,
+            "tenant_id": parent.tenant_id,
         },
     )
+    await _rollouts.record(session, case_id=child.id, res=_rollout,
+                           tenant=parent.tenant_id, via="child")
 
     await repo.create_relationship(
         session,
@@ -1883,7 +1925,7 @@ async def complete_step(
         {"step_id": step_id, "stage_id": body.stage_id, "status": body.status,
          "step_type": body.step_type},
         case_id=case_id,
-        tenant_id="default",
+        tenant_id=getattr(user, "tenant_id", None) or "default",  # 8k
         actor_user_id=user.user_id,
         session=session,
     )
@@ -2171,9 +2213,12 @@ async def get_case_detail(
     **This is not a GraphQL substitute and does not pretend to be.** It exists
     because the measured problem was one waterfall on one page, not the
     "chronic over-fetching" a federation layer solves. Federated GraphQL earns
-    its cost when there are many services to federate; there is one. Revisit
-    when service extraction (#13) happens — this endpoint does not block it,
-    since a gateway would sit above whatever routes exist.
+    its cost when there are many services to federate; there was one.
+
+    **Federation (#36) was declined on 2026-10-11**, after service extraction
+    (#13) had happened: integrators consume REST or MCP, and a federation
+    gateway is a second API surface to keep in sync with every route. Revisit
+    only if a named customer's integration team blocks on it.
 
     ## Authorization — the part that matters when aggregating
 
@@ -2208,8 +2253,9 @@ async def get_case_detail(
     # Case type — same visibility rule as GET /case-types/{id}. Null, not 404:
     # losing sight of the type must not make the case unreadable.
     ct = await repo.get_case_type(session, case.case_type_id)
+    from case_service.tenancy.identity import same_tenant as _same_tenant
     if ct is not None and ct.tenant_id is not None and user.tenant_id \
-            and str(ct.tenant_id) != str(user.tenant_id):
+            and not await _same_tenant(session, ct.tenant_id, user.tenant_id):
         ct = None
 
     # My task — self-scoped, exactly as the standalone route.
@@ -2820,7 +2866,7 @@ async def get_my_task(
         "lock_acquire",
         {"step_id": assignment.step_id, "lock_expires_at": lock_expires.isoformat()},
         case_id=case_id,
-        tenant_id="default",
+        tenant_id=getattr(user, "tenant_id", None) or "default",  # 8k
         actor_user_id=user.user_id,
         session=session,
     )
@@ -2906,7 +2952,7 @@ async def unlock_step(
             "lock_release",
             {"step_id": step_id},
             case_id=case_id,
-            tenant_id="default",
+            tenant_id=getattr(user, "tenant_id", None) or "default",  # 8k
             actor_user_id=user.user_id,
             session=session,
         )

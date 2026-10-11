@@ -217,6 +217,13 @@ async def shred(session: AsyncSession, tenant_id) -> bool:
     """
     tid = _norm(tenant_id)
 
+    # Shredding the key destroys every case the tenant holds, held ones
+    # included (Oct item 13). Refused first, and raised — False means "there
+    # was no key", which is a different and reassuring answer.
+    if tid:
+        from case_service.legal_hold import service as _legal_hold
+        await _legal_hold.require_tenant_free(session, tid, "crypto-shredded")
+
     # ── HxArbiter PEP (ARB-C) ────────────────────────────────────────────────
     # Shredding a DEK makes everything under it permanently unrecoverable. It is
     # the single most destructive operation in the platform, and until now the

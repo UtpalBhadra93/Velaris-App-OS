@@ -110,6 +110,97 @@ async def default_tenant_tokens(session: AsyncSession) -> list[str]:
     return out
 
 
+async def caller_tenant_tokens(session: AsyncSession, user: Any) -> list[str] | None:
+    """Every spelling of the caller's tenant in a string `tenant_id` column —
+    for `WHERE tenant_id IN (...)` on a list — or None for break-glass.
+
+    A string column holds whatever its writer had: the token, the slug or the
+    id. Matching one spelling would hide a tenant's own rows from it.
+    """
+    if is_superadmin(user):
+        return None
+    token = getattr(user, "tenant_id", None)
+    if not token:
+        return await default_tenant_tokens(session)
+    out = {str(token)}
+    resolved = await resolve_tenant(session, str(token))
+    if resolved is not None:
+        out |= {str(resolved[0]), str(resolved[1])}
+    return sorted(out)
+
+
+async def caller_tenant_uuid(session: AsyncSession, user: Any) -> uuid.UUID | None:
+    """The caller's tenant id, for writing into a GUID `tenant_id` column.
+
+    No claim is the default tenant, as everywhere. None only when even that
+    does not resolve (an install with no `default` tenant row) — the row is
+    then platform-shared, which is what it was before it had an owner.
+    """
+    resolved = await resolve_tenant(session, str(getattr(user, "tenant_id", None) or DEFAULT_TENANT))
+    return resolved[0] if resolved else None
+
+
+async def scope_to_caller(stmt, model, session: AsyncSession, user: Any, *, via=None):
+    """Narrow a list query to the caller's tenant — plus platform-shared rows.
+
+    8d (2026-09-29): some forty list routes returned every tenant's rows. This
+    is the one rule they now share: a row whose `tenant_id` is the caller's
+    tenant (in any spelling) or NULL. A table with no tenant column names its
+    owner through a parent: `via=(Model.fk_column, ParentModel)` keeps rows
+    whose parent passes the same rule, or that have no parent. superadmin is
+    unscoped.
+    """
+    from sqlalchemy import or_, select as _select
+
+    tokens = await caller_tenant_tokens(session, user)
+    if tokens is None:
+        return stmt
+    if via is not None:
+        fk_col, parent = via
+        pk = next(iter(parent.__table__.primary_key.columns))
+        allowed = await scope_to_caller(_select(getattr(parent, pk.name)), parent,
+                                        session, user)
+        return stmt.where(or_(fk_col.in_(allowed), fk_col.is_(None)))
+    col = model.tenant_id
+    if type(col.type).__name__ == "GUID":
+        values = []
+        for t in tokens:
+            try:
+                values.append(uuid.UUID(str(t)))
+            except ValueError:
+                continue
+    else:
+        values = list(tokens)
+    return stmt.where(or_(col.in_(values), col.is_(None)))
+
+
+async def is_platform_operator(session: AsyncSession, user: Any) -> bool:
+    """superadmin, or an account in the platform's own (default) tenant.
+
+    For powers that act on the whole INSTALL rather than on a tenant — the
+    platform update fleet above all. `admin` alone cannot mean that on a shared
+    box: every tenant has admins, and until 2026-09-29 any of them could
+    approve or roll back a platform update for everyone. A single-tenant
+    install is unaffected: its admins are in the default tenant.
+    """
+    if is_superadmin(user):
+        return True
+    token = getattr(user, "tenant_id", None)
+    if not token:
+        return True
+    return await same_tenant_as_default(session, token)
+
+
+async def same_tenant_as_default(session: AsyncSession, token: Any) -> bool:
+    resolved = await resolve_tenant(session, str(token))
+    default = await resolve_tenant(session, DEFAULT_TENANT)
+    if resolved is None:
+        return False
+    if default is None:
+        return str(token) == DEFAULT_TENANT
+    return str(resolved[0]) == str(default[0])
+
+
 def is_superadmin(user: Any) -> bool:
     """Break-glass, and the only way across a tenant boundary.
 
@@ -167,6 +258,26 @@ async def caller_tenant_or_refuse(
     return _refuse()
 
 
+async def tenant_for_write(
+    session: AsyncSession, user: Any, requested: str | None,
+) -> str | None:
+    """The tenant an ADMIN-surface create may record, from a body that names one.
+
+    2026-09-30 sweep: SSO providers, SCIM tokens, channel endpoints, directory
+    entries and access groups all stored the body's `tenant_id` as sent. A
+    tenant admin could therefore register an identity provider — or mint a SCIM
+    token — for ANOTHER tenant, and provision accounts into it.
+
+    The platform operator (superadmin, or the default tenant — the same rule as
+    `is_platform_operator`) keeps the value exactly as sent, NULL included, so
+    nothing an install's operator does today changes. Everybody else writes
+    into their own tenant, and naming another is a `PermissionError`.
+    """
+    if await is_platform_operator(session, user):
+        return requested
+    return await caller_tenant_or_refuse(session, user, requested)
+
+
 def _refuse() -> str:
     raise PermissionError(
         "This may only be written into your own tenant.")
@@ -191,7 +302,9 @@ async def same_tenant(
         return True
 
     resolved = await resolve_tenant(session, key)
-    return resolved is not None and str(resolved[0]) == str(row_tenant_id)
+    # A string tenant column may hold the slug where the caller holds the id,
+    # or the reverse; both spellings name the same tenant.
+    return resolved is not None and str(row_tenant_id) in (str(resolved[0]), str(resolved[1]))
 
 
 # ── case visibility ──────────────────────────────────────────────────────────

@@ -41,6 +41,32 @@ from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.session import get_session
 from velaris_shared.hxguard import service as hxguard
 
+from velaris_shared.db.models import RuleDefinitionModel as _Rule
+from velaris_shared.tenancy import inherit
+
+
+async def _inherit(awaitable):
+    """Run an `inherit` step (8e), answering its refusal as HTTP."""
+    try:
+        return await awaitable
+    except inherit.InheritError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
+async def _rule_for_caller(session, user, rule_id):
+    """A rule read by id for this caller (8e): another tenant's is 404 — the
+    path guard covers `{rule_id}`, this covers ids named in a BODY — and a
+    default this tenant forked resolves to its fork, because case types name
+    rules by id."""
+    from velaris_shared.tenancy.identity import is_superadmin, same_tenant
+    rule = await repo.get_rule(session, rule_id)
+    if rule is None:
+        return None
+    if not is_superadmin(user) and not await same_tenant(session, rule.tenant_id, user.tenant_id):
+        return None
+    return await inherit.resolve_for_caller(session, user, _Rule, rule)
+
+
 router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(get_current_user)])
 
 _EXPRESSION_RULE_TYPES = ("expression", "declare_expression")
@@ -79,9 +105,14 @@ async def create_rule(
     _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
 ):
     _validate_expression_rule(body.rule_type, body.definition_json)
+    # 8e: a tenant's rule is its own; only the operator makes a default.
+    owner = await _inherit(inherit.owner_for_create(session, _user))
+    if await inherit.name_taken(session, _Rule, owner, name=body.name, version=body.version):
+        raise HTTPException(409, f"Rule '{body.name}' v{body.version} already exists")
     rule = await repo.create_rule(
         session,
         data={
+            "tenant_id": owner,
             "name": body.name,
             "version": body.version,
             "rule_type": body.rule_type,
@@ -108,7 +139,10 @@ async def list_rules(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
+    from sqlalchemy import select as _select
+    clause = (await inherit.scope_list(_select(_Rule), _Rule, session, user)).whereclause
     items, total = await repo.list_rules(
         session,
         rule_type=rule_type,
@@ -116,7 +150,9 @@ async def list_rules(
         enabled=enabled,
         offset=(page - 1) * page_size,
         limit=page_size,
+        where=clause,   # 8e
     )
+    await inherit.flag_updates(session, _Rule, items)   # 8k
     return RuleListResponse(
         items=items, total=total, page=page, page_size=page_size
     )
@@ -315,11 +351,12 @@ async def rule_migration_report(
 async def get_rule(
     rule_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
-    rule = await repo.get_rule(session, rule_id)
+    rule = await _rule_for_caller(session, user, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
-    return rule
+    return (await inherit.flag_updates(session, _Rule, [rule]))[0]   # 8k
 
 
 @router.patch("/{rule_id}", response_model=RuleResponse)
@@ -333,6 +370,9 @@ async def update_rule(
     rule = await repo.get_rule(session, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
+    # 8e: a tenant's edit of a default lands in its fork.
+    rule = await _inherit(inherit.target_for_write(session, _user, _Rule, rule))
+    rule_id = rule.id
 
     values = {}
     if body.definition_json is not None:
@@ -360,6 +400,8 @@ async def delete_rule(
     _user: AuthenticatedUser = Depends(hxguard.guard("rules.definitions.write")),
 ):
     rule = await repo.get_rule(session, rule_id)         # capture target before delete
+    if rule is not None:
+        await _inherit(inherit.assert_may_delete(session, _user, rule))   # 8e
     deleted = await repo.delete_rule(session, rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -415,6 +457,7 @@ async def import_dmn(
             rule = await repo.create_rule(
                 session,
                 data={
+                    "tenant_id": await _inherit(inherit.owner_for_create(session, _user)),  # 8e
                     "name": decision.name,
                     "version": body.version,
                     "rule_type": decision.rule_type,
@@ -481,9 +524,10 @@ async def evaluate_rule(
     rule_id: uuid.UUID,
     body: RuleEvaluateRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Evaluate a single rule against provided context."""
-    rule = await repo.get_rule(session, rule_id)
+    rule = await _rule_for_caller(session, user, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
     if not rule.enabled:
@@ -505,11 +549,12 @@ async def evaluate_rule(
 async def evaluate_rules_batch(
     body: RuleBatchEvaluateRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Evaluate multiple rules against the same context."""
     rule_dicts = []
     for rid in body.rule_ids:
-        rule = await repo.get_rule(session, rid)
+        rule = await _rule_for_caller(session, user, rid)
         if rule is None:
             raise HTTPException(
                 status_code=404, detail=f"Rule {rid} not found"

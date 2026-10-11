@@ -356,15 +356,21 @@ async def _run_service_task(
 
 
 def _run_script_task(node: BpmnNode, context: dict) -> tuple[dict | None, str | None]:
-    """Execute an inline script (Python expression in extensions.script)."""
+    """Execute an inline script (``name = expression`` lines in extensions.script).
+
+    Never ``exec`` — see ``script_guard``. A script the guard refuses fails the
+    task with a named error; it neither runs nor passes through.
+    """
+    from case_service.hxfusion.script_guard import ScriptRejected, run_script
+
     script = node.extensions.get("script", "")
     if not script:
         return None, None
     try:
-        local_ctx = dict(context)
-        exec(script, {"__builtins__": {}}, local_ctx)  # noqa: S102
-        result = {k: v for k, v in local_ctx.items() if k not in context}
+        result = run_script(script, context)
         return result or None, None
+    except ScriptRejected as exc:
+        return None, f"Script refused by the safe-script check: {exc}"
     except Exception as exc:
         return None, f"Script error: {exc}"
 
@@ -416,14 +422,29 @@ async def _spawn_child_case(instance: Any, node: BpmnNode, context: dict) -> Non
     try:
         from velaris_shared.db.session import get_session_factory as _get_sf
         from velaris_shared.db.models import CaseInstanceModel, ProcessCaseBindingModel, ProcessInstanceModel
+        from velaris_shared.db.models import CaseTypeModel
+        from case_service.rollouts import service as _rollouts
         async with _get_sf()() as session:
+            ct = await session.get(CaseTypeModel, uuid.UUID(str(case_type_id)))
+            if ct is None:
+                logger.warning("spawnCase: case type %s does not exist", case_type_id)
+                return
+            # Oct item 18a: a spawned case is a new case, so a rollout chooses
+            # its version too.
+            ct, _rollout = await _rollouts.resolve_case_type(
+                session, case_type=ct, tenant=instance.tenant_id,
+                subject=_rollouts.subject_of((context or {}).get("customer_id")),
+                data=dict(context or {}))
             child = CaseInstanceModel(
-                case_type_id=case_type_id,
+                case_type_id=ct.id,
+                case_type_version=ct.version,
                 tenant_id=instance.tenant_id,
                 data={**context, "parent_process_instance_id": str(instance.id)},
             )
             session.add(child)
             await session.flush()
+            await _rollouts.record(session, case_id=child.id, res=_rollout,
+                                   tenant=instance.tenant_id, via="hxfusion_spawn")
             binding = ProcessCaseBindingModel(
                 case_id=child.id,
                 instance_id=instance.id,

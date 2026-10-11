@@ -27,6 +27,7 @@ from velaris_shared.hxguard import generation as _hxguard_generation
 from velaris_shared.hxguard import lockout
 from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import (
     PortalModel, AccessRoleModel, AccessGroupModel,
@@ -173,6 +174,12 @@ async def create_portal(
 ):
     if body.portal_type not in _PORTAL_TYPES:
         raise HTTPException(400, f"portal_type must be one of {_PORTAL_TYPES}")
+    # A portal's tenant was stored as sent until 2026-09-30 (NULL = every
+    # tenant's). The operator keeps that choice; a tenant admin makes their own.
+    try:
+        body.tenant_id = await tenant_for_write(session, _user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     p = PortalModel(**body.model_dump())
     session.add(p)
     await session.flush()
@@ -205,6 +212,10 @@ async def update_portal(
     )).scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "Portal not found")
+    try:
+        body.tenant_id = await tenant_for_write(session, _user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     for k, v in body.model_dump().items():
         setattr(p, k, v)
     await session.flush()
@@ -487,10 +498,16 @@ async def create_access_group(
     )).scalar_one_or_none()
     if portal is None:
         raise HTTPException(404, f"Portal {body.portal_id} not found")
+    # The group's privileges apply in the tenant it names — stored as sent
+    # until 2026-09-30, so a tenant admin could mint a group in another tenant.
+    try:
+        tenant_id = await tenant_for_write(session, _user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
     g = AccessGroupModel(
         name=body.name, description=body.description,
-        tenant_id=body.tenant_id, portal_id=uuid.UUID(body.portal_id),
+        tenant_id=tenant_id, portal_id=uuid.UUID(body.portal_id),
         role_ids=[str(r) for r in body.role_ids],
         allowed_case_type_ids=body.allowed_case_type_ids,
         allowed_queue_ids=body.allowed_queue_ids,

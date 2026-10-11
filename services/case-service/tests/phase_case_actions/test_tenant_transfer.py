@@ -23,13 +23,14 @@ SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from velaris_shared.db.models import (
     Base,
@@ -375,16 +376,156 @@ async def test_staff_identities_do_not_travel(api, world):
         assert author.startswith("actor:")
 
 
-async def test_customer_communications_block_the_move(api, world):
-    """A thread on the source's mailbox would thread the customer's next reply
-    into another company's case."""
+async def _seed_comms(world, *, email_on_case="cust@example.com"):
+    """The source's WhatsApp endpoint, an open conversation on the case with one
+    message each way, an inbound email, an outbound SMS; and the customer known
+    to the source as a portal customer with that phone — rung 2's input."""
+    from velaris_shared.db.models import (
+        ChannelConversationModel, ChannelEndpointModel, ChannelMessageModel, PortalCustomerModel,
+    )
     async with TestSessionFactory() as db:
+        ep = ChannelEndpointModel(id=uuid.uuid4(), tenant_id="srcco", channel="whatsapp",
+                                  provider="twilio", address="+15550001", routing={},
+                                  auto_create_case=False)
+        db.add(ep)
+        await db.flush()
+        conv = ChannelConversationModel(id=uuid.uuid4(), tenant_id="srcco", endpoint_id=ep.id,
+                                        peer_address="+447700900123", case_id=world["case"],
+                                        status="open", assigned_to="alice", metadata_json={},
+                                        last_message_at=NOW)
+        db.add(conv)
+        await db.flush()
+        db.add(ChannelMessageModel(tenant_id="srcco", conversation_id=conv.id, case_id=world["case"],
+                                   channel="whatsapp", direction="inbound",
+                                   peer_address="+447700900123", body="my claim is late",
+                                   raw_payload={}, received_at=NOW))
+        db.add(ChannelMessageModel(tenant_id="srcco", conversation_id=conv.id, case_id=world["case"],
+                                   channel="whatsapp", direction="outbound", author="alice",
+                                   peer_address="+447700900123", body="looking into it",
+                                   raw_payload={}, sent_at=NOW + timedelta(minutes=1)))
         await db.execute(insert(T["email_messages"]).values(
             id=uuid.uuid4(), case_id=world["case"], direction="inbound",
-            message_id="<m1@src>", subject="hi", tenant_id="srcco"))
+            message_id="<m1@src>", subject="about my claim", from_address="cust@example.com",
+            body_text="please call me", tenant_id="srcco", received_at=NOW))
+        await db.execute(insert(T["sms_messages"]).values(
+            id=uuid.uuid4(), tenant_id="srcco", case_id=world["case"], step_id="s",
+            to_number="+447700900123", body="your claim was received", status="sent"))
+        db.add(PortalCustomerModel(id=uuid.uuid4(), tenant_id=world["src"].id,
+                                   primary_email=email_on_case, display_name="Cust",
+                                   phone="+447700900123"))
+        (await db.get(CaseInstanceModel, world["case"])).portal_submitter_email = email_on_case
         await db.commit()
-    r = await _request(api, world)
-    assert r.status_code == 409 and "mailboxes" in r.text
+        return ep.id, conv.id
+
+
+async def _move(api, world):
+    tid = await _approved(api, world)
+    r = await api.post(f"/api/v1/case-tenant-transfers/{tid}/accept", json={},
+                       headers=_headers("dave"))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_customer_communications_no_longer_block_the_move(api, world):
+    await _seed_comms(world)
+    r = await api.get(f"/api/v1/cases/{world['case']}/tenant-transfers/preflight",
+                      params={"destination_tenant": "dstco"}, headers=_headers("alice"))
+    assert r.json()["can_move"] is True, r.json()
+
+
+async def test_source_keeps_its_threads_detached_and_closed(api, world):
+    from velaris_shared.db.models import ChannelConversationModel, ChannelMessageModel
+
+    _, conv_id = await _seed_comms(world)
+    out = await _move(api, world)
+    assert out["manifest"]["rehomed"]["channel_conversations"] == 1
+    assert out["manifest"]["rehomed"]["channel_messages"] == 2
+    assert out["manifest"]["rehomed"]["email_messages"] == 1
+    async with TestSessionFactory() as db:
+        conv = await db.get(ChannelConversationModel, conv_id)
+        assert conv.status == "closed" and conv.case_id is None
+        assert conv.tenant_id == "srcco" and conv.assigned_to is None   # still the source's
+        msgs = (await db.execute(select(ChannelMessageModel))).scalars().all()
+        assert all(m.case_id is None and m.tenant_id == "srcco" for m in msgs)
+        emails = (await db.execute(select(T["email_messages"]))).all()
+        assert all(e.case_id is None and e.tenant_id == "srcco" for e in emails)
+
+
+async def test_destination_gets_a_read_only_transcript_with_staff_pseudonymised(api, world):
+    await _seed_comms(world)
+    await _move(api, world)
+    async with TestSessionFactory() as db:
+        notes = (await db.execute(select(T["case_messages"]).where(
+            T["case_messages"].c.author == "velaris:tenant-transfer"))).all()
+    assert len(notes) == 1
+    body = notes[0].body
+    assert notes[0].portal_visible is False
+    assert "my claim is late" in body and "looking into it" in body and "please call me" in body
+    assert "customer (+447700900123)" in body
+    assert "alice" not in body                     # source staff never named
+    assert body.index("my claim is late") < body.index("looking into it")   # chronological
+
+
+async def test_sms_log_moves_with_the_case_without_the_sources_connector(api, world):
+    await _seed_comms(world)
+    await _move(api, world)
+    async with TestSessionFactory() as db:
+        rows = (await db.execute(select(T["sms_messages"]))).all()
+    assert rows and all(r.tenant_id == "dstco" and r.connector_id is None for r in rows)
+
+
+async def test_the_customers_next_message_stays_with_the_source(api, world):
+    """The point of the whole item: after the move, the source's endpoint must
+    not deliver the customer into the moved case — not through the open
+    conversation (closed), and not through rung 2 (tenant-scoped now)."""
+    from velaris_shared.db.models import ChannelEndpointModel
+    from case_service.channels import service as channels
+
+    ep_id, conv_id = await _seed_comms(world)
+    await _move(api, world)
+    async with TestSessionFactory() as db:
+        ep = await db.get(ChannelEndpointModel, ep_id)
+        res = await channels.ingest_inbound(
+            db, endpoint=ep, peer_address="+447700900123", body="any news?",
+            provider_message_id="wamid.after", raw_payload={})
+        await db.commit()
+    assert res.case_id is None
+    assert res.conversation_id != str(conv_id)
+
+
+async def test_a_reply_to_the_old_email_does_not_reach_the_moved_case(api, world):
+    from case_service.mail.threader import resolve_case_id_from_message
+
+    await _seed_comms(world)
+    await _move(api, world)
+    async with TestSessionFactory() as db:
+        found = await resolve_case_id_from_message(
+            db, in_reply_to="<m1@src>", references=[], subject="Re: about my claim",
+            tenant_id="srcco")
+    assert found is None
+
+
+async def test_rung_two_never_crosses_tenants(world):
+    """Pre-existing: rung 2 looked for the customer's email in EVERY tenant's
+    cases. A message to another tenant's number must not find this case."""
+    from velaris_shared.db.models import ChannelEndpointModel, PortalCustomerModel
+    from case_service.channels import service as channels
+
+    await _seed_comms(world)
+    async with TestSessionFactory() as db:
+        other_ep = ChannelEndpointModel(id=uuid.uuid4(), tenant_id="othco", channel="whatsapp",
+                                        provider="twilio", address="+15550009", routing={},
+                                        auto_create_case=False)
+        db.add(other_ep)
+        db.add(PortalCustomerModel(id=uuid.uuid4(), tenant_id=world["oth"].id,
+                                   primary_email="cust@example.com", display_name="Cust",
+                                   phone="+447700900123"))
+        await db.commit()
+        res = await channels.ingest_inbound(
+            db, endpoint=other_ep, peer_address="+447700900123", body="hello",
+            provider_message_id="wamid.other", raw_payload={})
+        await db.commit()
+    assert res.case_id is None
 
 
 async def test_a_cancel_frees_the_case(api, world):
@@ -442,3 +583,119 @@ async def test_the_case_list_treats_a_caller_with_no_tenant_as_default(api, worl
     # The tenant's own admin still sees its cases.
     r = await api.get("/api/v1/cases?page_size=100", headers=_headers("alice"))
     assert str(world["case"]) in {c["id"] for c in r.json()["items"]}
+
+
+# ── preflight: the blockers BEFORE the button (Oct item 6) ────────────────────
+
+async def _preflight(api, world, who="alice", dest="dstco"):
+    return await api.get(f"/api/v1/cases/{world['case']}/tenant-transfers/preflight",
+                         params={"destination_tenant": dest}, headers=_headers(who))
+
+
+async def test_preflight_says_what_request_would_say_and_writes_nothing(api, world):
+    r = await _preflight(api, world)
+    assert r.status_code == 200, r.text
+    assert r.json()["can_move"] is True and r.json()["blockers"] == []
+
+    async with TestSessionFactory() as db:
+        await db.execute(insert(T["payment_requests"]).values(
+            id=uuid.uuid4(), tenant_id="srcco", case_id=str(world["case"]), step_id="p",
+            provider="stripe", amount_cents=100))
+        await db.commit()
+    r = await _preflight(api, world)
+    assert r.json()["can_move"] is False
+    assert any("payment requests" in b for b in r.json()["blockers"])
+    req = await _request(api, world)
+    assert req.status_code == 409          # the same answer the button would get
+    async with TestSessionFactory() as db:
+        assert (await db.execute(select(CaseTenantTransferModel))).scalars().all() == []
+
+
+async def test_preflight_names_an_open_transfer(api, world):
+    tid = (await _request(api, world)).json()["id"]
+    r = await _preflight(api, world)
+    assert r.json()["can_move"] is False and r.json()["open_transfer_id"] == tid
+
+
+async def test_preflight_has_the_same_gates_as_request(api, world):
+    assert (await _preflight(api, world, who="olga")).status_code == 404   # another tenant's case
+    assert (await _preflight(api, world, who="dave")).status_code == 404   # the destination
+    assert (await _preflight(api, world, dest="no-such-co")).status_code == 404
+    r = await api.get(f"/api/v1/cases/{world['case']}/tenant-transfers/preflight",
+                      params={"destination_tenant": "dstco"},
+                      headers=_headers("alice", roles=("viewer",)))
+    assert r.status_code == 403
+
+
+# ── the comms routes had no case gate (found in 8a, 2026-09-28) ────────────────
+
+async def test_comms_case_routes_need_case_access(api, world):
+    await _seed_comms(world)
+    case = world["case"]
+    for path in (f"/api/v1/comms/sms/cases/{case}/messages",
+                 f"/api/v1/comms/slack/cases/{case}/notifications"):
+        assert (await api.get(path, headers=_headers("alice"))).status_code == 200
+        assert (await api.get(path, headers=_headers("olga"))).status_code in (403, 404)
+    r = await api.post(f"/api/v1/comms/sms/cases/{case}/send", headers=_headers("olga"),
+                       json={"step_id": "s", "to_number": "+1", "body": "x"})
+    assert r.status_code in (403, 404)
+    r = await api.post(f"/api/v1/comms/slack/cases/{case}/send", headers=_headers("olga"),
+                       json={"step_id": "s", "message": "x"})
+    assert r.status_code in (403, 404)
+
+
+async def test_comms_global_lists_are_tenant_scoped(api, world):
+    await _seed_comms(world)            # one SMS for srcco
+    async with TestSessionFactory() as db:
+        await db.execute(insert(T["sms_messages"]).values(
+            id=uuid.uuid4(), tenant_id="othco", case_id=world["other"], step_id="s",
+            to_number="+19999", body="othco's text", status="sent"))
+        await db.commit()
+    mine = (await api.get("/api/v1/comms/sms/messages", headers=_headers("olga"))).json()
+    assert [m["to_number"] for m in mine] == ["+19999"]
+    assert (await api.get("/api/v1/comms/sms/messages", params={"limit": 100000},
+                          headers=_headers("olga"))).status_code == 422
+
+
+# ── the race: an inbound message arriving WHILE the move commits (PG only) ─────
+
+_PG = pytest.mark.skipif(
+    not (os.environ.get("VELARIS_TEST_DATABASE_URL", "").startswith("postgresql")),
+    reason="row locks need a real PostgreSQL; SQLite ignores FOR UPDATE")
+
+
+@_PG
+async def test_an_inbound_mid_move_waits_and_opens_a_fresh_thread(world):
+    """Session A has closed + detached the conversation but not committed.
+    Session B's inbound must wait on the row lock, then see it closed — never
+    file the message on the moved case."""
+    import asyncio
+
+    from velaris_shared.db.models import ChannelConversationModel, ChannelEndpointModel
+    from case_service.channels import service as channels
+
+    ep_id, conv_id = await _seed_comms(world)
+    a = TestSessionFactory()
+    await a.execute(update(ChannelConversationModel)
+                    .where(ChannelConversationModel.id == conv_id)
+                    .values(case_id=None, status="closed"))
+    # …and, as `accept` does in the same transaction, the case changes tenant.
+    await a.execute(update(CaseInstanceModel).where(CaseInstanceModel.id == world["case"])
+                    .values(tenant_id=world["dst"].id))
+
+    async def inbound():
+        async with TestSessionFactory() as b:
+            ep = await b.get(ChannelEndpointModel, ep_id)
+            res = await channels.ingest_inbound(
+                b, endpoint=ep, peer_address="+447700900123", body="mid-move",
+                provider_message_id="wamid.race", raw_payload={})
+            await b.commit()
+            return res
+
+    task = asyncio.create_task(inbound())
+    await asyncio.sleep(0.5)
+    assert not task.done(), "the inbound did not wait for the move's lock"
+    await a.commit()
+    await a.close()
+    res = await asyncio.wait_for(task, 10)
+    assert res.case_id is None and res.conversation_id != str(conv_id)

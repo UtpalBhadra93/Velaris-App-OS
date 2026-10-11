@@ -145,7 +145,12 @@ class TestBypasses:
             # gates written natively rather than migrated, so these sets grow
             # for the first time by intent rather than by discovery. A bot is
             # developer work; a channel conversation is casework.
-            ("developer", {"marketplace.packages.publish", "marketplace.catalogue.read",
+            ("developer", {# 2026-09-30, login-only sweep: the branch
+                           # screen, and READING connectors a form or rule
+                           # binds to. Writing a connector is not theirs.
+                           "design.branches.read", "design.branches.write",
+                           "integration.connectors.read", "devconn.rules.read",
+                           "marketplace.packages.publish", "marketplace.catalogue.read",
                            # 2026-09-04: F-11. Authoring a process fragment is
                            # developer work — it is a building block every
                            # future plan may be composed from. Reading plans
@@ -154,6 +159,13 @@ class TestBypasses:
                            # consents to a process built from it.
                            "intent.fragments.read", "intent.fragments.write",
                            "intent.plans.read",
+                           # 2026-09-29: Oct 18a. A developer ships a new case
+                           # type version and REQUESTS its rollout; approving,
+                           # changing and closing one are not theirs.
+                           "content.rollouts.read", "content.rollouts.request",
+                           # 2026-09-29, 8g: outbound webhooks were ungated;
+                           # the Studio screen that manages them is developer work.
+                           "webhooks.subscriptions.read", "webhooks.subscriptions.write",
                            "platform.dbmanager.read", "platform.dbmanager.reauth",
                            "devconn.namespace.register",
                            "bots.definitions.read", "bots.definitions.write",
@@ -208,8 +220,19 @@ class TestBypasses:
                          # 2026-09-01: F-02. Finance reads what a case cost;
                          # it does not set the rates, and it does not gain the
                          # governance ledger.
-                         "costing.decisions.read"}),
-            ("manager", {"marketplace.catalogue.read", "analytics.reports.read",
+                         "costing.decisions.read",
+                         # 2026-09-29: payments had no gate. Finance holds all of
+                         # it but testing connector credentials, which is admin.
+                         "payments.requests.read", "payments.requests.write",
+                         "payments.refunds.write", "payments.disbursements.write",
+                         "payments.disbursements.execute", "payments.connectors.read"}),
+            ("manager", {# 2026-09-30, login-only sweep: a supervisor
+                         # sets up their floor's work queues.
+                         "casework.queues.write", "comms.email.send",
+                         "marketplace.catalogue.read", "analytics.reports.read",
+                         # 2026-09-29, Oct 18a: a manager sees which version
+                         # their customers are getting; changing it is not theirs.
+                         "content.rollouts.read",
                          "design.escalation.read", "risk.assessment.read", "risk.outcomes.write",
                          "risk.rules.configure", "risk.scores.review", "casework.records.any",
                          "channels.conversations.read", "channels.conversations.write",
@@ -283,7 +306,16 @@ class TestBypasses:
                          "engage.profile.read", "engage.profile.write",
                          "engage.profile.reveal", "engage.profile.merge",
                          "engage.interactions.read", "engage.interactions.write",
-                         "engage.actions.on_behalf",
+                         "engage.actions.on_behalf", "engage.actions.consent",
+                         # Oct item 3: a manager decides backfill proposals;
+                         # starting a scan stays with admin.
+                         "engage.backfill.decide",
+                         # 2026-09-29: payments had no gate at all. A manager
+                         # does all of it except testing a connector's
+                         # credentials against the provider.
+                         "payments.requests.read", "payments.requests.write",
+                         "payments.refunds.write", "payments.disbursements.write",
+                         "payments.disbursements.execute", "payments.connectors.read",
                          # 2026-09-07: migration 198. A manager acts on cases,
                          # so they hold the five action privileges the six
                          # removed routes required — this is the legacy role set
@@ -309,6 +341,9 @@ class TestBypasses:
                          # floor's numbers; naming the wrap-up codes is admin.
                          "engage.analytics.read"}),
             ("case_worker", {"risk.assessment.read",
+                             # 2026-09-30, login-only sweep: writing to a
+                             # customer is case work; a viewer does not.
+                             "comms.email.send",
                              "channels.conversations.read", "channels.conversations.write",
                              "channels.cti.pop", "bots.jobs.read", "bots.jobs.run",
                              # Their own leave, and the team's availability. They
@@ -345,7 +380,12 @@ class TestBypasses:
                              "engage.profile.reveal",
                              "engage.interactions.read",
                              "engage.interactions.write",
-                             "engage.actions.on_behalf",
+                             "engage.actions.on_behalf", "engage.actions.consent",
+                             # 2026-09-29: asking for a payment and recording a
+                             # disbursement are case work; refunding and
+                             # confirming money LEFT are not.
+                             "payments.requests.read", "payments.requests.write",
+                             "payments.disbursements.write",
                              # 2026-09-07: migration 198. Each of the five
                              # carries the legacy role set of `case.update` —
                              # what the six removed routes actually required —
@@ -470,7 +510,7 @@ class TestRegistry:
         with a phase."""
         endpoint = [a for a in ACTIONS.values() if a.kind == "endpoint"]
         module = [a for a in ACTIONS.values() if a.kind == "module"]
-        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1 + 4 + 14 + 6 + 1 + 2 + 7 + 4 + 1 + 5 + 4 + 2 + 2 + 3 + 3 + 3 + 3 + 4 + 4 + 5 + 4 + 7 + 6 + 5 + 2 + 1 + 1 + 1 + 2 + 1, (
+        assert len(endpoint) == 49 + 19 + 16 + 6 + 15 + 4 + 5 + 6 + 1 + 4 + 14 + 6 + 1 + 2 + 7 + 4 + 1 + 5 + 4 + 2 + 2 + 3 + 3 + 3 + 3 + 4 + 4 + 5 + 4 + 7 + 6 + 5 + 2 + 1 + 1 + 1 + 2 + 1 + 7 + 1 + 2 + 1 + 5 + 2 + 1 + 23 + 3, (
             f"{len(endpoint)} endpoint actions — expected 49 (Phase 0) + 19 "
             f"(Phase 3.5) + 16 (Phase 4 step 2) + 6 (ungated sweep) + 15 "
             f"(Phase 5: the case layer's ACTION_ROLES table + the ReBAC bypass) "
@@ -627,7 +667,37 @@ class TestRegistry:
             f"+ 1 (case.actions.transfer_tenant — 2026-09-17: moving a case into "
             f"another tenant's data is not `transfer`, which every case worker "
             f"holds; admin only, and still needs a second admin and the "
-            f"destination's acceptance)")
+            f"destination's acceptance) "
+            f"+ 7 (payments.* — 2026-09-29: every /payments route had "
+            f"authentication and nothing else, so any signed-in user in any "
+            f"tenant could disburse on, mark sent or refund another tenant's "
+            f"case; asking for and recording money is case work, giving it "
+            f"back and confirming it left are not) "
+            f"+ 1 (engage.actions.consent — Oct item 2: recording a person's "
+            f"consent on their word over the phone is a legal record about them, "
+            f"not the same act as raising work in their name) "
+            f"+ 2 (engage.backfill.* — Oct item 3: RUNNING a scan reads every "
+            f"portal account and case submitter in the tenant, an administrator's "
+            f"act; DECIDING a proposal creates or enriches one person, which a "
+            f"supervisor may do) "
+            f"+ 1 (engage.profile.erase — 2026-09-29: erasing a customer from the "
+            f"rep desk is irreversible and legal in weight; admin only) "
+            f"+ 5 (content.rollouts.* — 2026-09-29, Oct 18a staged rollout: "
+            f"requesting and approving are separate actions and separate people; "
+            f"changing a percentage is operation, closing one is the decision) "
+            f"+ 2 (webhooks.subscriptions.* — 2026-09-29, 8g: every /webhooks route "
+            f"needed a login and nothing else; a viewer could subscribe to every "
+            f"tenant's case events) "
+            f"+ 1 (privacy.customers.export — 2026-09-29, 8f: a customer's GDPR "
+            f"Art. 15 export gathers everything the tenant holds about a person "
+            f"into one file that leaves the platform; admin only) "
+            f"+ 23 (the login-only sweep — 2026-09-30: 270 routes needed a login "
+            f"and nothing else; a viewer created platform regions and tenantless "
+            f"work queues and read connectors, sync destinations and platform "
+            f"logs. Each list follows the Studio screen that manages the thing) "
+            f"+ 3 (legal.holds.* — 2026-10-11, Oct item 13: PLACING a hold protects "
+            f"a record and RELEASING one is what lets it be destroyed again, so "
+            f"release is the narrower; READING a hold shows the dispute it names)")
         assert len(module) == 18, (
             f"{len(module)} module actions — 12 from Phase 0, 6 from Phase 4")
 

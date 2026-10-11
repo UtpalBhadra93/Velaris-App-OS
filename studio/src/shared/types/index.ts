@@ -134,6 +134,10 @@ export interface CaseTypeSummary {
   color: string | null;
   created_at: string;
   updated_at: string;
+  // Oct 8i: null = a platform default; forked_from_id = this tenant's copy of one.
+  tenant_id?: string | null;
+  forked_from_id?: string | null;
+  update_available?: boolean;
 }
 
 export interface CaseTypeListResponse {

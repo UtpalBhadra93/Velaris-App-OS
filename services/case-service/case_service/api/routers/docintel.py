@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.session import get_session
@@ -51,6 +52,8 @@ async def list_extractions(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     return await service.list_extractions(session, case_id)
 
 
@@ -61,6 +64,8 @@ async def extract_document(
     session: AsyncSession = Depends(get_session),
     user:    AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         row = await service.extract_document(
             session, case_id, body.step_id,
@@ -107,6 +112,8 @@ async def list_storage_routes(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     return await service.list_storage_routes(session, case_id)
 
 
@@ -117,6 +124,8 @@ async def route_to_storage(
     session: AsyncSession = Depends(get_session),
     user:    AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         row = await service.route_to_storage(
             session, case_id, body.step_id,
@@ -163,6 +172,11 @@ async def list_all_extractions(
     q = select(DocExtractionJobModel).order_by(DocExtractionJobModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(DocExtractionJobModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(DocExtractionJobModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return rows
 
@@ -179,5 +193,10 @@ async def list_all_storage_routes(
     q = select(DocStorageRouteModel).order_by(DocStorageRouteModel.created_at.desc()).limit(limit)
     if status:
         q = q.where(DocStorageRouteModel.status == status)
+    # Every tenant's rows until 2026-09-29.
+    from case_service.tenancy.identity import caller_tenant_tokens
+    mine = await caller_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(DocStorageRouteModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
     return rows

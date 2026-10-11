@@ -181,6 +181,11 @@ INBOUND: dict[str, set[str]] = {
         "scheduler/actions.py",          # sync_graph as a scheduled action
         "api/routers/hxdbmigrate.py",    # sync_graph after a schema import
         "hxmcp/registry.py",             # query_graph as an MCP tool
+        # Oct item 4, reviewed: customer_graph reads only case-service's OWN
+        # customer tables (never graph_nodes) and must run inside the 360's
+        # per-case authz and Full-tier gate. Through the gateway it would need
+        # a second copy of that gate on the far side.
+        "engage/three_sixty.py",
     },
 }
 
@@ -288,16 +293,22 @@ def test_extracted_service_arms_the_superadmin_gate(directory, package):
         f"Pass lifespan=velaris_shared.app.platform_lifespan(...) to FastAPI()."
     )
 
-    # And the middleware must act on it.
+    # And the middleware must act on it. The app is the shared module-level
+    # object other tests drive too: leaving the flag True made every later
+    # request to this service 503 (found 2026-10-01 — three login-sweep tests
+    # failed in full runs and passed alone). Always put it back.
     app.state.superadmin_missing = True
-    client = TestClient(app, raise_server_exceptions=False)
-    api = next((r.path for r in app.routes
-                if isinstance(r, APIRoute) and r.path.startswith("/api/v1/")), None)
-    assert api, f"{package} serves no /api/v1 route"
-    assert client.get(api).status_code == 503, (
-        f"{package} served {api} on an install with no superadmin."
-    )
-    assert client.get("/health").status_code == 200, "health must stay probeable"
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        api = next((r.path for r in app.routes
+                    if isinstance(r, APIRoute) and r.path.startswith("/api/v1/")), None)
+        assert api, f"{package} serves no /api/v1 route"
+        assert client.get(api).status_code == 503, (
+            f"{package} served {api} on an install with no superadmin."
+        )
+        assert client.get("/health").status_code == 200, "health must stay probeable"
+    finally:
+        app.state.superadmin_missing = False
 
 
 @pytest.mark.parametrize("directory,package", sorted(EXTRACTED.items()))

@@ -70,6 +70,26 @@ def validate_expressions(pack_dir: Path) -> None:
         _fail("expression rules rejected by HxSandbox — " + "; ".join(bad))
 
 
+def validate_rails(pack_dir: Path) -> list | None:
+    """Oct item 5: a pack's rep-desk rails, checked with the platform's OWN
+    validator — the one install runs — so an author learns now, not a customer."""
+    src = pack_dir / "engage_rails.json"
+    if not src.exists():
+        return None
+    try:
+        raw = json.loads(src.read_text())
+    except json.JSONDecodeError as exc:
+        _fail(f"engage_rails.json is not valid JSON: {exc}")
+    try:
+        from case_service.engage import rail_config
+    except ImportError as exc:
+        _fail(f"cannot load the rail validator: {exc}")
+    try:
+        return rail_config.validate_many(raw)
+    except rail_config.RailError as exc:
+        _fail(f"engage_rails.json rejected — {exc}")
+
+
 def build(pack_dir: Path, out_dir: Path) -> Path:
     meta_file = pack_dir / "pack.json"
     if not meta_file.exists():
@@ -81,6 +101,7 @@ def build(pack_dir: Path, out_dir: Path) -> Path:
             _fail(f"pack.json is missing '{field}'")
 
     validate_expressions(pack_dir)
+    rails = validate_rails(pack_dir)
 
     # The marketplace manifest. `type` MUST be accelerator_pack or the install
     # path refuses it; `outbound_domains` is empty because a content pack has no
@@ -116,6 +137,9 @@ def build(pack_dir: Path, out_dir: Path) -> Path:
             if not isinstance(parsed, list):
                 _fail(f"{src.name} must be a JSON array")
             zf.writestr(f"{section}.json", json.dumps(parsed, indent=2))
+            sections_written += 1
+        if rails:
+            zf.writestr("engage_rails.json", json.dumps(rails, indent=2))
             sections_written += 1
 
     if sections_written == 0:

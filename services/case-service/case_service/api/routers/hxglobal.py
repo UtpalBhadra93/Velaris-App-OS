@@ -18,6 +18,8 @@ from velaris_shared.db.models import (
     RegionAccessLogModel,
 )
 from velaris_shared.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from case_service.hxglobal import regions as _reg  # noqa: F401
@@ -128,10 +130,46 @@ def _access_log(a: RegionAccessLogModel) -> dict:
 
 # ── Regions CRUD ──────────────────────────────────────────────────────────────
 
+async def _region_operator(
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.regions.write")),
+    session: AsyncSession = Depends(get_session),
+) -> AuthenticatedUser:
+    """Regions and tenant placement belong to the INSTALL, not to a tenant.
+
+    Until 2026-09-30 these routes needed a login and nothing else — a viewer in
+    any tenant created a region (proven in-process). The privilege says who may
+    do it; being the platform operator says on whose install. A tenant admin
+    holds the first and not the second, and answers 403.
+    """
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, user):
+        raise HTTPException(403, "Regions are managed by the platform operator.")
+    return user
+
+
+_region_operator.hxguard_action = "platform.regions.write"  # type: ignore[attr-defined]
+
+
+async def _region_reader(
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.regions.read")),
+    session: AsyncSession = Depends(get_session),
+) -> AuthenticatedUser:
+    """A region's `connection_config` and endpoint describe the INSTALL's
+    infrastructure. Found live on 2026-09-30 after the first fix: a `dev`
+    tenant admin held the privilege and read every region's config."""
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, user):
+        raise HTTPException(403, "Regions are managed by the platform operator.")
+    return user
+
+
+_region_reader.hxguard_action = "platform.regions.read"  # type: ignore[attr-defined]
+
+
 @router.get("/regions")
 async def list_regions(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_reader),
 ):
     rows = (await session.execute(select(RegionModel).order_by(RegionModel.created_at))).scalars().all()
     return {"regions": [_region(r) for r in rows], "total": len(rows)}
@@ -141,7 +179,7 @@ async def list_regions(
 async def create_region(
     body: CreateRegionRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     if body.provider not in PROVIDERS:
         raise HTTPException(400, f"Invalid provider. Must be one of: {PROVIDERS}")
@@ -186,7 +224,7 @@ async def _demote_other_primaries(session: AsyncSession, *, keep) -> None:
 async def get_region(
     region_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_reader),
 ):
     return _region(await _region_or_404(session, region_id))
 
@@ -196,7 +234,7 @@ async def update_region(
     region_id: uuid.UUID,
     body: UpdateRegionRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     r = await _region_or_404(session, region_id)
     if body.name is not None:              r.name = body.name
@@ -217,7 +255,7 @@ async def update_region(
 async def delete_region(
     region_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     r = await _region_or_404(session, region_id)
     await session.delete(r)
@@ -228,7 +266,7 @@ async def delete_region(
 async def ping_region(
     region_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_reader),
 ):
     r = await _region_or_404(session, region_id)
     adapter = get_region_adapter(r.provider, r.connection_config)
@@ -240,7 +278,7 @@ async def ping_region(
 @router.get("/health")
 async def global_health(
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_reader),
 ):
     regions = (await session.execute(
         select(RegionModel).where(RegionModel.enabled == True)  # noqa: E712
@@ -258,7 +296,7 @@ async def region_health_history(
     region_id: uuid.UUID,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_reader),
 ):
     await _region_or_404(session, region_id)
     rows = (await session.execute(
@@ -281,6 +319,11 @@ async def list_sovereignty_rules(
     q = select(SovereigntyRuleModel).order_by(SovereigntyRuleModel.created_at)
     if tenant_id:
         q = q.where(SovereigntyRuleModel.tenant_id == tenant_id)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, _):   # the operator sees every tenant's
+        q = await scope_to_caller(q, SovereigntyRuleModel, session, _)
     rows = (await session.execute(q)).scalars().all()
     return {"rules": [_rule(r) for r in rows], "total": len(rows)}
 
@@ -289,13 +332,20 @@ async def list_sovereignty_rules(
 async def create_sovereignty_rule(
     body: CreateSovereigntyRuleRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.sovereignty.write")),
 ):
     await _region_or_404(session, body.region_id)
     if body.regulation not in REGULATIONS:
         raise HTTPException(400, f"regulation must be one of: {REGULATIONS}")
+    # The body's tenant was stored verbatim (2026-09-30): a tenant admin could
+    # write a residency rule for another tenant, or a NULL one for everybody.
+    # The operator keeps the choice; everyone else writes their own tenant's.
+    try:
+        tenant_id = await tenant_for_write(session, user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     r = SovereigntyRuleModel(
-        tenant_id=body.tenant_id, case_type_id=body.case_type_id,
+        tenant_id=tenant_id, case_type_id=body.case_type_id,
         region_id=body.region_id, regulation=body.regulation,
         description=body.description, created_by=user.user_id,
     )
@@ -310,13 +360,16 @@ async def update_sovereignty_rule(
     rule_id: uuid.UUID,
     body: UpdateSovereigntyRuleRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("platform.sovereignty.write")),
 ):
     r = await session.get(SovereigntyRuleModel, rule_id)
     if not r:
         raise HTTPException(404, "Sovereignty rule not found")
     if body.tenant_id is not None:
-        r.tenant_id = body.tenant_id or None
+        try:
+            r.tenant_id = await tenant_for_write(session, user, body.tenant_id or None)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
     if body.case_type_id is not None:
         r.case_type_id = body.case_type_id or None
     if body.region_id is not None:
@@ -337,7 +390,7 @@ async def update_sovereignty_rule(
 async def delete_sovereignty_rule(
     rule_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.sovereignty.write")),
 ):
     r = await session.get(SovereigntyRuleModel, rule_id)
     if not r:
@@ -376,6 +429,11 @@ async def list_tenant_assignments(
     q = select(TenantRegionAssignmentModel).order_by(TenantRegionAssignmentModel.created_at)
     if tenant_id:
         q = q.where(TenantRegionAssignmentModel.tenant_id == tenant_id)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, _):   # the operator sees every tenant's
+        q = await scope_to_caller(q, TenantRegionAssignmentModel, session, _)
     rows = (await session.execute(q)).scalars().all()
     return {"assignments": [_assignment(a) for a in rows], "total": len(rows)}
 
@@ -384,7 +442,7 @@ async def list_tenant_assignments(
 async def create_tenant_assignment(
     body: CreateAssignmentRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     await _region_or_404(session, body.region_id)
     if body.assignment_type not in ASSIGNMENT_TYPES:
@@ -410,7 +468,7 @@ async def update_tenant_assignment(
     assignment_id: uuid.UUID,
     body: UpdateAssignmentRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     from sqlalchemy.exc import IntegrityError
     a = await session.get(TenantRegionAssignmentModel, assignment_id)
@@ -433,7 +491,7 @@ async def update_tenant_assignment(
 async def delete_tenant_assignment(
     assignment_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(_region_operator),
 ):
     a = await session.get(TenantRegionAssignmentModel, assignment_id)
     if not a:
@@ -448,7 +506,7 @@ async def delete_tenant_assignment(
 async def migrate_tenant_endpoint(
     body: MigrateTenantRequest,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(_region_operator),
 ):
     await _region_or_404(session, body.target_region_id)
     return await migrate_tenant(body.tenant_id, body.target_region_id, session, actor_id=user.user_id)
@@ -469,6 +527,11 @@ async def get_access_log(
         q = q.where(RegionAccessLogModel.region_id == region_id)
     if tenant_id:
         q = q.where(RegionAccessLogModel.tenant_id == tenant_id)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, _):   # the operator sees every tenant's
+        q = await scope_to_caller(q, RegionAccessLogModel, session, _)
     rows = (await session.execute(q)).scalars().all()
     return {"logs": [_access_log(a) for a in rows], "total": len(rows)}
 

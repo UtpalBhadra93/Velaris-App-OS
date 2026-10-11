@@ -61,8 +61,10 @@ async def _get_stripe_connector(
 async def _emit_hxstream(case_id: uuid.UUID, event_type: str, data: dict) -> None:
     """Fire an HxStream event without blocking."""
     try:
-        from velaris_shared.hxstream.emitter import emit_event
-        await emit_event(str(case_id), event_type, data)
+        # `emit_event` never existed in the emitter, so until 2026-09-29 every
+        # payment event failed here and was logged as a warning.
+        from velaris_shared.hxstream.emitter import emit_trace
+        await emit_trace(event_type, data, case_id=case_id)
     except Exception as exc:
         logger.warning("HxStream emit failed (%s): %s", event_type, exc)
 

@@ -74,6 +74,19 @@ MAX_CHARTER_CASES = 500
 
 RESOLUTIONS = ("keep_field", "keep_hub")
 
+#: Oct item 8. When on, a sync must carry the node's signature over its chain
+#: head. OFF by default — as released, the signature was optional, and a hub
+#: that started refusing unsigned syncs on upgrade would strand every node out
+#: in the field with work it could not hand back. The shipped node always
+#: signs, so an operator can turn this on once their nodes run it.
+REQUIRE_SIGNATURE_ENV = "VELARIS_FIELD_REQUIRE_SIGNATURE"
+
+
+def signature_required() -> bool:
+    import os
+    raw = os.environ.get(REQUIRE_SIGNATURE_ENV, "")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
 
 class FieldError(ValueError):
     """The field operation cannot proceed as asked. The message is for a human."""
@@ -293,6 +306,10 @@ async def sync(
         await session.flush()
         raise FieldError(f"the node's log does not verify: {reason}")
 
+    if signature is None and signature_required():
+        raise FieldError(
+            "this hub requires every sync to be signed by the node's pinned key "
+            f"({REQUIRE_SIGNATURE_ENV}); a staff token alone cannot hand work back")
     if signature is not None:
         verified, detail = handoff.verify_signature(node, head, signature)
         if not verified:
@@ -467,6 +484,60 @@ async def order_shred(session: AsyncSession, *, node: FieldNodeModel,
     node.shred_reason = reason
     await session.flush()
     return node
+
+
+def contact_message(node: FieldNodeModel, at: str) -> str:
+    """What a node signs to say "this is me, now". The slug and key id are in
+    it so a signature for one node, or for a rotated key, says nothing here."""
+    return f"velaris-field-contact:{node.slug}:{node.key_id}:{at}"
+
+
+#: How far a signed contact's own timestamp may be from the hub's clock. It
+#: bounds replay of a captured contact, and it is generous because a device
+#: that has been in a field for three days has a clock that has drifted.
+CONTACT_SKEW = timedelta(minutes=15)
+
+
+async def contact(session: AsyncSession, *, node: FieldNodeModel,
+                  at: str | None = None, signature: str | None = None,
+                  ) -> dict[str, Any]:
+    """A node checking in, before anything else it does on a connection.
+
+    Oct item 8. The shred order used to reach a node only inside a SUCCESSFUL
+    sync — so a node whose stream was refused (stale, broken, already synced)
+    was never told to wipe, and kept its data. Now every contact carries it.
+
+    Signed or not follows the sync rule: optional unless the hub requires it.
+    A signed contact is checked against the pinned key and the clock, so a
+    captured one cannot be replayed later.
+    """
+    if signature is not None or signature_required():
+        if not signature or not at:
+            raise FieldError("this hub requires a signed contact from the node's pinned key")
+        when = _aware(_parse_time(at))
+        if when is None or abs(_utcnow() - when) > CONTACT_SKEW:
+            raise FieldError("the contact's timestamp is not current; check the node's clock")
+        verified, _detail = handoff.verify_signature(node, contact_message(node, at), signature)
+        if not verified:
+            raise FieldError("the contact is not signed by the node's pinned key")
+
+    node.last_contact_at = _utcnow()
+    wipe = node.status in ("shred_ordered", "shredded")
+    if node.status == "shred_ordered" and signature is not None:
+        # Recorded as executed only when the DEVICE asked — a signature by its
+        # pinned key. An unsigned contact is any dispatcher's token; it is told
+        # to wipe, but the hub does not claim a device wiped on its word.
+        node.status = "shredded"
+        node.shredded_at = _utcnow()
+    latest = (await session.execute(
+        select(FieldDispatchModel).where(FieldDispatchModel.node_id == node.id,
+                                         FieldDispatchModel.status == "issued")
+        .order_by(FieldDispatchModel.issued_at.desc()).limit(1))).scalars().first()
+    await session.flush()
+    return {"status": node.status, "wipe": wipe, "signed": signature is not None,
+            "outstanding_dispatch": str(latest.id) if latest else None,
+            "staleness": staleness(node, latest),
+            "note": "Wipe the node now." if wipe else "Contact recorded."}
 
 
 def staleness(node: FieldNodeModel, dispatch_row: FieldDispatchModel | None,

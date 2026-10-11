@@ -143,6 +143,7 @@ export const NAV_ICONS: Record<string, NavIconComponent> = {
   "/model-market":     withSparkleBox(ModelMarketIcon),
   "/rep-desk":         RepDeskIcon,
   "/healing":          withSparkleBox(HealingIcon),
+  "/case-transfers":   CaseTransferIcon,
   "/field-ops":        FieldOpsIcon,
   "/intent":           withSparkleBox(IntentIcon),
   "/joint-contracts":  ContractIcon,
@@ -236,6 +237,19 @@ function IntentIcon({ active, size = 16 }: NavIconProps) {
 }
 
 /** Two parties, one seam between them. */
+/** A case leaving one tenant box for another. */
+function CaseTransferIcon({ active, size = 16 }: NavIconProps) {
+  const c = active ? "var(--accent)" : "var(--text-muted)";
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <rect x="1.4" y="4.4" width="4.6" height="7.2" rx="1" stroke={c} strokeWidth="1.4" />
+      <rect x="10" y="4.4" width="4.6" height="7.2" rx="1" stroke={c} strokeWidth="1.4" />
+      <path d="M6.6 8h2.6M8 6.6 9.4 8 8 9.4" stroke={c} strokeWidth="1.4"
+            strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function ContractIcon({ active, size = 16 }: NavIconProps) {
   const c = active ? "var(--accent)" : "var(--text-muted)";
   return (

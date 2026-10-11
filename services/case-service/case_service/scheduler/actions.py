@@ -198,6 +198,18 @@ class CaseAction:
         case_type = await self._case_type(session, schedule, cfg)
         tenant_id = (str(case_type.tenant_id) if case_type.tenant_id is not None
                      else None)
+        if tenant_id is None and getattr(schedule, "tenant_id", None):
+            # A shared case type made the scheduled case tenantless — readable
+            # by every tenant — until 2026-09-30. The schedule knows its owner.
+            from velaris_shared.tenancy.identity import resolve_tenant
+            resolved = await resolve_tenant(session, str(schedule.tenant_id))
+            if resolved is not None:
+                tenant_id = str(resolved[0])
+        from case_service.rollouts import service as _rollouts
+        case_type, _rollout = await _rollouts.resolve_case_type(
+            session, case_type=case_type, tenant=tenant_id,
+            subject=_rollouts.subject_of((cfg.get("data") or {}).get("customer_id")),
+            data=dict(cfg.get("data") or {}))
         case = await repo.create_case_instance(session, data={
             "case_type_id": case_type.id,
             "case_type_version": case_type.version,
@@ -209,6 +221,8 @@ class CaseAction:
             "created_by": f"schedule:{schedule.name}"[:255],
             "tenant_id": tenant_id,
         })
+        await _rollouts.record(session, case_id=case.id, res=_rollout, tenant=tenant_id,
+                               via="schedule")
 
         # SLAs are the synchronous path's job and must start with the case,
         # scheduled or not — a case with no clock is the failure people notice a

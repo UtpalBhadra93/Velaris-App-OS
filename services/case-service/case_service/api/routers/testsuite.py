@@ -186,9 +186,11 @@ async def list_runs(
     _admin=Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
-    rows = (await session.execute(
-        select(TestRunModel).order_by(TestRunModel.started_at.desc()).limit(100)
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(TestRunModel).order_by(TestRunModel.started_at.desc()).limit(100),
+        TestRunModel, session, _admin))).scalars().all()
     return [{"id": str(r.id), "suite_name": r.suite_name, "status": r.status,
              "total": r.total, "passed": r.passed, "failed": r.failed,
              "skipped": r.skipped, "started_at": r.started_at.isoformat()} for r in rows]
@@ -242,7 +244,7 @@ async def run_stream(
 
 @router.get("/suites")
 async def list_suites(
-    _user: AuthenticatedUser = Depends(get_current_user),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
     builtin = list_builtin_suites()

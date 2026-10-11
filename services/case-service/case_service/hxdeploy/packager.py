@@ -611,13 +611,47 @@ async def build_delta_bundle(
 
 # ── Bundle applier ────────────────────────────────────────────────────────────
 
+async def _current_case_type(session: AsyncSession, same_name: list,
+                             tenant: str) -> Any:
+    """The row an immediate import replaces, when a name has several versions.
+
+    Before item 18a this was `scalar_one_or_none()`, which raised as soon as a
+    second version of a name existed — the case type was then reported as an
+    error and never updated. Now: the newest row, followed through any closed
+    rollout to the version new cases actually get.
+    """
+    if not same_name:
+        return None
+    if len(same_name) == 1:
+        return same_name[0]
+    from case_service.rollouts import service as _rollouts
+    res = await _rollouts.resolve(session, case_type_id=same_name[0].id, tenant=tenant,
+                                  subject=None)
+    return next((r for r in same_name if r.id == res.case_type_id), same_name[0])
+
+
+async def _rollout_open(session: AsyncSession, name: str, tenant: str) -> bool:
+    from case_service.rollouts import service as _rollouts
+    if not await _rollouts._table_ready(session):
+        return False
+    tenant_uuid = await _rollouts._tenant_uuid(session, tenant)
+    if tenant_uuid is None:
+        return False
+    return await _rollouts.open_for(session, tenant_uuid, "case_type", name) is not None
+
+
 async def apply_bundle(
     session: AsyncSession,
     bundle: dict,
     target_tenant_id: str,
     imported_by: str = "hxdeploy-import",
+    alongside: frozenset[str] | set[str] = frozenset(),
 ) -> dict:
     """Apply a received bundle to this Velaris instance.
+
+    `alongside` (Oct item 18a) names case types to install as a NEW version
+    beside the one already here, rather than over it — the candidate of a staged
+    rollout. Empty (the default) is the behaviour every earlier release had.
 
     Import order respects FK dependencies:
       DataModels → Calendars → AccessRoles → Portals → EmailTemplates
@@ -657,6 +691,43 @@ async def apply_bundle(
     ct_id_map:        dict[str, uuid.UUID] = {}
     stage_id_map:     dict[str, uuid.UUID] = {}
 
+    # 8i / 8e: whose rows this import may replace (case types, and since 8e
+    # data models, calendars, forms and rules). Before, `same_name` matched
+    # every tenant's rows, so one tenant's import overwrote another tenant's
+    # case type — or a default, for everybody. The default tenant (and a
+    # tenant-less target) keeps exactly the old reach over the defaults; any
+    # other tenant replaces only its own rows, and a default it imports over
+    # becomes its fork.
+    from case_service.case_types import ownership as _ownership
+    from velaris_shared.tenancy.identity import (
+        resolve_tenant as _resolve_owner, same_tenant_as_default as _is_default_tenant)
+    _owner_row = await _resolve_owner(session, target_tenant_id) if target_tenant_id else None
+    _owner_id = _owner_row[0] if _owner_row else None
+    _owner_is_platform = _owner_id is None or await _is_default_tenant(session, target_tenant_id)
+
+    async def _owned_match(model, **ident):
+        """The row this import replaces, for `model` (8e). The platform owner
+        reaches defaults and its own rows, as before; any other tenant only
+        its own — and a default it imports over becomes its fork."""
+        stmt = select(model)
+        for col, val in ident.items():
+            stmt = stmt.where(getattr(model, col) == val)
+        if _owner_is_platform:
+            rows = (await session.execute(stmt.where(or_(
+                model.tenant_id.is_(None), model.tenant_id == _owner_id)))).scalars().all()
+            return next((r for r in rows if r.tenant_id is not None), None) or \
+                next(iter(rows), None)
+        own = (await session.execute(stmt.where(model.tenant_id == _owner_id))).scalars().first()
+        if own is not None:
+            return own
+        default = (await session.execute(stmt.where(model.tenant_id.is_(None)))).scalars().first()
+        if default is None:
+            return None
+        from velaris_shared.tenancy import inherit as _inherit
+        return await _inherit.fork(session, model, default, _owner_id)
+
+    _new_owner = None if _owner_is_platform else _owner_id
+
     # ── helpers ──────────────────────────────────────────────────────────
     def _uuid(s: str | None) -> uuid.UUID | None:
         try:
@@ -693,19 +764,14 @@ async def apply_bundle(
     # ── 1. Data models ───────────────────────────────────────────────────
     for m in bundle.get("data_models", []):
         try:
-            ex = (await session.execute(
-                select(DataModelModel).where(
-                    DataModelModel.name == m["name"],
-                    DataModelModel.version == m["version"],
-                )
-            )).scalar_one_or_none()
+            ex = await _owned_match(DataModelModel, name=m["name"], version=m["version"])
             if ex:
                 ex.definition_json = m["definition_json"]
                 dm_id_map[m["id"]] = ex.id
                 skipped += 1
             else:
                 local_id = await _claim_id(DataModelModel, m.get("id"))
-                session.add(DataModelModel(id=local_id, name=m["name"], version=m["version"], definition_json=m["definition_json"]))
+                session.add(DataModelModel(id=local_id, tenant_id=_new_owner, name=m["name"], version=m["version"], definition_json=m["definition_json"]))
                 dm_id_map[m["id"]] = local_id
                 imported += 1
         except Exception as exc:
@@ -714,9 +780,7 @@ async def apply_bundle(
     # ── 2. Business calendars ─────────────────────────────────────────────
     for c in bundle.get("business_calendars", []):
         try:
-            ex = (await session.execute(
-                select(BusinessCalendarModel).where(BusinessCalendarModel.name == c["name"])
-            )).scalar_one_or_none()
+            ex = await _owned_match(BusinessCalendarModel, name=c["name"])
             if ex:
                 ex.timezone = c["timezone"]; ex.work_days = c["work_days"]
                 ex.work_start_hour = c["work_start_hour"]; ex.work_end_hour = c["work_end_hour"]
@@ -724,7 +788,8 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(BusinessCalendarModel(
-                    id=await _claim_id(BusinessCalendarModel, c.get("id")), name=c["name"], timezone=c["timezone"],
+                    id=await _claim_id(BusinessCalendarModel, c.get("id")), tenant_id=_new_owner,
+                    name=c["name"], timezone=c["timezone"],
                     work_days=c["work_days"], work_start_hour=c["work_start_hour"],
                     work_end_hour=c["work_end_hour"], holidays=c["holidays"],
                     description=c.get("description", ""),
@@ -879,6 +944,13 @@ async def apply_bundle(
 
     # ── 8. Process definitions ─────────────────────────────────────────────
     for p in bundle.get("process_definitions", []):
+        # Oct 8b: an unsafe scriptTask is refused here as at upload.
+        from case_service.hxfusion.script_guard import check_bpmn
+        refused = check_bpmn(p.get("bpmn_xml") or "")
+        if refused:
+            errors.append(f"process_def {p.get('name')}: unsafe script refused: "
+                          + "; ".join(f"{r['node_id']}: {r['reason']}" for r in refused))
+            continue
         try:
             ex = (await session.execute(
                 select(ProcessDefinitionModel).where(
@@ -904,12 +976,7 @@ async def apply_bundle(
     # ── 9. Form definitions ────────────────────────────────────────────────
     for f in bundle.get("form_definitions", []):
         try:
-            ex = (await session.execute(
-                select(FormDefinitionModel).where(
-                    FormDefinitionModel.name == f["name"],
-                    FormDefinitionModel.version == f["version"],
-                )
-            )).scalar_one_or_none()
+            ex = await _owned_match(FormDefinitionModel, name=f["name"], version=f["version"])
             local_dm_id = dm_id_map.get(f.get("data_model_id", "") or "")
             if ex:
                 ex.definition_json = f["definition_json"]
@@ -918,7 +985,8 @@ async def apply_bundle(
                 skipped += 1
             else:
                 session.add(FormDefinitionModel(
-                    id=await _claim_id(FormDefinitionModel, f.get("id")), name=f["name"], version=f["version"],
+                    id=await _claim_id(FormDefinitionModel, f.get("id")), tenant_id=_new_owner,
+                    name=f["name"], version=f["version"],
                     data_model_id=local_dm_id, definition_json=f["definition_json"],
                 ))
                 imported += 1
@@ -928,19 +996,15 @@ async def apply_bundle(
     # ── 10. Rule definitions ───────────────────────────────────────────────
     for r in bundle.get("rule_definitions", []):
         try:
-            ex = (await session.execute(
-                select(RuleDefinitionModel).where(
-                    RuleDefinitionModel.name == r["name"],
-                    RuleDefinitionModel.version == r["version"],
-                )
-            )).scalar_one_or_none()
+            ex = await _owned_match(RuleDefinitionModel, name=r["name"], version=r["version"])
             if ex:
                 ex.definition_json = r["definition_json"]; ex.enabled = r.get("enabled", True)
                 ex.priority = r.get("priority", 0)
                 skipped += 1
             else:
                 session.add(RuleDefinitionModel(
-                    id=await _claim_id(RuleDefinitionModel, r.get("id")), name=r["name"], version=r["version"],
+                    id=await _claim_id(RuleDefinitionModel, r.get("id")), tenant_id=_new_owner,
+                    name=r["name"], version=r["version"],
                     rule_type=r["rule_type"], scope=r.get("scope", "global"),
                     scope_target_id=r.get("scope_target_id"), definition_json=r["definition_json"],
                     enabled=r.get("enabled", True), priority=r.get("priority", 0),
@@ -952,13 +1016,63 @@ async def apply_bundle(
     await session.flush()
 
     # ── 11. Case types ─────────────────────────────────────────────────────
+    installed_alongside: dict[str, str] = {}
     for ct in bundle.get("case_types", []):
         try:
-            ex = (await session.execute(
+            same_name = list((await session.execute(
                 select(CaseTypeModel).where(
                     CaseTypeModel.name == ct["name"], CaseTypeModel.is_deleted.is_(False),
-                )
-            )).scalar_one_or_none()
+                    or_(CaseTypeModel.tenant_id.is_(None), CaseTypeModel.tenant_id == _owner_id),
+                ).order_by(CaseTypeModel.created_at.desc())
+            )).scalars().all())
+            if not _owner_is_platform and ct["name"] not in alongside:
+                # A staged candidate may sit beside a default baseline (18a),
+                # so only a REPLACING import is narrowed to the tenant's rows.
+                own = [r for r in same_name if r.tenant_id is not None]
+                if not own and same_name:
+                    base = next((r for r in same_name if r.version == ct["version"]), None) \
+                        or await _current_case_type(session, same_name, target_tenant_id)
+                    own = [await _ownership.fork(session, base, _owner_id)]
+                same_name = own
+            if ct["name"] in alongside and same_name:
+                # A staged candidate: a NEW row beside the baseline, never over it.
+                if any(r.version == ct["version"] for r in same_name):
+                    errors.append(
+                        f"case_type {ct['name']}: version {ct['version']} is already "
+                        f"installed here; a staged rollout needs a new version number")
+                    continue
+                local_id = await _claim_id(CaseTypeModel, ct.get("id"))
+                # Limitation 13: the candidate belongs to the tenant that staged
+                # it. A NULL tenant would put a not-yet-approved version in every
+                # tenant's case type list.
+                from case_service.tenancy.identity import resolve_tenant as _rt
+                _owner = await _rt(session, target_tenant_id)
+                session.add(CaseTypeModel(
+                    id=local_id, name=ct["name"], version=ct["version"],
+                    tenant_id=_owner[0] if _owner else None,
+                    description=ct.get("description", ""), icon=ct.get("icon"),
+                    color=ct.get("color"), tags=ct.get("tags", []),
+                    default_priority=ct.get("default_priority", "medium"),
+                    portal_enabled=ct.get("portal_enabled", False),
+                    definition_json=ct["definition_json"],
+                ))
+                ct_id_map[ct["id"]] = local_id
+                installed_alongside[ct["name"]] = str(local_id)
+                imported += 1
+                continue
+            # The same version, when it is here, is the one being re-imported;
+            # otherwise the current one. (Writing the bundle's version onto a
+            # DIFFERENT row would collide with the row that already has it.)
+            ex = next((r for r in same_name if r.version == ct["version"]), None) \
+                or await _current_case_type(session, same_name, target_tenant_id)
+            if ex is not None and await _rollout_open(session, ct["name"], target_tenant_id):
+                # Overwriting the baseline in place under a running rollout
+                # would change what the "baseline" arm means half way through.
+                errors.append(
+                    f"case_type {ct['name']}: a staged rollout is open for it here; "
+                    f"promote or roll it back before replacing it")
+                ct_id_map[ct["id"]] = ex.id
+                continue
             if ex:
                 ex.version = ct["version"]; ex.description = ct.get("description", "")
                 ex.icon = ct.get("icon"); ex.color = ct.get("color")
@@ -971,6 +1085,7 @@ async def apply_bundle(
                 local_id = uuid.uuid4()
                 session.add(CaseTypeModel(
                     id=local_id, name=ct["name"], version=ct["version"],
+                    tenant_id=None if _owner_is_platform else _owner_id,
                     description=ct.get("description", ""), icon=ct.get("icon"),
                     color=ct.get("color"), tags=ct.get("tags", []),
                     default_priority=ct.get("default_priority", "medium"),
@@ -1362,5 +1477,7 @@ async def apply_bundle(
         "errors": errors[:20],
         "needs_configuration": needs_configuration,
     }
+    if installed_alongside:
+        result["installed_alongside"] = installed_alongside
     logger.info("bundle applied: %s", {k: v for k, v in result.items() if k != "needs_configuration"})
     return result

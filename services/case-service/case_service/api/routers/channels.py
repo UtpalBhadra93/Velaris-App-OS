@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.tenancy.identity import tenant_for_write
 from case_service.channels import optout, service, signatures
 from velaris_shared.core.error_codes import (
     CHANNEL_NOTFOUND_404,
@@ -631,9 +632,11 @@ async def list_endpoints(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("channels.endpoints.read")),
 ):
-    rows = (await session.execute(
-        select(ChannelEndpointModel).order_by(ChannelEndpointModel.address)
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(ChannelEndpointModel).order_by(ChannelEndpointModel.address),
+        ChannelEndpointModel, session, _user))).scalars().all()
     return {"endpoints": [_endpoint_dict(e) for e in rows]}
 
 
@@ -659,6 +662,12 @@ async def create_endpoint(
             400, "A signing secret is required: it is the only authentication "
                  "the inbound webhook has.")
 
+    # An endpoint's tenant owns every conversation and case its inbound
+    # messages create. Stored as sent until 2026-09-30.
+    try:
+        body.tenant_id = await tenant_for_write(session, user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     row = ChannelEndpointModel(
         tenant_id=body.tenant_id, channel=body.channel, provider=body.provider,
         address=body.address,
@@ -717,6 +726,9 @@ async def list_templates(
     stmt = select(WhatsAppTemplateModel)
     if endpoint_id:
         stmt = stmt.where(WhatsAppTemplateModel.endpoint_id == endpoint_id)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, WhatsAppTemplateModel, session, _user)
     rows = (await session.execute(stmt.order_by(WhatsAppTemplateModel.name))).scalars().all()
     return {"templates": [{
         "id": str(t.id), "endpoint_id": str(t.endpoint_id), "name": t.name,
@@ -763,6 +775,12 @@ async def opt_out_status(
     Read from the consent ledger rather than a private list, so what an agent
     sees here is the same record a subject-access request would return.
     """
+    # The caller's own ledger. Until 2026-09-29 (8d) the caller named any
+    # tenant's — or none, which read every tenant's at once.
+    from case_service.tenancy.identity import is_superadmin
+
+    if not is_superadmin(_user):
+        tenant_id = getattr(_user, "tenant_id", None) or "default"
     allowed = await optout.may_send(session, address, tenant_id=tenant_id)
     return {"address": address, "may_send": allowed,
             "purpose": optout.PURPOSE,

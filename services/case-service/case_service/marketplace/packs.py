@@ -66,6 +66,9 @@ FORBIDDEN_SECTIONS = {
 }
 
 _MAX_SECTION_BYTES = 8 * 1024 * 1024
+#: Oct item 5 — a pack's rep-desk rails. Not a bundle section: apply_bundle
+#: never sees it; `engage.rail_config` validates and stores it.
+RAILS_FILE = "engage_rails.json"
 _MAX_SAMPLE_CASES = 200
 
 
@@ -87,6 +90,7 @@ def read_pack(hxapp_bytes: bytes) -> dict[str, Any]:
     """
     meta: dict[str, Any] = {}
     bundle: dict[str, Any] = {}
+    rails: list[dict[str, Any]] = []
     try:
         with zipfile.ZipFile(io.BytesIO(hxapp_bytes)) as zf:
             names = set(zf.namelist())
@@ -123,14 +127,34 @@ def read_pack(hxapp_bytes: bytes) -> dict[str, Any]:
                 if not isinstance(parsed, list):
                     raise PackError(f"{fname} must be a JSON array")
                 bundle[section] = parsed
+
+            # Oct item 5: industry action rails for the rep desk. Configuration,
+            # validated to the same closed vocabulary a tenant edit is — a pack
+            # can order and word the rail's actions and RAISE a tier, never add an
+            # action or lower one. Kept out of `bundle`: apply_bundle has no
+            # business with it.
+            if RAILS_FILE in names:
+                if zf.getinfo(RAILS_FILE).file_size > _MAX_SECTION_BYTES:
+                    raise PackError(f"{RAILS_FILE} exceeds the section limit")
+                try:
+                    raw_rails = json.loads(zf.read(RAILS_FILE))
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise PackError(f"{RAILS_FILE} is not valid JSON: {exc}")
+                from case_service.engage import rail_config
+
+                try:
+                    rails = rail_config.validate_many(raw_rails)
+                except rail_config.RailError as exc:
+                    raise PackError(f"{RAILS_FILE}: {exc}") from exc
     except zipfile.BadZipFile:
         raise PackError("pack is not a valid .hxapp archive")
 
-    if not bundle:
+    if not bundle and not rails:
         raise PackError("pack contains no provisionable content")
 
-    _validate_expressions(bundle)
-    return {"meta": meta, "bundle": bundle}
+    if bundle:
+        _validate_expressions(bundle)
+    return {"meta": meta, "bundle": bundle, "rails": rails}
 
 
 # Rule types whose `expression` must satisfy the strict HxSandbox grammar.
@@ -169,6 +193,19 @@ def _validate_expressions(bundle: dict[str, Any]) -> None:
             + "; ".join(offenders[:5])
         )
 
+    # Oct 8b: a process's scriptTask is code in the same sense. apply_bundle
+    # skips such a process on its own; a pack is refused whole instead.
+    from case_service.hxfusion.script_guard import check_bpmn
+
+    for proc in bundle.get("process_definitions") or []:
+        for r in check_bpmn(proc.get("bpmn_xml") or ""):
+            offenders.append(f"{proc.get('name') or proc.get('id')}/{r['node_id']}: {r['reason']}")
+    if offenders:
+        raise PackError(
+            "Pack contains process scripts rejected by the safe-script check — "
+            + "; ".join(offenders[:5])
+        )
+
 
 def preview(pack: dict[str, Any]) -> dict[str, Any]:
     """What provisioning WOULD create, without touching anything.
@@ -181,6 +218,8 @@ def preview(pack: dict[str, Any]) -> dict[str, Any]:
     meta = pack.get("meta") or {}
     bundle = pack.get("bundle") or {}
     contents = {s: len(bundle.get(s) or []) for s in PACK_SECTIONS if bundle.get(s)}
+    if pack.get("rails"):
+        contents["engage_rails"] = len(pack["rails"])
     return {
         "name": meta.get("name"),
         "vertical": meta.get("vertical"),
@@ -244,7 +283,14 @@ async def provision(session: AsyncSession, *, tenant_id: str, package_id: str,
     # apply_bundle enforces its own schema-skew guard (#14); a pack declares v1.
     bundle.setdefault("bundle_schema_version", str(meta.get("bundle_schema_version", "1")))
 
-    result = await apply_bundle(session, bundle, tenant_id)
+    has_sections = any(bundle.get(s) for s in PACK_SECTIONS)
+    result = (await apply_bundle(session, bundle, tenant_id) if has_sections
+              else {"imported": 0, "skipped": 0, "errors": [], "needs_configuration": []})
+    rails_result = await _write_rails(session, tenant_id=tenant_id, package_id=package_id,
+                                      meta=meta, rails=pack.get("rails") or [])
+    if rails_result:
+        result = {**result, "imported": int(result.get("imported", 0))
+                  + len(rails_result["created"]) + len(rails_result["updated"])}
 
     sample_count = 0
     if with_sample_data:
@@ -304,8 +350,30 @@ async def provision(session: AsyncSession, *, tenant_id: str, package_id: str,
         "errors": errors,
         "needs_configuration": row.needs_config,
         "sample_cases": sample_count,
+        "rails": rails_result,
         "provisioned_at": row.provisioned_at.isoformat() if row.provisioned_at else None,
     }
+
+
+async def _write_rails(session: AsyncSession, *, tenant_id: str, package_id: str,
+                       meta: dict, rails: list) -> dict[str, Any] | None:
+    """Store a pack's rep-desk rails for this tenant (Oct item 5).
+
+    The pack paths carry the tenant as its TOKEN; the rail table is keyed by the
+    tenant's id, so it is resolved here — and refused if it does not resolve,
+    rather than written against nobody.
+    """
+    if not rails:
+        return None
+    from case_service.engage import rail_config
+    from case_service.tenancy.identity import resolve_tenant
+
+    resolved = await resolve_tenant(session, str(tenant_id))
+    if resolved is None:
+        raise PackError(f"tenant '{tenant_id}' does not resolve; rails not written")
+    return await rail_config.upsert_from_pack(
+        session, tenant_uuid=resolved[0], package_id=package_id,
+        version=str(meta.get("version", "0.0.0")), rails=rails)
 
 
 async def _provision_sample_data(session: AsyncSession, *, tenant_id: str,
@@ -580,6 +648,9 @@ async def upgrade(session: AsyncSession, *, tenant_id: str, package_id: str,
         filtered.setdefault("bundle_schema_version",
                             str(meta.get("bundle_schema_version", "1")))
         result = await apply_bundle(session, filtered, tenant_id)
+    # Rails merge the same way: a rail the tenant edited is kept and reported.
+    rails_result = await _write_rails(session, tenant_id=tenant_id, package_id=package_id,
+                                      meta=meta, rails=pack.get("rails") or [])
 
     errors = list(result.get("errors") or [])
     session.add(MarketplacePackUpgradeModel(
@@ -616,6 +687,7 @@ async def upgrade(session: AsyncSession, *, tenant_id: str, package_id: str,
         "package_id": package_id, "from_version": from_version, "to_version": to_version,
         "applied": int(result.get("imported", 0)),
         "conflicts": plan["conflicts"], "kept_tenant_edits": plan["skipped"],
+        "rails": rails_result,
         "errors": errors,
         "status": "failed" if errors else "applied",
     }
@@ -682,13 +754,25 @@ async def fork(session: AsyncSession, *, tenant_id: str, package_id: str,
     } for r in rls]
 
     bundle = {k: v for k, v in bundle.items() if v}
-    if not bundle:
+
+    # The pack's rep-desk rails, as this tenant has them now (edits included).
+    from velaris_shared.db.models import EngageRailConfigModel
+    from case_service.tenancy.identity import resolve_tenant
+
+    rails: list[dict] = []
+    resolved = await resolve_tenant(session, str(tenant_id))
+    if resolved is not None:
+        rails = [r.config for r in (await session.execute(select(EngageRailConfigModel).where(
+            EngageRailConfigModel.tenant_id == resolved[0],
+            EngageRailConfigModel.package_id == package_id))).scalars().all()]
+    if not bundle and not rails:
         raise PackError("nothing to fork — the pack's artifacts are no longer present")
 
     # A fork must clear the same bar as any other pack. Catching a
     # non-CONFORMING expression here means the author is told at fork time,
     # not when a customer tries to install what they published.
-    _validate_expressions(bundle)
+    if bundle:
+        _validate_expressions(bundle)
 
     return {
         "meta": {
@@ -698,6 +782,7 @@ async def fork(session: AsyncSession, *, tenant_id: str, package_id: str,
             "forked_from": {"package_id": package_id, "version": install.pack_version},
         },
         "bundle": bundle,
+        "rails": rails,
     }
 
 
@@ -720,4 +805,6 @@ def fork_to_hxapp(forked: dict[str, Any]) -> bytes:
         zf.writestr("pack.json", json.dumps(meta, indent=2))
         for section, items in (forked.get("bundle") or {}).items():
             zf.writestr(f"{section}.json", json.dumps(items, indent=2, default=str))
+        if forked.get("rails"):
+            zf.writestr(RAILS_FILE, json.dumps(forked["rails"], indent=2))
     return buf.getvalue()

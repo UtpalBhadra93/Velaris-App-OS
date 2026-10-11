@@ -17,14 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared.db.models import MigrationScanModel
 from velaris_shared import hxguard
-from velaris_shared.auth.dependencies import require_role
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.tenancy.identity import caller_tenant_uuid, scope_to_caller
+from velaris_shared.tenancy.row_guard import owned_rows
 from velaris_shared.db.session import get_session
 from hxmigrate_service.scout import scanner
 from hxmigrate_service.scout.migration_planner import build_migration_plan
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/scout", tags=["scout"], dependencies=[Depends(hxguard.guard("platform.scout.access"))])
+# 8e (2026-10-01): scans are their tenant's — 404 by id elsewhere, scoped lists.
+router = APIRouter(prefix="/scout", tags=["scout"], dependencies=[
+    Depends(hxguard.guard("platform.scout.access")),
+    Depends(owned_rows({"scan_id": MigrationScanModel})),
+])
 
 
 class ScanRequest(BaseModel):
@@ -61,6 +68,7 @@ async def list_supported_platforms():
 async def scan_content(
     body: ScanRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Scan source platform content and save the analysis."""
     # Run scan
@@ -79,6 +87,7 @@ async def scan_content(
         scan_report=result.to_dict(),
         error_message="; ".join(result.errors) if result.errors else None,
         completed_at=datetime.now(timezone.utc),
+        tenant_id=await caller_tenant_uuid(session, user),
     )
     session.add(model)
     await session.flush()
@@ -102,6 +111,7 @@ async def scan_file_upload(
     source_platform: str = Query(""),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Upload a file for scanning."""
     raw = await file.read()
@@ -125,6 +135,7 @@ async def scan_file_upload(
         scan_report=result.to_dict(),
         error_message="; ".join(result.errors) if result.errors else None,
         completed_at=datetime.now(timezone.utc),
+        tenant_id=await caller_tenant_uuid(session, user),
     )
     session.add(model)
     await session.flush()
@@ -145,9 +156,11 @@ async def scan_file_upload(
 @router.get("/scans")
 async def list_scans(
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """List all migration scans."""
     stmt = select(MigrationScanModel).order_by(MigrationScanModel.created_at.desc())
+    stmt = await scope_to_caller(stmt, MigrationScanModel, session, user)
     result = await session.execute(stmt)
     return [
         {

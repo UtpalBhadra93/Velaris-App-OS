@@ -32,6 +32,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.types import CHAR, TypeEngine
 from sqlalchemy.dialects import mysql  # dialect-specific variants for index-key limits (DB SDK)
+from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -125,6 +126,25 @@ class PortableArray(TypeDecorator):
         return value
 
 
+class PortableIntArray(PortableArray):
+    """PostgreSQL INT[], JSON list elsewhere.
+
+    `business_calendars.work_days` is `INT[]` on PostgreSQL (migration 002) and
+    JSON on MySQL/MariaDB. It was mapped as PortableJSON, which binds JSONB, so
+    every calendar INSERT on PostgreSQL failed — creating one, and 8e's fork of a
+    default on a tenant's first edit. Found live 2026-10-02.
+    """
+
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect) -> TypeEngine:
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import ARRAY
+            return dialect.type_descriptor(ARRAY(Integer))
+        from sqlalchemy import JSON
+        return dialect.type_descriptor(JSON())
+
+
 class MicroDateTime(TypeDecorator):
     """Timezone-aware timestamp that keeps MICROSECOND precision on every backend.
 
@@ -163,9 +183,19 @@ class Base(DeclarativeBase):
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def case_type_tenant_key(tenant_id: Any) -> str:
+    """`case_types.tenant_key` for a tenant id; 'platform' for a default."""
+    return str(tenant_id) if tenant_id else "platform"
+
+
 class CaseTypeModel(Base):
     __tablename__ = "case_types"
-    __table_args__ = (UniqueConstraint("name", "version"),)
+    # Unique per tenant since migration 212 (Oct 8i); was (name, version)
+    # across the whole install.
+    __table_args__ = (
+        UniqueConstraint("tenant_key", "name", "version",
+                         name="ux_case_types_tenant_name_version"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         GUID(), primary_key=True, default=_new_uuid
@@ -173,6 +203,20 @@ class CaseTypeModel(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("tenants.id"), nullable=True, index=True
     )
+    #: `tenant_id` as text, or 'platform' for a default (NULL tenant) — NULL <>
+    #: NULL, so a UNIQUE over the nullable column would not constrain defaults.
+    #: Kept in step with `tenant_id` by the default below and the `set` listener
+    #: after this class; never written by hand.
+    tenant_key: Mapped[str] = mapped_column(
+        String(36), nullable=False,
+        default=lambda ctx: case_type_tenant_key(
+            ctx.get_current_parameters().get("tenant_id")),
+    )
+    #: A tenant's copy-on-write fork of a default records where it came from
+    #: and when, so a newer default is offered, never applied over its edits.
+    forked_from_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    forked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     lifecycle_process_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -229,6 +273,14 @@ class CaseTypeModel(Base):
     stages: Mapped[list[CaseTypeStageModel]] = relationship(
         back_populates="case_type", cascade="all, delete-orphan"
     )
+
+
+@event.listens_for(CaseTypeModel.tenant_id, "set")
+def _case_type_tenant_key_follows(target, value, _old, _initiator):
+    # An ORM write that changes the owner (a backfill, a tenant transfer) moves
+    # the uniqueness key with it. A Core UPDATE of `tenant_id` must set
+    # `tenant_key` itself.
+    target.tenant_key = case_type_tenant_key(value)
 
 
 class CaseTypeStageModel(Base):
@@ -626,11 +678,29 @@ class WorkQueueModel(Base):
 
 class DataModelModel(Base):
     __tablename__ = "data_models"
-    __table_args__ = (UniqueConstraint("name", "version"),)
+    __table_args__ = (UniqueConstraint("tenant_key", "name", "version", name="ux_data_models_tenant_key"),)  # 8e, mig 214
 
     id: Mapped[uuid.UUID] = mapped_column(
         GUID(), primary_key=True, default=_new_uuid
     )
+
+    # 8e (mig 214): NULL tenant = a default every tenant reads; a tenant's
+
+    # edit of a default is its fork (`forked_from_id`). See tenancy/inherit.py.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tenant_key: Mapped[str] = mapped_column(
+
+        String(36), nullable=False,
+
+        default=lambda ctx: case_type_tenant_key(ctx.get_current_parameters().get("tenant_id")))
+
+    forked_from_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    forked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     definition_json: Mapped[dict] = mapped_column(PortableJSON(), nullable=False)
@@ -644,11 +714,29 @@ class DataModelModel(Base):
 
 class FormDefinitionModel(Base):
     __tablename__ = "form_definitions"
-    __table_args__ = (UniqueConstraint("name", "version"),)
+    __table_args__ = (UniqueConstraint("tenant_key", "name", "version", name="ux_form_definitions_tenant_key"),)  # 8e, mig 214
 
     id: Mapped[uuid.UUID] = mapped_column(
         GUID(), primary_key=True, default=_new_uuid
     )
+
+    # 8e (mig 214): NULL tenant = a default every tenant reads; a tenant's
+
+    # edit of a default is its fork (`forked_from_id`). See tenancy/inherit.py.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tenant_key: Mapped[str] = mapped_column(
+
+        String(36), nullable=False,
+
+        default=lambda ctx: case_type_tenant_key(ctx.get_current_parameters().get("tenant_id")))
+
+    forked_from_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    forked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     data_model_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -667,11 +755,29 @@ class FormDefinitionModel(Base):
 
 class RuleDefinitionModel(Base):
     __tablename__ = "rule_definitions"
-    __table_args__ = (UniqueConstraint("name", "version"),)
+    __table_args__ = (UniqueConstraint("tenant_key", "name", "version", name="ux_rule_definitions_tenant_key"),)  # 8e, mig 214
 
     id: Mapped[uuid.UUID] = mapped_column(
         GUID(), primary_key=True, default=_new_uuid
     )
+
+    # 8e (mig 214): NULL tenant = a default every tenant reads; a tenant's
+
+    # edit of a default is its fork (`forked_from_id`). See tenancy/inherit.py.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tenant_key: Mapped[str] = mapped_column(
+
+        String(36), nullable=False,
+
+        default=lambda ctx: case_type_tenant_key(ctx.get_current_parameters().get("tenant_id")))
+
+    forked_from_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    forked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     rule_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -693,13 +799,32 @@ class RuleDefinitionModel(Base):
 class BusinessCalendarModel(Base):
     """Business calendar for SLA calculations (Phase 8)."""
     __tablename__ = "business_calendars"
+    __table_args__ = (UniqueConstraint("tenant_key", "name", name="ux_business_calendars_tenant_key"),)  # 8e, mig 214
 
     id: Mapped[uuid.UUID] = mapped_column(
         GUID(), primary_key=True, default=_new_uuid
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+
+    # 8e (mig 214): NULL tenant = a default every tenant reads; a tenant's
+
+    # edit of a default is its fork (`forked_from_id`). See tenancy/inherit.py.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
+
+    tenant_key: Mapped[str] = mapped_column(
+
+        String(36), nullable=False,
+
+        default=lambda ctx: case_type_tenant_key(ctx.get_current_parameters().get("tenant_id")))
+
+    forked_from_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+
+    forked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)  # unique per tenant since 8e (mig 214)
     timezone: Mapped[str] = mapped_column(String(100), default="UTC")
-    work_days: Mapped[list] = mapped_column(PortableJSON(), default=lambda: [1,2,3,4,5])
+    work_days: Mapped[list] = mapped_column(PortableIntArray(), default=lambda: [1,2,3,4,5])  # INT[] on PG
     work_start_hour: Mapped[int] = mapped_column(Integer, default=9)
     work_end_hour: Mapped[int] = mapped_column(Integer, default=17)
     holidays: Mapped[list] = mapped_column(PortableJSON(), default=list)
@@ -785,6 +910,12 @@ class MigrationScanModel(Base):
     __tablename__ = "migration_scans"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_platform: Mapped[str] = mapped_column(String(50), nullable=False)
     source_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -979,6 +1110,12 @@ class GDPRRequestModel(Base):
     __tablename__ = "gdpr_requests"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     subject_id: Mapped[str] = mapped_column(String(255), nullable=False)
     request_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="pending")
@@ -994,6 +1131,12 @@ class MigrationProjectModel(Base):
     __tablename__ = "migration_projects"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
     scan_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -1687,6 +1830,12 @@ class NotificationLogModel(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     device_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -1763,6 +1912,13 @@ class DocumentIndexJobModel(Base):
     #: Who asked. The runner acts on their behalf, so "why was this document
     #: read" has an answer on the row that caused it.
     requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: Mig 206 — a background UPLOAD has no document row to read back, so its
+    #: bytes wait under this storage key until the drain indexes them, and are
+    #: deleted once the job ends. NULL for every job queued from stored documents.
+    staged_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    staged_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    staged_content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(MicroDateTime(), nullable=True)
@@ -2122,6 +2278,12 @@ class AppPackageModel(Base):
     )
 
     id:          Mapped[uuid.UUID]     = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     name:        Mapped[str]           = mapped_column(String(255), nullable=False)
     version:     Mapped[str]           = mapped_column(String(50),  nullable=False)
     description: Mapped[str | None]    = mapped_column(Text, nullable=True)
@@ -2175,6 +2337,12 @@ class ImportJobModel(Base):
     )
 
     id:           Mapped[uuid.UUID]     = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     tool:         Mapped[str]           = mapped_column(String(50),  nullable=False)
     filename:     Mapped[str]           = mapped_column(String(500), nullable=False)
     status:       Mapped[str]           = mapped_column(String(30),  nullable=False, default="pending")
@@ -3441,6 +3609,12 @@ class ComponentCommitModel(Base):
     )
 
     id:              Mapped[uuid.UUID]    = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     component_type:  Mapped[str]          = mapped_column(String(64), nullable=False)
     component_id:    Mapped[str]          = mapped_column(String(255), nullable=False)
     component_name:  Mapped[str]          = mapped_column(Text, nullable=False, default="")
@@ -3646,6 +3820,12 @@ class ArtifactBranchModel(Base):
     )
 
     id:                    Mapped[uuid.UUID]      = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+
+    #: Owning tenant (8e, migration 213). Existing rows are the default tenant's.
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+
+        GUID(), ForeignKey("tenants.id"), nullable=True, index=True)
     name:                  Mapped[str]            = mapped_column(Text, nullable=False)
     description:           Mapped[str | None]     = mapped_column(Text, nullable=True)
     branch_type:           Mapped[str]            = mapped_column(String(20),  nullable=False, default="artifact")
@@ -9170,6 +9350,121 @@ class CustomerInteractionModel(Base):
     status:        Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     outcome:       Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    #: mig 207. How this row came to be when it is the receiving half of a
+    #: handoff: transfer | warm | cold. NULL for an ordinary contact.
+    handoff_kind:  Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+
+class CustomerInteractionJoinModel(Base):
+    """A join link for the next rep on a live contact (mig 207, Oct item 1).
+
+    Only the token's SHA-256 is stored — the link is a credential. Single-use
+    (`redeemed_at`), short-lived (`expires_at`), revocable, bound to the tenant
+    and to a named rep or a queue.
+    """
+    __tablename__ = "customer_interaction_joins"
+    __table_args__ = (
+        Index("ix_cij_interaction", "interaction_id", "created_at"),
+        Index("ix_cij_tenant", "tenant_id", "created_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:      Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("customer_interactions.id", ondelete="CASCADE"), nullable=False)
+    token_hash:     Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: warm | cold
+    mode:           Mapped[str] = mapped_column(String(8), nullable=False)
+    for_user_id:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    for_queue:      Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by:     Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at:     Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    expires_at:     Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    redeemed_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    joined_interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_interactions.id", ondelete="SET NULL"), nullable=True)
+    revoked_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class CustomerBackfillRunModel(Base):
+    """One operator-started backfill scan (mig 208, Oct item 3)."""
+    __tablename__ = "customer_backfill_runs"
+    __table_args__ = (Index("ix_cbr_tenant", "tenant_id", "started_at"),)
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    started_by:  Mapped[str] = mapped_column(String(255), nullable=False)
+    started_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    counts:      Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+
+
+class CustomerBackfillProposalModel(Base):
+    """A proposed profile, enrichment or merge — accepted or rejected by a person.
+
+    Nothing here is ever applied by the scan itself (design §11). `fingerprint`
+    is stable across runs, so a re-run refreshes pending proposals and never
+    re-proposes a rejected one.
+    """
+    __tablename__ = "customer_backfill_proposals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "fingerprint", name="uq_cbp_fingerprint"),
+        Index("ix_cbp_tenant_status", "tenant_id", "status", "kind"),
+    )
+
+    id:          Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    run_id:      Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("customer_backfill_runs.id", ondelete="SET NULL"), nullable=True)
+    #: create_profile | enrich_profile | merge_profiles
+    kind:        Mapped[str] = mapped_column(String(16), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload:     Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    evidence:    Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    #: proposed | accepted | rejected | superseded
+    status:      Mapped[str] = mapped_column(String(16), nullable=False, default="proposed")
+    created_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    decided_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason:      Mapped[str | None] = mapped_column(Text, nullable=True)
+    result:      Mapped[dict | None] = mapped_column(PortableJSON(), nullable=True)
+
+
+class EngageRailConfigModel(Base):
+    """An industry action rail for the rep desk (mig 209, Oct item 5).
+
+    Orders, hides and relabels the rail's actions, with guidance and closed
+    defaults; may raise a tier, never lower one. `edited_at` marks a pack rail
+    the tenant changed — a pack upgrade keeps it.
+    """
+    __tablename__ = "engage_rail_configs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "rail_key", name="uq_erc_key"),
+        Index("ix_erc_tenant", "tenant_id", "enabled"),
+    )
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    rail_key:     Mapped[str] = mapped_column(String(64), nullable=False)
+    name:         Mapped[str] = mapped_column(String(120), nullable=False)
+    industry:     Mapped[str] = mapped_column(String(60), nullable=False, default="general")
+    #: pack | tenant
+    source:       Mapped[str] = mapped_column(String(8), nullable=False)
+    package_id:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pack_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    config:       Mapped[dict] = mapped_column(PortableJSON(), nullable=False, default=dict)
+    enabled:      Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    edited_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    edited_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 
 
 class CaseTenantTransferModel(Base):
@@ -9511,3 +9806,195 @@ class ShieldResponseModel(Base):
 
     created_at:  Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
 # <<< 201
+
+
+class ContentRolloutModel(Base):
+    """A staged rollout of a new content version (mig 210, Oct item 18a).
+
+    Chooses the case type version for NEW cases only; a case keeps the one it
+    was created on. `open_key` is set while open and NULL once closed — its
+    UNIQUE index is the one-open-rollout-per-name lock, on every dialect.
+    """
+    __tablename__ = "content_rollouts"
+    __table_args__ = (
+        UniqueConstraint("open_key", name="uq_cr_open"),
+        Index("ix_cr_baseline", "tenant_id", "baseline_id"),
+        Index("ix_cr_candidate", "tenant_id", "candidate_id"),
+        Index("ix_cr_state", "tenant_id", "state"),
+    )
+
+    id:            Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    tenant_id:     Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    artifact_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    artifact_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    baseline_id:   Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    candidate_id:  Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: immediate | flag | percentage | blue_green
+    strategy:      Mapped[str] = mapped_column(String(20), nullable=False)
+    percent:       Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: requested | dormant | rolling | promoted | rolled_back | superseded
+    state:         Mapped[str] = mapped_column(String(20), nullable=False)
+    open_key:      Mapped[str | None] = mapped_column(String(400), nullable=True)
+    source:        Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    request:       Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    requested_by:  Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    closed_by:     Mapped[str | None] = mapped_column(String(255), nullable=True)
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    note:          Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    updated_at:    Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    approved_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ContentRolloutEventModel(Base):
+    """Every state and percent change on a rollout (mig 210)."""
+    __tablename__ = "content_rollout_events"
+    __table_args__ = (Index("ix_cre_rollout", "rollout_id", "at"),)
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    rollout_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("content_rollouts.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    action:       Mapped[str] = mapped_column(String(30), nullable=False)
+    from_state:   Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_state:     Mapped[str | None] = mapped_column(String(20), nullable=True)
+    from_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_percent:   Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor:        Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reason:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    at:           Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ContentRolloutCaseModel(Base):
+    """Which arm a new case landed in (mig 210)."""
+    __tablename__ = "content_rollout_cases"
+    __table_args__ = (Index("ix_crc_rollout", "rollout_id", "arm"),)
+
+    case_id:    Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), primary_key=True)
+    rollout_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("content_rollouts.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:  Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: baseline | candidate
+    arm:        Mapped[str] = mapped_column(String(10), nullable=False)
+    bucket:     Mapped[int] = mapped_column(Integer, nullable=False)
+    #: which create path resolved it
+    via:        Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ContentRolloutPolicyModel(Base):
+    """Optional per-rollout policy: shadow, targeting, ramp, guard (mig 211).
+
+    No row ⇒ the rollout behaves exactly as in phase 1.
+    """
+    __tablename__ = "content_rollout_policies"
+    __table_args__ = (Index("ix_crp_next", "next_step_at"),)
+
+    rollout_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("content_rollouts.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    shadow:       Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    targeting:    Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    ramp:         Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    guard:        Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    next_step_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: ok | held | tripped
+    guard_state:  Mapped[str] = mapped_column(String(10), nullable=False, default="ok")
+    guard_detail: Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    updated_by:   Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class ContentRolloutShadowModel(Base):
+    """One shadow evaluation of a baseline case against the candidate (mig 211)."""
+    __tablename__ = "content_rollout_shadow"
+    __table_args__ = (Index("ix_crs_rollout", "rollout_id", "diverged"),)
+
+    case_id:      Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("case_instances.id", ondelete="CASCADE"), primary_key=True)
+    rollout_id:   Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("content_rollouts.id", ondelete="CASCADE"), nullable=False)
+    tenant_id:    Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    determinacy:  Mapped[str] = mapped_column(String(20), nullable=False)
+    diverged:     Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    detail:       Mapped[Any | None] = mapped_column(PortableJSON(), nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class AuditChainPruneModel(Base):
+    """A record that sealed audit rows were removed on purpose (mig 216).
+
+    Retention may delete old `case_audit_log` rows; the chain rows that sealed
+    them stay. Without this record `verify_chain` cannot tell that from a row
+    somebody deleted by hand, and reports tampering (Oct_TODO §11h).
+
+    The record is itself SEALED INTO THE CHAIN — a chain row's `audit_log_id`
+    points at it — so it is exactly as hard to forge as the chain is. It names
+    the chain sequences it covers (`ranges`, inclusive pairs) and a `digest` of
+    their content hashes, so it cannot be stretched over a row it did not prune.
+    `cutoff` and `recorded_at` are TEXT on purpose: they are hashed, and a
+    datetime does not round-trip identically on three dialects.
+    """
+    __tablename__ = "case_audit_log_chain_prunes"
+
+    id:           Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    reason:       Mapped[str] = mapped_column(String(40), nullable=False)
+    actor:        Mapped[str] = mapped_column(String(255), nullable=False)
+    cutoff:       Mapped[str | None] = mapped_column(String(40), nullable=True)
+    recorded_at:  Mapped[str] = mapped_column(String(40), nullable=False)
+    pruned_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    ranges:       Mapped[list] = mapped_column(PortableJSON(), nullable=False)
+    digest:       Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at:   Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+
+
+class LegalHoldModel(Base):
+    """A legal hold on one case, for one matter (mig 215).
+
+    While a case has an `active` row here, nothing may destroy, anonymize, hide
+    or move it — see `case_service/legal_hold/service.py` for the list. A case
+    takes one active hold at a time (decided 2026-10-11).
+
+    Rows are never deleted: a released hold is the record that the freeze
+    existed and who lifted it. `case_id` is deliberately NOT a foreign key, so
+    that record outlives the case. `active_key` is the portable partial unique
+    index — the case id while active, NULL once released.
+    """
+    __tablename__ = "legal_holds"
+    __table_args__ = (
+        Index("ux_legal_holds_active", "active_key", unique=True),
+        Index("ix_legal_holds_case", "case_id", "status"),
+        Index("ix_legal_holds_tenant", "tenant_id", "status", "placed_at"),
+    )
+
+    id:             Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_new_uuid)
+    #: The case's tenant; the placer's when the case has none.
+    tenant_id:      Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    case_id:        Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    case_number:    Mapped[str | None] = mapped_column(String(30), nullable=True)
+    #: The matter this hold belongs to — a lawsuit, an inquiry, a reference.
+    matter_ref:     Mapped[str] = mapped_column(String(120), nullable=False)
+    reason:         Mapped[str] = mapped_column(Text, nullable=False)
+    #: active | released
+    status:         Mapped[str] = mapped_column(String(12), nullable=False, default="active")
+    active_key:     Mapped[str | None] = mapped_column(String(160), nullable=True)
+    placed_by:      Mapped[str] = mapped_column(String(255), nullable=False)
+    placed_at:      Mapped[datetime] = mapped_column(MicroDateTime(), default=_utcnow)
+    released_by:    Mapped[str | None] = mapped_column(String(255), nullable=True)
+    released_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# 8e (mig 214): an ORM change of owner moves the uniqueness key with it, as for
+# case types. A Core UPDATE of `tenant_id` must set `tenant_key` itself.
+def _inherited_tenant_key_follows(target, value, _old, _initiator):
+    target.tenant_key = case_type_tenant_key(value)
+
+
+for _m in (FormDefinitionModel, RuleDefinitionModel, DataModelModel, BusinessCalendarModel):
+    event.listen(_m.tenant_id, "set", _inherited_tenant_key_follows)

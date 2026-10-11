@@ -385,3 +385,17 @@ ON CONFLICT (feature_key) DO UPDATE SET
 -- routes (see releases/notes/v3.0.0.md §Case actions). Migrations 177–205 are
 -- additive apart from that route change and 197's data-only tenant backfill.
 -- ══════════════════════════════════════════════════════════════════════════════
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- v3.1.0, prepared 2026-10-11 — legal holds, staged content rollouts, the rest
+-- of the rep desk, tenant-owned design content, and the tenant-boundary sweep.
+--
+-- **No rows.** Nothing in this release has a feature key:
+--   * legal holds, content rollouts, the customer export — privileges held by
+--     named roles; nothing is held or staged until somebody does it;
+--   * chunking / rerank, the three privacy switches, field-node signatures —
+--     their own settings, all unset = off;
+--   * the rep desk additions sit behind the rep desk's existing two gates.
+--
+-- Migrations 206–217 are additive (see releases/notes/v3.1.0.md §Upgrade notes).
+-- ══════════════════════════════════════════════════════════════════════════════

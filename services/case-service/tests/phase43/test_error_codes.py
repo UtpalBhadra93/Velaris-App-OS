@@ -135,4 +135,5 @@ class TestRegistry:
     def test_the_router_codes_more_than_it_leaves_bare(self):
         """Sanity check on the pass as a whole rather than on any one site."""
         src = _router_src()
-        assert src.count("raise coded(") == 66
+        # 67 since 8e(c), 2026-10-01: marketplace sources became operator-only.
+        assert src.count("raise coded(") == 67

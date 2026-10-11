@@ -359,8 +359,9 @@ async def ask_case(
     out_question = question
     out_sources = sources
     if external_capable and external_consented:
-        from .pseudonymizer import Pseudonymizer
+        from .pseudonymizer import Pseudonymizer, add_confirmed_fields
         pseudo = Pseudonymizer()
+        await add_confirmed_fields(pseudo, session, case)
         out_question = pseudo.redact(question)
         out_sources = [{**s, "text": pseudo.redact(s["text"])} for s in sources]
 

@@ -2,6 +2,11 @@
 #
 #   rsync -rcin --exclude-from=scripts/velaris-mirror-exclude.txt <dirs> <files> Velaris/
 #
+# Run it FROM THE REPO ROOT, with the directories named WITHOUT a trailing slash.
+# The patterns below are root-relative: syncing one directory at a time as
+# `deploy/ Velaris/deploy/` silently disables every one of them (seen
+# 2026-10-11 — the dry run listed this box's TLS keys and OpenBao credentials).
+#
 # Run it with -n FIRST and read the list. The dry run is the control, not this
 # file: an exclude list is only as good as the last artefact somebody thought of,
 # and on 2026-09-09 the one nobody had thought of was `deploy/tls/certs/` — this
@@ -15,6 +20,9 @@
 .venv/
 node_modules/
 dist/
+# Transient: refresh-after-update.sh builds Studio beside the live copy.
+dist.new/
+dist.old/
 __pycache__/
 *.pyc
 .pytest_cache/

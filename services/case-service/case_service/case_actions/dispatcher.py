@@ -564,16 +564,27 @@ async def _h_split(
         raise ActionError("That case type belongs to another tenant.",
                           code="VEL-CASE-ACTION-PARAM-400")
 
+    from case_service.rollouts import service as _rollouts
+    child_data = params.get("data") if isinstance(params.get("data"), dict) else {}
+    ct, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=ct, tenant=case.tenant_id,
+        subject=_rollouts.subject_of(
+            child_data.get("customer_id"),
+            (case.data or {}).get("customer_id") if isinstance(case.data, dict) else None,
+            case.created_by, actor),
+        data=child_data)
     child = await repo.create_case_instance(session, data={
         "case_type_id": ct.id,
         "case_type_version": ct.version,
         "status": "new",
         "priority": params.get("priority") or case.priority,
-        "data": params.get("data") if isinstance(params.get("data"), dict) else {},
+        "data": child_data,
         "parent_case_id": case.id,
         "tenant_id": case.tenant_id,
         "created_by": actor,
     })
+    await _rollouts.record(session, case_id=child.id, res=_rollout,
+                           tenant=case.tenant_id, via="case_action")
     await repo.create_relationship(session, data={
         "source_case_id": case.id,
         "target_case_id": child.id,
@@ -827,6 +838,20 @@ async def perform(
     sealed = _seal.sealed_reason(case, action=action_name)
     if sealed:
         return CaseResult(case_id, False, code=_seal.CODE, error=sealed)
+
+    # A legal hold (Oct item 13) freezes concealment as well as destruction:
+    # `delete` hides the case from every list and read, which is not preserving
+    # it. Keyed on the action's declared EFFECT, not its name, so a destructive
+    # action added next year inherits the rule. `restore` shares the effect and
+    # is the one way back, so it stays open — the same shape as `reopen` above.
+    if "delete" in action.effects and action_name != "restore":
+        from case_service.legal_hold import service as _legal_hold
+
+        if await _legal_hold.is_held(session, case_id):
+            return CaseResult(
+                case_id, False, code=_legal_hold.CODE_HELD,
+                error=f"This case is under a legal hold; '{action.label}' is refused "
+                      "until the hold is released.")
 
     # The designer's half of the same question. Two stages can share a status,
     # so this can never stand in for the check above — it is asked AS WELL,

@@ -9,6 +9,7 @@ import { useAuth } from "@/auth";
 import { codedFrom } from "@shared/api/client";
 import ErrorCodeLink from "@shared/errors/ErrorCodeLink";
 import { getAccessToken } from "@/auth/tokenManager";
+import ContentRollouts from "./ContentRollouts";
 
 const API = "/api/v1/deploy";
 
@@ -367,6 +368,10 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
   const [toEnv, setToEnv]           = useState("");
   const [fromEnv, setFromEnv]       = useState("");
   const [notes, setNotes]           = useState("");
+  // Oct 18a: how the TARGET should roll this out. A request its operator
+  // approves or overrides; "immediate" sends nothing, exactly as before.
+  const [rolloutStrategy, setRolloutStrategy] = useState("immediate");
+  const [rolloutPercent, setRolloutPercent]   = useState(10);
   const [version, setVersion]       = useState("1.0.0");
   const [selCTs, setSelCTs]         = useState<string[]>([]);
   const [selForms, setSelForms]     = useState<string[]>([]);
@@ -449,6 +454,12 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
         package_manifest: buildManifest(),
         deploy_notes: notes,
       };
+      if (rolloutStrategy !== "immediate") {
+        body.rollout_request = {
+          strategy: rolloutStrategy,
+          percent: rolloutStrategy === "percentage" ? rolloutPercent : 0,
+        };
+      }
       if (assignUserId) {
         body.assign_to_user_id = assignUserId;
         body.assign_to_name    = assignedUser?.display_name ?? assignedUser?.email ?? assignUserId;
@@ -599,6 +610,33 @@ function PromoteTab({ onDone, activeEnv }: { onDone: () => void; activeEnv: stri
             )}
           </div>
         )}
+
+        <div style={S.grid2}>
+          <div>
+            <span style={S.label}>How the target rolls it out</span>
+            <select aria-label="Rollout strategy" value={rolloutStrategy}
+                    onChange={e => setRolloutStrategy(e.target.value)} style={S.input}>
+              <option value="immediate">Immediate — replace at once (as today)</option>
+              <option value="flag">Feature flag — installed, switched on later</option>
+              <option value="percentage">Percentage — a sticky share of customers</option>
+              <option value="blue_green">Blue-green — one switch between the two</option>
+            </select>
+          </div>
+          <div>
+            {rolloutStrategy === "percentage" && (<>
+              <span style={S.label}>Starting percentage</span>
+              <input aria-label="Starting percentage" type="number" min={0} max={100}
+                     value={rolloutPercent} onChange={e => setRolloutPercent(Number(e.target.value))}
+                     style={S.input} />
+            </>)}
+            {rolloutStrategy !== "immediate" && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                A request: the target installs the case types beside the current version and its
+                operator approves or overrides it. A staged package carries case types only.
+              </div>
+            )}
+          </div>
+        </div>
 
         <div style={S.grid2}>
           <div>
@@ -1734,12 +1772,13 @@ function DiffTab() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-type Tab = "environments" | "promote" | "runs" | "windows" | "deploy-packages" | "packages" | "diff";
+type Tab = "environments" | "promote" | "runs" | "rollouts" | "windows" | "deploy-packages" | "packages" | "diff";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "environments",    label: "Environments" },
   { key: "promote",         label: "Promote" },
   { key: "runs",            label: "Deployment Runs" },
+  { key: "rollouts",        label: "Rollouts" },
   { key: "windows",         label: "Change Windows" },
   { key: "deploy-packages", label: "Promotion Packages" },
   // The app registry, not the promotion pipeline. Two things called "packages"
@@ -1803,6 +1842,7 @@ export default function HxDeploy() {
         {tab === "environments" && <EnvironmentsTab activeEnv={activeEnv} onEnvsChanged={loadEnvs} />}
         {tab === "promote"      && <PromoteTab onDone={() => setTab("runs")} activeEnv={activeEnv} />}
         {tab === "runs"         && <RunsTab activeEnv={activeEnv} />}
+        {tab === "rollouts"     && <ContentRollouts />}
         {tab === "windows"      && <WindowsTab activeEnv={activeEnv} />}
         {tab === "deploy-packages" && <PromotionPackagesTab />}
         {tab === "packages"     && <PackagesTab />}

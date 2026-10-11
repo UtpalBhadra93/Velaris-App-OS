@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import GraphNodeModel, GraphEdgeModel
@@ -51,7 +52,7 @@ def _tenant(user: AuthenticatedUser) -> str | None:
 @router.post("/sync")
 async def trigger_sync(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("design.graph.sync")),
 ):
     """Re-index all nodes from DB + Studio modules. Then embed + community detect."""
     stats = await sync_graph(session)

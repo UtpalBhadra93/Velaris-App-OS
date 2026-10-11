@@ -142,6 +142,18 @@ def _require_admin(user: AuthenticatedUser) -> None:
                     "Requires the marketplace.admin.access privilege")
 
 
+async def _require_operator(session: AsyncSession, user: AuthenticatedUser) -> None:
+    """Marketplace SOURCES are platform-wide (8e decision c, 2026-10-01): every
+    tenant's catalogue is fed from them. A tenant admin with the marketplace
+    privilege could add, remove, sync or decommission them for everybody. They
+    are the platform operator's — on a single-tenant install, every admin."""
+    from velaris_shared.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, user):
+        raise coded(403, MKT_ACCESS_403,
+                    "Marketplace sources are shared by every tenant; only the "
+                    "platform operator may change them")
+
+
 def _can_view(user: AuthenticatedUser) -> None:
     from case_service.api.routers.releases import is_feature_enabled
     if get_settings().marketplace_kill_switch or not is_feature_enabled("marketplace"):
@@ -825,6 +837,7 @@ async def add_source(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    await _require_operator(session, user)   # 8e (c): sources are the install's
     if body.tier not in ("community", "private"):
         raise HTTPException(400, "tier must be 'community' or 'private'")
     if body.poll_interval_hours < 1:
@@ -861,6 +874,7 @@ async def remove_source(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    await _require_operator(session, user)   # 8e (c): sources are the install's
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
         raise coded(404, MKT_NOTFOUND_404, "Source not found")
@@ -884,6 +898,7 @@ async def sync_source(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    await _require_operator(session, user)   # 8e (c): sources are the install's
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
         raise coded(404, MKT_NOTFOUND_404, "Source not found")
@@ -897,6 +912,7 @@ async def sync_all_sources(
     session: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    await _require_operator(session, user)   # 8e (c): sources are the install's
     result = await session.execute(
         select(MarketplaceSourceModel).where(MarketplaceSourceModel.enabled.is_(True))
     )
@@ -964,6 +980,10 @@ async def list_workspaces(
     query = select(MarketplaceWorkspaceModel)
     if not hxguard.user_allows(user, "marketplace.workspaces.override"):
         query = query.where(MarketplaceWorkspaceModel.created_by == user.user_id)
+    # The override privilege widened to every TENANT's workspaces until
+    # 2026-09-29 (8d); it now means every workspace in the caller's tenant.
+    from case_service.tenancy.identity import scope_to_caller
+    query = await scope_to_caller(query, MarketplaceWorkspaceModel, session, user)
     result = await session.execute(query.order_by(MarketplaceWorkspaceModel.created_at.desc()))
     workspaces = result.scalars().all()
 
@@ -2366,6 +2386,7 @@ async def decommission_source(
     5. Write audit trail for every action
     """
     _require_admin(user)
+    await _require_operator(session, user)   # 8e (c): sources are the install's
     source = await session.get(MarketplaceSourceModel, uuid.UUID(source_id))
     if not source:
         raise coded(404, MKT_NOTFOUND_404, "Source not found")

@@ -272,9 +272,12 @@ async def test_refund_non_succeeded_payment_returns_400(
 
 
 @pytest.mark.asyncio
-async def test_refund_unknown_payment_returns_400(client: AsyncClient):
+async def test_refund_unknown_payment_returns_404(client: AsyncClient):
+    # 400 until 2026-09-29, from the service's ValueError. The route now finds
+    # the payment first so it can check the caller may reach its case, and a
+    # payment that does not exist is a 404 like one in another tenant.
     resp = await client.post(f"/api/v1/payments/requests/{uuid.uuid4()}/refund", json={})
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 # ── API — Stripe webhook ──────────────────────────────────────────────────────

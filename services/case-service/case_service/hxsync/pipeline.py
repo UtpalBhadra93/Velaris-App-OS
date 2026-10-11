@@ -69,6 +69,32 @@ def _case_to_row(case: CaseInstanceModel) -> dict:
     }
 
 
+async def _scope_cases_to_destination(q, dest: SyncDestinationModel, session: AsyncSession):
+    """A tenant's destination receives that tenant's cases, not the install's.
+
+    Until 2026-09-30 the extract had no tenant clause at all: whatever tenant a
+    destination belonged to, a run shipped every tenant's cases to it — and any
+    signed-in user could create a destination and run it. A destination with NO
+    tenant is the platform operator's (only break-glass creates one now, and it
+    is what every row written before today carries), so it keeps exporting
+    everything, as it always has. Cases with no tenant follow the platform's
+    one visibility rule: shared unless strict reads are switched on.
+    """
+    from sqlalchemy import false, or_
+
+    from velaris_shared.tenancy.identity import resolve_tenant, strict_case_reads
+
+    if not dest.tenant_id:
+        return q
+    resolved = await resolve_tenant(session, str(dest.tenant_id))
+    if resolved is None:
+        return q.where(false())          # an owner we cannot resolve gets nothing
+    col = CaseInstanceModel.tenant_id
+    if strict_case_reads():
+        return q.where(col == resolved[0])
+    return q.where(or_(col == resolved[0], col.is_(None)))
+
+
 async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
     """Execute a full incremental sync. Returns a summary dict."""
     dest = await session.get(SyncDestinationModel, destination_id)
@@ -121,6 +147,7 @@ async def run_sync(destination_id: uuid.UUID, session: AsyncSession) -> dict:
              .order_by(CaseInstanceModel.updated_at))
         if dest.last_synced_at:
             q = q.where(CaseInstanceModel.updated_at > dest.last_synced_at)
+        q = await _scope_cases_to_destination(q, dest, session)
         cases = (await session.execute(q)).scalars().all()
 
         now = datetime.now(timezone.utc)

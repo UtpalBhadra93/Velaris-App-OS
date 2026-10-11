@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/auth";
 import { usePermissions } from "@/auth/PermissionsContext";
 import { NAV_DATA, type NavEntry } from "@/app/nav-data";
+import { useFeatureFlags } from "@/app/FeatureFlagsContext";
 
 /* ═══════════════════════════════════════════════════════════════════
    GlobalSearch — Cmd/Ctrl+K spotlight search across all permitted pages.
@@ -41,14 +42,18 @@ export default function GlobalSearch({ open, onClose }: Props) {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { isRouteAllowed } = usePermissions();
+  const { isEnabled } = useFeatureFlags();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
 
   // ── Filter by text AND permission ────────────────────────────────
+  // …and the feature flag, exactly as the sidebar does: a page whose feature
+  // is not released must not be findable here while the sidebar hides it.
   const permitted: NavEntry[] = NAV_DATA.filter(entry =>
-    isRouteAllowed(entry.path, user?.roles ?? [], user?.is_admin ?? false)
+    isRouteAllowed(entry.path, user?.roles ?? [], user?.is_admin ?? false) &&
+    (!entry.featureKey || isEnabled(entry.featureKey))
   );
 
   const results: NavEntry[] = query.trim()

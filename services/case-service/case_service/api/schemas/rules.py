@@ -42,6 +42,12 @@ class RuleResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # 8e: whose row this is (None = a default), and which default it forks.
+    tenant_id: UUID | None = None
+    forked_from_id: UUID | None = None
+    # 8k: a fork whose default changed since is offered the update, never given it.
+    update_available: bool = False
+
     model_config = {"from_attributes": True}
 
 

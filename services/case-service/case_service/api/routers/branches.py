@@ -32,6 +32,7 @@ from velaris_shared.db.models import (
 )
 from velaris_shared.db.session import get_session
 from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import caller_tenant_uuid, scope_to_caller
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.core.error_codes import (
     BRANCH_ACTOR_403,
@@ -174,6 +175,7 @@ async def _write_merge_commit(
             commit_message=f"Merged branch '{branch.name}' — {total} field(s) changed",
             committed_by=actor_username,
             diff_snapshot={"before": current_main, "after": branch.content_snapshot},
+            tenant_id=branch.tenant_id,
         )
         session.add(commit)
     except Exception:
@@ -394,9 +396,12 @@ async def list_branches(
     assigned_reviewer_id: Optional[str] = None,
     q:                    Optional[str] = None,
     session:              AsyncSession = Depends(get_session),
-    _:                    AuthenticatedUser = Depends(get_current_user),
+    user:                 AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     stmt = select(ArtifactBranchModel).order_by(desc(ArtifactBranchModel.created_at))
+    # 8e: another tenant's branches are not this caller's (was the one table
+    # still readable AND writable across tenants).
+    stmt = await scope_to_caller(stmt, ArtifactBranchModel, session, user)
     if status:               stmt = stmt.where(ArtifactBranchModel.status == status)
     if branch_type:          stmt = stmt.where(ArtifactBranchModel.branch_type == branch_type)
     if artifact_type:        stmt = stmt.where(ArtifactBranchModel.artifact_type == artifact_type)
@@ -412,7 +417,7 @@ async def list_branches(
 async def create_branch(
     body:    CreateBranchRequest,
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(get_current_user),
+    user:    AuthenticatedUser = Depends(hxguard.guard("design.branches.write")),
 ):
     """Create a branch manually from an artifact already in dev (for local branching)."""
     if body.branch_type == "artifact":
@@ -437,6 +442,7 @@ async def create_branch(
         created_by=user.username,
         owner_id=user.user_id,
         access_group_id=ag_id,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(b)
     await session.flush()
@@ -455,7 +461,7 @@ async def create_branch(
 async def get_branch(
     branch_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     b = await _get_branch_or_404(session, branch_id)
     data = _branch(b)
@@ -478,7 +484,7 @@ async def update_branch(
     branch_id: uuid.UUID,
     body:      UpdateBranchRequest,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.write")),
 ):
     b = await _get_branch_or_404(session, branch_id)
     if b.status in ("merged", "closed"):
@@ -535,7 +541,7 @@ async def update_branch_content(
 async def delete_branch(
     branch_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    user:      AuthenticatedUser = Depends(get_current_user),
+    user:      AuthenticatedUser = Depends(hxguard.guard("design.branches.write")),
 ):
     b = await _get_branch_or_404(session, branch_id)
     await _log_event(session, b.id, "branch_deleted", user, {"branch_name": b.name, "status": b.status})
@@ -550,7 +556,7 @@ async def list_remote_available(
     env_id:        uuid.UUID,
     artifact_type: str = "case_type",
     session:       AsyncSession = Depends(get_session),
-    _:             AuthenticatedUser = Depends(get_current_user),
+    _:             AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     """List artifacts available to pull from a registered remote environment."""
     env = await _get_env_or_404(session, env_id)
@@ -576,7 +582,7 @@ async def list_remote_available(
 async def pull_branch_from_env(
     body:    PullBranchRequest,
     session: AsyncSession = Depends(get_session),
-    user:    AuthenticatedUser = Depends(get_current_user),
+    user:    AuthenticatedUser = Depends(hxguard.guard("design.branches.write")),
 ):
     """Pull an artifact or app package from a remote environment and create a local branch."""
     env = await _get_env_or_404(session, body.env_id)
@@ -636,6 +642,7 @@ async def pull_branch_from_env(
         created_by=user.username,
         owner_id=user.user_id,
         access_group_id=ag_id,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(b)
     await session.flush()
@@ -701,7 +708,7 @@ async def submit_for_review(
 async def list_reviews(
     branch_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     await _get_branch_or_404(session, branch_id)
     rows = (await session.execute(
@@ -819,7 +826,7 @@ async def post_review(
 async def get_diff(
     branch_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     """Full diff: branch content vs current dev main, plus conflict analysis."""
     b = await _get_branch_or_404(session, branch_id)
@@ -852,7 +859,7 @@ async def get_diff(
 async def get_branch_audit(
     branch_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     """Return the full chronological audit trail for a branch."""
     await _get_branch_or_404(session, branch_id)
@@ -974,7 +981,7 @@ async def set_env_token(
     env_id:  uuid.UUID,
     body:    SetEnvTokenRequest,
     session: AsyncSession = Depends(get_session),
-    _:       AuthenticatedUser = Depends(get_current_user),
+    _:       AuthenticatedUser = Depends(hxguard.guard("deploy.environments.write")),
 ):
     """Store an encrypted API token for a registered environment (for live sync)."""
     env = await _get_env_or_404(session, env_id)
@@ -988,7 +995,7 @@ async def set_env_token(
 async def test_env_connection(
     env_id:  uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _:       AuthenticatedUser = Depends(get_current_user),
+    _:       AuthenticatedUser = Depends(hxguard.guard("deploy.environments.read")),
 ):
     """Live-test the connection to a remote Helix environment."""
     env = await _get_env_or_404(session, env_id)

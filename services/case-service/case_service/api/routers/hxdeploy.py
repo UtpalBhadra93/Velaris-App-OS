@@ -101,7 +101,18 @@ class EnvOut(BaseModel):
         )
 
 
+class RolloutRequestIn(BaseModel):
+    """Oct item 18a — how the SOURCE asks the target to roll this out.
+
+    A request, not an instruction: it travels outside the seal and the target's
+    operator approves or overrides it. Omitted means immediate, as before.
+    """
+    strategy: str = Field(default="immediate", max_length=20)
+    percent:  int = Field(default=0, ge=0, le=100)
+
+
 class PromoteIn(BaseModel):
+    rollout_request:    RolloutRequestIn | None = None
     to_env_id:          uuid.UUID
     package_id:         uuid.UUID | None = None
     package_manifest:   dict = {}
@@ -277,6 +288,7 @@ async def promote(
             from_env_id=body.from_env_id,
             assign_to_user_id=body.assign_to_user_id,
             assign_to_name=body.assign_to_name,
+            rollout_request=body.rollout_request.model_dump() if body.rollout_request else None,
         )
         await session.commit()
         return RunOut.from_model(run)
@@ -835,12 +847,28 @@ async def import_bundle(
         except ChecksumError as exc:
             raise HTTPException(400, str(exc))
 
+    # Oct item 18a: a staged rollout request installs the case types BESIDE
+    # the versions already here and opens a rollout awaiting THIS side's
+    # approval. Nothing reaches a customer until an operator here says so.
+    from case_service.rollouts import staged_import
+    try:
+        plan = await staged_import.plan(session, bundle, target_tenant)
+    except staged_import.StagedImportRefused as exc:
+        raise HTTPException(409, exc.detail())
+
     try:
         # The import identity, not a person: everything this bundle creates is
         # attributed to the machine credential that delivered it, which is also
         # what makes an imported bot's `created_by` somebody nobody can be.
         result = await apply_bundle(session, bundle, target_tenant,
-                                    imported_by=f"import:{target_env.name}")
+                                    imported_by=f"import:{target_env.name}",
+                                    alongside=plan.names if plan else frozenset())
+        if plan:
+            result["rollouts"] = await staged_import.open_rollouts(
+                session, plan, result, actor=f"import:{target_env.name}")
+    except staged_import.StagedImportRefused as exc:
+        await session.rollback()
+        raise HTTPException(409, exc.detail())
     except ValueError as ve:
         raise HTTPException(400, str(ve))
     await session.commit()

@@ -210,6 +210,12 @@ async def analytics(
     def rate(n: int, d: int) -> float | None:
         return round(n / d, 4) if d else None
 
+    # Oct item 1: how the receiving half of each handoff came to be. A row made
+    # before migration 207 has `transferred_from` and no kind — a transfer.
+    handoffs = Counter((r.handoff_kind or "transfer") for r in rows if r.transferred_from)
+    roots = {r.id for r in rows if not r.transferred_from}
+    handed = {r.transferred_from for r in rows if r.transferred_from in roots}
+
     return {
         "window_days": days,
         "repeat_window_days": repeat_window_days,
@@ -222,6 +228,8 @@ async def analytics(
         "aht_seconds": aht,
         "unresolved_rate": rate(sum(1 for r in rows if not r.customer_id), total),
         "transfer_rate": rate(sum(1 for r in rows if r.transferred_from), total),
+        "handoffs": {k: handoffs.get(k, 0) for k in ("transfer", "warm", "cold")},
+        "multi_rep_contact_rate": rate(len(handed), len(roots)),
         "abandoned_rate": rate(by_status.get("abandoned", 0), total),
         "repeat_contact_rate": rate(repeats, len(contacts)),
         "first_contact_resolution": (round(1 - followed / judged, 4) if judged else None),
@@ -230,7 +238,13 @@ async def analytics(
             "aht_seconds": "mean of ended_at − started_at over WRAPPED interactions; "
                            "open and abandoned ones are excluded, not counted as zero",
             "unresolved_rate": "interactions with no customer resolved",
-            "transfer_rate": "interactions that were the receiving half of a transfer",
+            "transfer_rate": "interactions that were the receiving half of a transfer "
+                             "or a join (warm or cold)",
+            "handoffs": "receiving halves by kind: transfer (record moved), warm (a second "
+                        "rep joined while the first stayed), cold (the first left when the "
+                        "second joined)",
+            "multi_rep_contact_rate": "contacts started in the window that more than one "
+                                      "rep handled",
             "repeat_contact_rate": "resolved, non-transfer contacts preceded by a contact "
                                    "from the same customer within repeat_window_days",
             "first_contact_resolution": "resolved, non-transfer contacts at least "

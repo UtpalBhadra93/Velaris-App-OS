@@ -96,6 +96,16 @@ async def send_to_user(
     )
     devices = list(devices_q.scalars())
 
+    # 8e: a delivery log row is its RECIPIENT's tenant's — the directory row's.
+    from velaris_shared.db.models import UserDirectoryModel
+    from velaris_shared.tenancy.identity import resolve_tenant
+    recipient_tenant = None
+    if devices:
+        token = await session.scalar(
+            select(UserDirectoryModel.tenant_id).where(UserDirectoryModel.user_id == user_id))
+        owner = await resolve_tenant(session, str(token or "default"))
+        recipient_tenant = owner[0] if owner else None
+
     results: list[DeliveryResult] = []
     for device in devices:
         channel = _CHANNELS.get(device.channel)
@@ -117,6 +127,7 @@ async def send_to_user(
 
         # Write delivery log
         log_entry = NotificationLogModel(
+            tenant_id=recipient_tenant,
             device_id=device.id,
             user_id=user_id,
             event_type=event_type,

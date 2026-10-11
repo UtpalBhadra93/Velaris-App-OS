@@ -99,6 +99,54 @@ def _has_finance_access(user: AuthenticatedUser) -> bool:
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
+# ── Authorization (2026-09-29) ────────────────────────────────────────────────
+#
+# Every route here depended on `get_current_user` and nothing else until
+# 2026-09-29. Any signed-in user of any role in any tenant could record a
+# disbursement on another tenant's case, mark it sent (a ledger posting) and
+# refund its payment; the lists returned every tenant's rows. The unauthenticated
+# sweep (`test_ungated_routes.py`) could not see it — these routes HAD an
+# identity. Now: a privilege per route, and the case named in the path, or the
+# case a payment row belongs to, must be one the caller may reach. Another
+# tenant's case answers 404, exactly as a missing one does.
+
+
+async def _reach_case(session: AsyncSession, user: AuthenticatedUser,
+                      case_id: uuid.UUID) -> None:
+    await hxguard.require_case(session, user, "case.read", case_id)
+
+
+async def _my_tenant_tokens(session: AsyncSession,
+                            user: AuthenticatedUser) -> list[str] | None:
+    from case_service.tenancy.identity import caller_tenant_tokens
+
+    return await caller_tenant_tokens(session, user)
+
+
+async def _payment_or_404(session: AsyncSession, user: AuthenticatedUser,
+                          payment_id: uuid.UUID) -> PaymentRequestModel:
+    pr = await session.get(PaymentRequestModel, payment_id)
+    if pr is None:
+        raise HTTPException(404, "Payment request not found")
+    try:
+        await _reach_case(session, user, pr.case_id)
+    except HTTPException:
+        raise HTTPException(404, "Payment request not found")
+    return pr
+
+
+async def _disbursement_or_404(session: AsyncSession, user: AuthenticatedUser,
+                               disbursement_id: uuid.UUID) -> PaymentDisbursementModel:
+    disb = await session.get(PaymentDisbursementModel, disbursement_id)
+    if disb is None:
+        raise HTTPException(404, "Disbursement not found")
+    try:
+        await _reach_case(session, user, disb.case_id)
+    except HTTPException:
+        raise HTTPException(404, "Disbursement not found")
+    return disb
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class ChargeBody(BaseModel):
@@ -155,13 +203,22 @@ async def initiate_charge(
     case_id: uuid.UUID,
     body: ChargeBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.write")),
 ):
     """Create a Stripe checkout session for a case step.
 
     Returns a checkout_url the customer follows to complete payment.
     The case step auto-advances when Stripe confirms payment via webhook.
     """
+    await _reach_case(session, user, case_id)
+    if body.connector_id is not None:
+        # A named connector must be this tenant's or platform-wide. Without this,
+        # a caller could take a payment through another tenant's Stripe account.
+        mine = await _my_tenant_tokens(session, user)
+        row = await session.get(ConnectorRegistryModel, body.connector_id)
+        if row is None or (mine is not None and row.tenant_id is not None
+                           and row.tenant_id not in mine):
+            raise HTTPException(404, "Connector not found")
     try:
         pr = await payment_svc.create_payment_request(
             session        = session,
@@ -236,7 +293,7 @@ async def initiate_disbursement(
     case_id: uuid.UUID,
     body: DisburseBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.disbursements.write")),
 ):
     """Confirm a pay-to-customer disbursement on a case step.
 
@@ -244,6 +301,7 @@ async def initiate_disbursement(
     Actual fund transfer is fulfilled externally (bank transfer, SWIFT, etc.) —
     tracked here for audit and case lifecycle purposes.
     """
+    await _reach_case(session, user, case_id)
     # SD-1: encrypt bank_reference before storage, under this tenant's DEK.
     # Resolved once, so the key the value is written under and the tenant
     # recorded on the row cannot disagree about whose data this is.
@@ -276,8 +334,9 @@ async def initiate_disbursement(
 async def list_case_disbursements(
     case_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.read")),
 ):
+    await _reach_case(session, user, case_id)
     rows = await payment_svc.list_disbursements(session, case_id)
     return [DisbursementOut.from_model(r) for r in rows]
 
@@ -291,9 +350,7 @@ async def reveal_bank_reference(
     """SD-1: Return decrypted bank reference. Requires finance or admin role. Always audited."""
     if not _has_finance_access(user):
         raise HTTPException(403, "finance or admin role required to view bank references")
-    disb = await session.get(PaymentDisbursementModel, disbursement_id)
-    if not disb:
-        raise HTTPException(404, "Disbursement not found")
+    disb = await _disbursement_or_404(session, user, disbursement_id)
     try:
         decrypted = _decrypt_bank_ref(disb.bank_reference) if disb.bank_reference else None
     except Exception:
@@ -313,12 +370,10 @@ async def reveal_bank_reference(
 async def mark_disbursement_sent(
     disbursement_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.disbursements.execute")),
 ):
     """SD-3: Staff confirms the bank transfer was processed externally."""
-    disb = await session.get(PaymentDisbursementModel, disbursement_id)
-    if not disb:
-        raise HTTPException(404, "Disbursement not found")
+    disb = await _disbursement_or_404(session, user, disbursement_id)
     disb.disbursement_executed    = True
     disb.disbursement_executed_at = datetime.now(timezone.utc)
     disb.status                   = "executed"
@@ -347,9 +402,10 @@ async def mark_disbursement_sent(
 async def list_case_payments(
     case_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.read")),
 ):
     """List all payment requests associated with a case."""
+    await _reach_case(session, user, case_id)
     rows = await payment_svc.list_payment_requests(session, case_id)
     return [PaymentRequestOut.from_model(r) for r in rows]
 
@@ -358,11 +414,9 @@ async def list_case_payments(
 async def get_payment(
     payment_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.read")),
 ):
-    pr = await payment_svc.get_payment_request(session, payment_id)
-    if pr is None:
-        raise HTTPException(404, "Payment request not found")
+    pr = await _payment_or_404(session, user, payment_id)
     return PaymentRequestOut.from_model(pr)
 
 
@@ -371,9 +425,10 @@ async def refund_payment(
     payment_id: uuid.UUID,
     body: RefundBody,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.refunds.write")),
 ):
     """Refund a succeeded payment — full or partial."""
+    await _payment_or_404(session, user, payment_id)
     try:
         pr = await payment_svc.refund_payment(session, payment_id, body.amount_cents)
     except ValueError as exc:
@@ -431,14 +486,23 @@ class ConnectorOut(BaseModel):
 @router.get("/connectors", response_model=list[ConnectorOut])
 async def list_payment_connectors(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.connectors.read")),
 ):
-    """List all payment connectors registered for the tenant."""
-    rows = (await session.execute(
-        select(ConnectorRegistryModel).where(
-            ConnectorRegistryModel.connector_type.in_(["stripe", "paypal", "adyen"]),
-        ).order_by(ConnectorRegistryModel.created_at.desc())
-    )).scalars().all()
+    """List the payment connectors registered for the tenant.
+
+    It said "for the tenant" and returned every tenant's. Scoped as the HxBridge
+    connector list is: the caller's tenant plus platform-wide (NULL) rows.
+    """
+    from sqlalchemy import or_
+
+    q = select(ConnectorRegistryModel).where(
+        ConnectorRegistryModel.connector_type.in_(["stripe", "paypal", "adyen"]),
+    ).order_by(ConnectorRegistryModel.created_at.desc())
+    mine = await _my_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(or_(ConnectorRegistryModel.tenant_id.in_(mine),
+                        ConnectorRegistryModel.tenant_id.is_(None)))
+    rows = (await session.execute(q)).scalars().all()
 
     return [
         ConnectorOut(
@@ -460,14 +524,18 @@ async def list_payment_connectors(
 async def test_payment_connector(
     connector_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.connectors.test")),
 ):
     """Test a payment connector's credentials."""
     from datetime import datetime, timezone
     row = (await session.execute(
         select(ConnectorRegistryModel).where(ConnectorRegistryModel.id == connector_id)
     )).scalar_one_or_none()
-    if row is None:
+    mine = await _my_tenant_tokens(session, user)
+    # Another tenant's connector answers as a missing one. Testing it decrypts
+    # its credentials and calls the provider with them.
+    if row is None or (mine is not None and row.tenant_id is not None
+                       and row.tenant_id not in mine):
         raise HTTPException(404, "Connector not found")
 
     from case_service.hxbridge.protocol import get_connector
@@ -508,9 +576,18 @@ class WebhookEventOut(BaseModel):
 @router.get("/webhooks", response_model=list[WebhookEventOut])
 async def list_webhook_events(
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.connectors.read")),
 ):
-    """List recent inbound payment webhook events."""
+    """List recent inbound payment webhook events.
+
+    The event log has no tenant column — a provider posts to one platform URL —
+    so it is platform-wide, and break-glass only. A tenant admin reading it
+    would read every tenant's payment traffic.
+    """
+    from case_service.tenancy.identity import is_superadmin
+
+    if not is_superadmin(user):
+        raise HTTPException(403, "The payment webhook log is platform-wide; superadmin only.")
     rows = await payment_svc.list_webhook_events(session)
     return [
         WebhookEventOut(
@@ -532,15 +609,21 @@ async def list_all_payment_requests(
     status: str | None = None,
     limit: int = 100,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.read")),
 ):
     from sqlalchemy import select
     from velaris_shared.db.models import PaymentRequestModel
-    q = select(PaymentRequestModel).order_by(PaymentRequestModel.created_at.desc()).limit(limit)
+    q = select(PaymentRequestModel).order_by(PaymentRequestModel.created_at.desc()).limit(max(1, min(limit, 500)))
     if status:
         q = q.where(PaymentRequestModel.status == status)
+    mine = await _my_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(PaymentRequestModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
-    return rows
+    # Returned raw ORM rows until 2026-09-29, which cannot serialise (`metadata`
+    # is SQLAlchemy's MetaData on the model) — so this list 500'd whenever it
+    # had anything to list.
+    return [PaymentRequestOut.from_model(r) for r in rows]
 
 
 @router.get("/disbursements", response_model=list[DisbursementOut])
@@ -548,12 +631,18 @@ async def list_all_disbursements(
     status: str | None = None,
     limit: int = 100,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("payments.requests.read")),
 ):
     from sqlalchemy import select
     from velaris_shared.db.models import PaymentDisbursementModel
-    q = select(PaymentDisbursementModel).order_by(PaymentDisbursementModel.created_at.desc()).limit(limit)
+    q = select(PaymentDisbursementModel).order_by(PaymentDisbursementModel.created_at.desc()).limit(max(1, min(limit, 500)))
     if status:
         q = q.where(PaymentDisbursementModel.status == status)
+    mine = await _my_tenant_tokens(session, user)
+    if mine is not None:
+        q = q.where(PaymentDisbursementModel.tenant_id.in_(mine))
     rows = (await session.execute(q)).scalars().all()
-    return rows
+    # Returned raw ORM rows until 2026-09-29, which cannot serialise (`metadata`
+    # is SQLAlchemy's MetaData on the model) — so this list 500'd whenever it
+    # had anything to list.
+    return [DisbursementOut.from_model(r) for r in rows]

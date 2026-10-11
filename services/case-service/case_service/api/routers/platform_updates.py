@@ -44,6 +44,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/platform/update", tags=["platform-updates"])
 
+async def _platform_operator(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """8d (2026-09-29): updates act on the whole install. A tenant's admin on a
+    shared box is not the install's operator."""
+    from case_service.tenancy.identity import is_platform_operator
+
+    if not await is_platform_operator(session, user):
+        raise HTTPException(403, "Platform updates belong to the platform operator.")
+
+
 _MANIFEST_CACHE_TTL = 600  # seconds
 _manifest_cache: dict[str, Any] = {"fetched_at": 0.0, "data": None}
 
@@ -186,7 +198,7 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(_platform_operator)])
 async def update_status(
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
 ):
@@ -234,7 +246,7 @@ class UpdateRequestBody(BaseModel):
     calendar_id: str | None = None  # business calendar; default = first /admin calendar
 
 
-@router.post("/request", status_code=202)
+@router.post("/request", status_code=202, dependencies=[Depends(_platform_operator)])
 async def request_update(
     body: UpdateRequestBody,
     user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.request")),
@@ -303,7 +315,7 @@ async def request_update(
     }
 
 
-@router.delete("/request", status_code=204)
+@router.delete("/request", status_code=204, dependencies=[Depends(_platform_operator)])
 async def cancel_update_request(
     user: AuthenticatedUser = Depends(hxguard.guard("platform.updates.request")),
 ):
@@ -521,7 +533,7 @@ async def _env_labels(session: AsyncSession) -> dict:
     return {e.id: e.label or e.name for e in envs}
 
 
-@router.get("/plans")
+@router.get("/plans", dependencies=[Depends(_platform_operator)])
 async def list_plans(
     session: AsyncSession = Depends(get_session),
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
@@ -537,7 +549,7 @@ async def list_plans(
     return {"plans": out, "total": len(out)}
 
 
-@router.post("/plans/{plan_id}/approve", dependencies=[Depends(_stepup_rl)])
+@router.post("/plans/{plan_id}/approve", dependencies=[Depends(_platform_operator), Depends(_stepup_rl)])
 async def approve_plan(
     plan_id: uuid.UUID,
     body: StepUpBody,
@@ -571,7 +583,7 @@ async def approve_plan(
     return {"status": "active"}
 
 
-@router.post("/plans/{plan_id}/approve-prod", dependencies=[Depends(_stepup_rl)])
+@router.post("/plans/{plan_id}/approve-prod", dependencies=[Depends(_platform_operator), Depends(_stepup_rl)])
 async def approve_prod(
     plan_id: uuid.UUID,
     body: StepUpBody,
@@ -594,7 +606,7 @@ async def approve_prod(
     return {"status": "prod_approved"}
 
 
-@router.post("/plans/{plan_id}/halt")
+@router.post("/plans/{plan_id}/halt", dependencies=[Depends(_platform_operator)])
 async def halt_plan(
     plan_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
@@ -620,7 +632,7 @@ class RollbackRequestBody(StepUpBody):
     to_version: str | None = None  # default: previous_version from the beacon
 
 
-@router.post("/rollback", status_code=202, dependencies=[Depends(_stepup_rl)])
+@router.post("/rollback", status_code=202, dependencies=[Depends(_platform_operator), Depends(_stepup_rl)])
 async def request_rollback(
     body: RollbackRequestBody,
     session: AsyncSession = Depends(get_session),
@@ -665,7 +677,7 @@ class SettingsBody(BaseModel):
     default_soak_hours: int | None = None
 
 
-@router.get("/settings")
+@router.get("/settings", dependencies=[Depends(_platform_operator)])
 async def get_update_settings(
     session: AsyncSession = Depends(get_session),
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),
@@ -679,7 +691,7 @@ async def get_update_settings(
     return {"mode": row.mode, "default_soak_hours": row.default_soak_hours}
 
 
-@router.put("/settings")
+@router.put("/settings", dependencies=[Depends(_platform_operator)])
 async def put_update_settings(
     body: SettingsBody,
     session: AsyncSession = Depends(get_session),
@@ -703,7 +715,7 @@ async def put_update_settings(
     return {"mode": row.mode, "default_soak_hours": row.default_soak_hours}
 
 
-@router.post("/runs/{run_id}/approve")
+@router.post("/runs/{run_id}/approve", dependencies=[Depends(_platform_operator)])
 async def approve_run(
     run_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
@@ -724,7 +736,7 @@ async def approve_run(
 
 # ── Fleet platform versions (Environments-tab column) ────────────────────────
 
-@router.get("/environments")
+@router.get("/environments", dependencies=[Depends(_platform_operator)])
 async def fleet_versions(
     session: AsyncSession = Depends(get_session),
     _: AuthenticatedUser = Depends(hxguard.guard("platform.updates.read")),

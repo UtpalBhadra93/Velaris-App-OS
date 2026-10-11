@@ -3,6 +3,8 @@ import AIProposals from "./AIProposals";
 import BulkActionBar from "./BulkActionBar";
 import CapturedDigest from "./CapturedDigest";
 import CaseEventStream from "./CaseEventStream";
+import { MoveTenantTab, useMayTransferTenant } from "./TenantTransfer";
+import { LegalHoldBanner, LegalHoldTab, useCaseLegalHold } from "./LegalHold";
 import { useApi } from "@shared/hooks";
 import {
   listCases,
@@ -379,7 +381,14 @@ function CaseDetailPanel({
   // The task pane refetches after a claim/complete; re-reading the whole
   // aggregate is one request and keeps every pane consistent with it.
   const refetchMyTask = refetch;
-  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "captured" | "events">("stages");
+  const [tab, setTab] = useState<"my-task" | "stages" | "details" | "timeline" | "sla" | "sharing" | "sessions" | "messages" | "ask" | "risk" | "ai" | "captured" | "events" | "move-tenant" | "legal-hold">("stages");
+  // Offered only to holders of `case.actions.transfer_tenant`, as the server
+  // answers it — never inferred from a role name.
+  const mayTransferTenant = useMayTransferTenant();
+  // Whether the case is under a legal hold, and what the server lets this
+  // caller do about it. `null` (loading, or unreadable) shows nothing.
+  const { status: legalHold, reload: reloadLegalHold } = useCaseLegalHold(caseId);
+  const showLegalHoldTab = !!legalHold && (legalHold.held || legalHold.can_read || legalHold.can_place);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -531,6 +540,12 @@ function CaseDetailPanel({
         )}
       </div>
 
+      {legalHold?.held && (
+        <div style={{ padding: "0 var(--space-lg) var(--space-sm)" }}>
+          <LegalHoldBanner status={legalHold} />
+        </div>
+      )}
+
       {/* Tabs */}
       <Tabs
         ariaLabel="Case"
@@ -548,6 +563,9 @@ function CaseDetailPanel({
           { key: "sessions" as const, label: "HxMeet" },
           { key: "messages" as const, label: "Messages" },
           { key: "ask"      as const, label: "✦ Ask" },
+          mayTransferTenant ? { key: "move-tenant" as const, label: "Move tenant" } : null,
+          showLegalHoldTab ? { key: "legal-hold" as const,
+                               label: legalHold?.held ? "⚖ Legal hold" : "Legal hold" } : null,
         ].filter(Boolean) as Array<{ key: typeof tab; label: string }>)}
         value={tab}
         onChange={setTab}
@@ -601,6 +619,11 @@ function CaseDetailPanel({
         {tab === "ai" && <AIProposals caseId={caseId} />}
         {tab === "captured" && <CapturedDigest caseId={caseId} />}
         {tab === "events" && <CaseEventStream caseId={caseId} />}
+        {tab === "move-tenant" && <MoveTenantTab caseId={caseId} />}
+        {tab === "legal-hold" && (
+          <LegalHoldTab caseId={caseId} status={legalHold}
+                        onChanged={() => { reloadLegalHold(); refetch(); }} />
+        )}
       </div>
     </div>
   );

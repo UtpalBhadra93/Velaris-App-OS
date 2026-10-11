@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared.db.models import ComponentCommitModel, HxWorkStoryModel, HxWorkBoardModel
 from velaris_shared.db.session import get_session
+from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import caller_tenant_uuid, scope_to_caller
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.hxstream.emitter import emit_trace
 from velaris_shared.auth.models import AuthenticatedUser
@@ -164,7 +166,7 @@ async def record_commit(
     body:       RecordCommitRequest,
     background: BackgroundTasks,
     session:    AsyncSession = Depends(get_session),
-    user:       AuthenticatedUser = Depends(get_current_user),
+    user:       AuthenticatedUser = Depends(hxguard.guard("design.branches.write")),
 ):
     """Record a commit for any saved component and trigger story advancement."""
     commit = ComponentCommitModel(
@@ -174,6 +176,7 @@ async def record_commit(
         commit_message=body.commit_message,
         committed_by=user.username or user.user_id,
         diff_snapshot=body.diff_snapshot,
+        tenant_id=await caller_tenant_uuid(session, user),   # 8e
     )
     session.add(commit)
     await session.flush()
@@ -191,8 +194,10 @@ async def record_commit(
     await session.refresh(commit)
 
     # Broadcast to HxStream so it appears in the live feed
+    # `session` was passed positionally into `event_type`, so every recorded
+    # commit answered 500 AFTER it had been committed (found 2026-10-01).
     await emit_trace(
-        session,
+        session=session,
         event_type="commit",
         actor_user_id=user.user_id,
         payload={
@@ -216,9 +221,10 @@ async def list_commits(
     committed_by:   Optional[str] = None,
     limit:          int = 50,
     session:        AsyncSession = Depends(get_session),
-    _:              AuthenticatedUser = Depends(get_current_user),
+    user:           AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     q = select(ComponentCommitModel).order_by(desc(ComponentCommitModel.committed_at)).limit(limit)
+    q = await scope_to_caller(q, ComponentCommitModel, session, user)   # 8e
     if component_type: q = q.where(ComponentCommitModel.component_type == component_type)
     if component_id:   q = q.where(ComponentCommitModel.component_id   == component_id)
     if committed_by:   q = q.where(ComponentCommitModel.committed_by   == committed_by)
@@ -230,7 +236,7 @@ async def list_commits(
 async def get_commit(
     commit_id: uuid.UUID,
     session:   AsyncSession = Depends(get_session),
-    _:         AuthenticatedUser = Depends(get_current_user),
+    _:         AuthenticatedUser = Depends(hxguard.guard("design.branches.read")),
 ):
     c = await session.get(ComponentCommitModel, commit_id)
     if not c:

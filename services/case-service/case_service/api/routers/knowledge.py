@@ -193,7 +193,10 @@ async def knowledge_case_types(
     _: AuthenticatedUser = Depends(get_current_user),
 ):
     """All case types described in plain English — stages, steps, SLAs (latest version per name)."""
-    cts = _latest_versions((await session.execute(select(CaseTypeModel))).scalars().all())
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    cts = _latest_versions((await session.execute(
+        await scope_to_caller(select(CaseTypeModel), CaseTypeModel, session, _))).scalars().all())
     return {
         "total": len(cts),
         "case_types": [_summarise_case_type(ct) for ct in cts],
@@ -207,9 +210,14 @@ async def knowledge_glossary(
 ):
     """Helix concept glossary — static definitions + live DB-derived terms."""
     # Augment with live DB terms — one entry per case type name (latest version)
-    cts = _latest_versions((await session.execute(select(CaseTypeModel))).scalars().all())
-    portals = (await session.execute(select(PortalModel))).scalars().all()
-    groups = (await session.execute(select(AccessGroupModel))).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    cts = _latest_versions((await session.execute(
+        await scope_to_caller(select(CaseTypeModel), CaseTypeModel, session, _))).scalars().all())
+    portals = (await session.execute(
+        await scope_to_caller(select(PortalModel), PortalModel, session, _))).scalars().all()
+    groups = (await session.execute(
+        await scope_to_caller(select(AccessGroupModel), AccessGroupModel, session, _))).scalars().all()
 
     live_terms = []
     for ct in cts:

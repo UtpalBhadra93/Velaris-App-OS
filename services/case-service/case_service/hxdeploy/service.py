@@ -202,6 +202,7 @@ async def promote(
     from_env_id: uuid.UUID | None = None,
     assign_to_user_id: str | None = None,
     assign_to_name: str | None = None,
+    rollout_request: dict | None = None,
 ) -> DeploymentRunModel:
     """Queue a run against a **sealed package**.
 
@@ -241,6 +242,14 @@ async def promote(
     initial_status = "awaiting_approval"
     if window_blocked:
         risk["window_blocked"] = True
+    if rollout_request and rollout_request.get("strategy") not in (None, "", "immediate"):
+        # Oct item 18a. Kept on the run (the approver sees it) and sent beside
+        # the sealed bundle, never inside it.
+        from case_service.rollouts.service import STRATEGIES
+        if rollout_request["strategy"] not in STRATEGIES:
+            raise ValueError(f"rollout strategy must be one of {', '.join(STRATEGIES)}")
+        risk["rollout_request"] = {"strategy": rollout_request["strategy"],
+                                   "percent": int(rollout_request.get("percent") or 0)}
     if assign_to_user_id:
         risk["assigned_to_user_id"] = assign_to_user_id
         risk["assigned_to_name"]    = assign_to_name or assign_to_user_id
@@ -338,6 +347,11 @@ async def _trigger_webhook(
         },
         "timestamp":    _utcnow().isoformat(),
     }
+    # Oct 18a, limitation 10: the CI/CD pipeline this calls is the one that
+    # imports, so it needs the request too — pass it on as `rollout_request` in
+    # the bundle it posts to /deploy/import. Absent when immediate, as before.
+    if (run.risk_summary or {}).get("rollout_request"):
+        payload["rollout_request"] = run.risk_summary["rollout_request"]
     body_bytes = json.dumps(payload).encode()
 
     headers = {"Content-Type": "application/json"}
@@ -419,6 +433,9 @@ async def _push_bundle(
     # recomputes over the same canonical bytes and refuses a mismatch.
     bundle["package_id"] = str(pkg.id)
     bundle["package_checksum"] = pkg.checksum
+    request = (run.risk_summary or {}).get("rollout_request")
+    if request:
+        bundle["rollout_request"] = request
 
     target_url = env.url.rstrip("/") + "/api/v1/deploy/import"
     async with httpx.AsyncClient(timeout=60) as client:

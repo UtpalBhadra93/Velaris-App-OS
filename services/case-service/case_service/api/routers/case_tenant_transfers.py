@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.core.error_codes import coded
-from velaris_shared.db.models import CaseTenantTransferModel
+from velaris_shared.db.models import CaseTenantTransferModel, TenantModel
 from velaris_shared.db.session import get_session
 
 from case_service.case_actions import tenant_transfer as tt
@@ -118,6 +118,41 @@ async def request_transfer(
         _raise(exc)
     await session.commit()
     return tt.as_dict(row, side="source")
+
+
+@router.get("/cases/{case_id}/tenant-transfers/preflight")
+async def preflight_transfer(
+    case_id: uuid.UUID,
+    destination_tenant: str = Query(..., min_length=1, max_length=255),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(_guard),
+) -> dict[str, Any]:
+    """What `request` would refuse, asked BEFORE the button (Oct item 6).
+
+    Same gates as `request_transfer`, in the same order, and it writes nothing.
+    HxArbiter is not asked here: the PEP logs a decision, and a screen that
+    re-checks on every keystroke would fill the decision log with questions
+    nobody acted on. `request` still asks it.
+    """
+    from case_service.api.routers.cases import _get_case_or_404
+
+    tenant = await _caller_tenant(session, user)
+    case = await _get_case_or_404(session, case_id, user)
+    if case.tenant_id != tenant:
+        raise coded(404, "VEL-CASE-TENANT-TRANSFER-404", "Case not found")
+    await hxguard.require_case(session, user, "case.read", case_id)
+    destination = await resolve_tenant(session, destination_tenant)
+    if destination is None:
+        raise coded(404, "VEL-CASE-TENANT-TRANSFER-404", "No such destination tenant.")
+    dest = await session.get(TenantModel, destination[0])
+    why = await tt.blockers(session, case, dest)
+    open_one = (await session.execute(select(CaseTenantTransferModel).where(
+        CaseTenantTransferModel.active_key == str(case.id)))).scalar_one_or_none()
+    if open_one is not None:
+        why.append("a transfer of this case is already open")
+    return {"case_id": str(case_id), "destination_tenant_id": str(destination[0]),
+            "can_move": not why, "blockers": why,
+            "open_transfer_id": str(open_one.id) if open_one else None}
 
 
 @router.get("/case-tenant-transfers")

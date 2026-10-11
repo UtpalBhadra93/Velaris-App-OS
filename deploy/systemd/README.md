@@ -98,11 +98,17 @@ sudo systemctl daemon-reload
 
 ### Three real caveats
 
-1. **The units do NOT run migrations or `npm install`.** `start-velaris.sh` does
-   both. After an update that adds a migration or a dependency, a bare
-   `systemctl restart` would run the app against an unmigrated database or a
-   stale `node_modules`. Keep using `update-velaris.sh` for updates, then
-   `systemctl restart`, rather than restarting alone.
+1. **The units do NOT run migrations or `npm install`.** After an update that
+   adds a migration or a dependency, a bare `systemctl restart` would run the
+   app against an unmigrated database or a stale `node_modules`. **Use
+   `update-velaris.sh` for updates — it is the whole job.** Since v3.1.0 it
+   finishes with `deploy/systemd/refresh-after-update.sh`, which applies the
+   release manifest, **rebuilds Studio** (the unit serves the built `dist` and
+   builds only when it is missing, so without this Studio stays on the previous
+   release) and restarts the units. If it cannot restart them it says so, prints
+   the command, and the update is reported as `restart_required`, not `updated`.
+   Before v3.1.0 an update on a systemd install did none of the three — if you
+   pulled code by hand, run `deploy/systemd/refresh-after-update.sh` once.
 2. **The database is waited for, not merely ordered after.** `After=docker.service`
    orders startup but only guarantees the *daemon* — not that Postgres inside a
    container has bound its port. The engine and case-service units therefore run

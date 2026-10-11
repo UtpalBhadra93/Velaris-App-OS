@@ -34,7 +34,7 @@ import {
   listForms,
   getForm,
 } from "@shared/api/client";
-import { Card, Button, Spinner, EmptyState, Stat, TimeAgo, Tabs } from "@shared/components";
+import { Card, Button, Spinner, EmptyState, Stat, TimeAgo, Tabs, OwnershipPill } from "@shared/components";
 import { getAccessToken } from "@/auth/tokenManager";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -896,6 +896,7 @@ function RulesTab() {
             <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.enabled ? "var(--status-completed)" : "var(--status-cancelled)", flexShrink: 0 }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{r.name}</span>
+              <OwnershipPill row={r} />
               <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-muted)", padding: "1px 6px", background: "var(--bg-elevated)", borderRadius: "var(--radius-sm)" }}>
                 {r.rule_type}
               </span>

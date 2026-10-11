@@ -75,6 +75,7 @@ async def enqueue_document(
     tenant_id: str | None,
     requested_by: str | None,
     reindex: bool = False,
+    staged: dict[str, str] | None = None,
 ) -> tuple[Any, bool]:
     """Queue one document. Returns `(row, created)`.
 
@@ -102,7 +103,7 @@ async def enqueue_document(
         return await _insert(session, DocumentIndexJobModel,
                              document_id=document_id, case_id=case_id,
                              tenant_id=tenant_id, requested_by=requested_by,
-                             reindex=reindex), True
+                             reindex=reindex, staged=staged), True
     except IntegrityError:
         # Two enqueues of the same document at once: the unique index on
         # `active_key` is what decides, not the SELECT above, which can be stale
@@ -121,7 +122,8 @@ async def enqueue_document(
 
 
 async def _insert(session: AsyncSession, DocumentIndexJobModel, *, document_id,
-                  case_id, tenant_id, requested_by, reindex):
+                  case_id, tenant_id, requested_by, reindex, staged=None):
+    staged = staged or {}
     row = DocumentIndexJobModel(
         id=uuid.uuid4(),
         # `cases.tenant_id` is a GUID column and this one is a string, so the
@@ -134,6 +136,9 @@ async def _insert(session: AsyncSession, DocumentIndexJobModel, *, document_id,
         active_key=str(document_id),
         reindex=reindex,
         requested_by=requested_by,
+        staged_storage_key=staged.get("storage_key"),
+        staged_filename=staged.get("filename"),
+        staged_content_type=staged.get("content_type"),
         created_at=_utcnow(),
     )
     session.add(row)
@@ -245,6 +250,9 @@ async def run_one(session: AsyncSession, job) -> dict:
     job_id, document_id = job.id, job.document_id
     job_case_id, job_tenant_id = job.case_id, job.tenant_id
     attempts, max_attempts = job.attempts, job.max_attempts
+    staged_key = getattr(job, "staged_storage_key", None)
+    staged_type = getattr(job, "staged_content_type", None)
+    staged_name = getattr(job, "staged_filename", None)
 
     # ── What may have changed since this job was queued ──────────────────
     #
@@ -257,8 +265,14 @@ async def run_one(session: AsyncSession, job) -> dict:
         if refusal is not None:
             await _finish(session, job_id, document_id, status="failed",
                           chunks=0, error=refusal)
+            await discard_staged(staged_key)
             return {"document_id": str(document_id), "status": "failed",
                     "error": refusal}
+
+    if staged_key:
+        return await _run_staged(session, job_id, document_id, job_case_id,
+                                 job_tenant_id, staged_key, staged_type,
+                                 staged_name, attempts, max_attempts)
 
     doc = (await session.execute(
         select(DocumentModel).where(DocumentModel.id == document_id)
@@ -323,6 +337,69 @@ async def run_one(session: AsyncSession, job) -> dict:
     await _finish(session, job_id, document_id, status="done", chunks=chunks)
     return {"document_id": str(document_id), "status": "done",
             "filename": doc.filename, "chunks": chunks}
+
+
+def staged_key_for(document_id) -> str:
+    """Where a background upload's bytes wait. One fixed prefix, so an operator
+    can see (and a sweep can find) everything the queue is holding."""
+    return f"hxnexus/staged-uploads/{document_id}"
+
+
+async def discard_staged(key: str | None) -> None:
+    """Delete a staged upload. Never raises: a failed delete is logged, and the
+    job's outcome is already recorded — losing it over cleanup would be worse."""
+    if not key:
+        return
+    from case_service.storage import get_storage_backend
+
+    try:
+        await get_storage_backend().delete(key)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not delete staged upload %s: %s", key, exc)
+
+
+async def abandon_staged(session: AsyncSession, job_id, document_id, why: str) -> None:
+    """End a staged job whose bytes never arrived — cancelled, with the reason."""
+    await _finish(session, job_id, document_id, status="cancelled", chunks=0,
+                  error=f"cancelled: {why}")
+    await discard_staged(staged_key_for(document_id))
+
+
+async def _run_staged(session: AsyncSession, job_id, document_id, case_id, tenant_id,
+                      key, content_type, filename, attempts, max_attempts) -> dict:
+    """Index a background upload from its staged bytes (mig 206).
+
+    There is no document row: the synchronous upload never made one either, and
+    the chunks land under the same fresh `document_id` it would have used. The
+    staged bytes are deleted when the job ENDS (done, or failed for good) — they
+    are the customer's file, kept only as long as the work needs them. A retry
+    that is still pending keeps them.
+    """
+    from case_service.hxnexus.service import index_document
+    from case_service.storage import get_storage_backend
+
+    try:
+        data = await get_storage_backend().get(key)
+        chunks = await index_document(
+            session, document_id, case_id, data,
+            content_type or "application/octet-stream", tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — the outcome is a row, not a 500
+        await session.rollback()
+        message = f"{type(exc).__name__}: {exc}"[:2000]
+        log.warning("Document index job %s (staged upload) failed: %s", job_id, message)
+        exhausted = attempts >= max_attempts
+        await _finish(session, job_id, document_id,
+                      status="failed" if exhausted else "pending", error=message)
+        if exhausted:
+            await discard_staged(key)
+        return {"document_id": str(document_id),
+                "status": "failed" if exhausted else "pending", "error": message}
+
+    await _finish(session, job_id, document_id, status="done", chunks=chunks)
+    await discard_staged(key)
+    return {"document_id": str(document_id), "status": "done",
+            "filename": filename, "chunks": chunks}
 
 
 async def reclaim_stale(session: AsyncSession,
@@ -451,6 +528,9 @@ def as_dict(job) -> dict:
         "chunks_indexed": job.chunks_indexed,
         "last_error": job.last_error,
         "requested_by": job.requested_by,
+        # A background upload (mig 206): no document row, so its name is here.
+        "staged_upload": bool(getattr(job, "staged_storage_key", None)),
+        "staged_filename": getattr(job, "staged_filename", None),
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,

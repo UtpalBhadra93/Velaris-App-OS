@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import caller_tenant_uuid
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.session import get_session
@@ -359,6 +361,8 @@ async def remove_card_from_sprint(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     await service.remove_card_from_sprint(session, sprint_id, case_id)
     await session.commit()
 
@@ -516,6 +520,7 @@ async def create_story(
             content_snapshot=base_snapshot,
             base_snapshot=base_snapshot,
             created_by=_actor(user),
+            tenant_id=await caller_tenant_uuid(session, user),   # 8e
         )
         session.add(branch)
         await session.flush()

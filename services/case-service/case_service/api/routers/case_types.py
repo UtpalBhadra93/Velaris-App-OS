@@ -21,7 +21,9 @@ from case_service.api.schemas.cases import (
     CaseTypeListResponse,
     CaseTypeResponse,
 )
+from case_service.case_types import ownership
 from velaris_shared.db import repository as repo
+from velaris_shared.db.models import case_type_tenant_key
 from velaris_shared.db.models import (
     CaseInstanceModel,
     CaseTypeModel,
@@ -76,16 +78,12 @@ async def deploy_case_type(
 ):
     """Deploy (register) a new case type definition.
 
-    Access rules:
-      - Global case type (tenant_id = None): requires admin + developer role.
-      - Tenant-owned case type: requires developer role in that tenant.
+    Access rules (8i): the platform operator may create a default
+    (tenant_id = None) or a type for any tenant, exactly as before; anybody
+    else creates in their own tenant, and naming another tenant is 403.
     """
-    _assert_can_write_case_type(user, body.tenant_id, action="create")
-
-    existing = await repo.get_case_type_by_name(
-        session, body.name, body.version
-    )
-    if existing:
+    owner = await authorize_create(session, user, body.tenant_id)
+    if await name_taken(session, owner, body.name, body.version):
         raise HTTPException(
             status_code=409,
             detail=f"Case type '{body.name}' v{body.version} already exists",
@@ -93,14 +91,14 @@ async def deploy_case_type(
 
     await _validate_stage_config(
         session, body.definition_json,
-        tenant_id=body.tenant_id, case_type_id=None)
+        tenant_id=owner, case_type_id=None)
 
     ct = await repo.create_case_type(
         session,
         data={
             "name": body.name,
             "version": body.version,
-            "tenant_id": body.tenant_id,
+            "tenant_id": owner,
             "lifecycle_process_id": body.lifecycle_process_id,
             "data_model_id": body.data_model_id,
             "security_profile_id": body.security_profile_id,
@@ -128,12 +126,19 @@ async def list_case_types(
     #   1. Explicit ?tenant_id param (admin override)
     #   2. Auto-derive from the authenticated user's tenant
     #   3. Superadmin with no tenant → no filter (sees everything)
-    effective_tenant_id = tenant_id
-    if effective_tenant_id is None and user.tenant_id:
-        try:
-            effective_tenant_id = uuid.UUID(str(user.tenant_id))
-        except (ValueError, AttributeError):
-            pass
+    # 8d (2026-09-29): a tenant token that is a SLUG failed the UUID parse and
+    # fell through to "no tenant" — every tenant's case types — and any caller
+    # could name another tenant in `tenant_id`. Now the caller's own tenant,
+    # resolved in either spelling; only superadmin may name another.
+    from case_service.tenancy.identity import is_superadmin, resolve_tenant
+
+    effective_tenant_id = tenant_id if is_superadmin(user) else None
+    if effective_tenant_id is None and not is_superadmin(user):
+        resolved = await resolve_tenant(session, str(user.tenant_id or "default"))
+        # A token that resolves to no tenant fell through to NO filter — every
+        # tenant's case types (8i). The nil UUID owns nothing, so it now sees
+        # the defaults alone.
+        effective_tenant_id = resolved[0] if resolved is not None else uuid.UUID(int=0)
 
     items, total = await repo.list_case_types(
         session,
@@ -141,9 +146,54 @@ async def list_case_types(
         limit=page_size,
         tenant_id=effective_tenant_id,   # returns tenant's + globals (tenant_id IS NULL)
     )
+    stale = await ownership.updates_available(session, items)
     return CaseTypeListResponse(
-        items=items, total=total, page=page, page_size=page_size
+        items=[_with_update_flag(i, stale) for i in items],
+        total=total, page=page, page_size=page_size,
     )
+
+
+def _with_update_flag(ct: CaseTypeModel, stale: set[uuid.UUID]) -> CaseTypeResponse:
+    out = CaseTypeResponse.model_validate(ct)
+    out.update_available = ct.id in stale
+    return out
+
+
+# ── 8i: moving legacy defaults to the tenant that uses them ─────────────────
+# Declared before `/{case_type_id}`, which would otherwise claim the path.
+
+class BackfillApply(BaseModel):
+    case_type_ids: list[uuid.UUID]
+
+
+async def _operator_only(session: AsyncSession, user: AuthenticatedUser) -> None:
+    from case_service.tenancy.identity import is_platform_operator
+    if not await is_platform_operator(session, user):
+        raise HTTPException(status_code=403,
+                            detail="Only the platform operator may move default case types.")
+
+
+@router.get("/ownership/backfill")
+async def preview_ownership_backfill(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("design.case_types.write")),
+):
+    """Every default case type, who uses it, and what the operator could move.
+    Reads only."""
+    await _operator_only(session, user)
+    return {"items": await ownership.backfill_proposals(session)}
+
+
+@router.post("/ownership/backfill")
+async def apply_ownership_backfill(
+    body: BackfillApply,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("design.case_types.write")),
+):
+    """Move the chosen defaults; each is re-checked and skipped with a reason
+    when it is no longer a one-tenant default."""
+    await _operator_only(session, user)
+    return await ownership.apply_backfill(session, body.case_type_ids)
 
 
 @router.get("/{case_type_id}", response_model=CaseTypeResponse)
@@ -160,9 +210,88 @@ async def get_case_type(
     # Read-side mirror of the write rule: a tenant-owned case type is invisible
     # outside its tenant (404, anti-oracle). Global case types (tenant_id NULL)
     # and tenant-less callers (platform operators) behave exactly as before.
-    if ct.tenant_id is not None and user.tenant_id and str(ct.tenant_id) != str(user.tenant_id):
+    # A tenant token may be the slug or the id; a literal string compare refused
+    # slug-token users their OWN case types (2026-09-29).
+    from case_service.tenancy.identity import same_tenant as _same_tenant
+    if ct.tenant_id is not None and user.tenant_id \
+            and not await _same_tenant(session, ct.tenant_id, user.tenant_id):
         raise HTTPException(status_code=404, detail="Case type not found")
-    return ct
+    return _with_update_flag(ct, await ownership.updates_available(session, [ct]))
+
+
+async def _assert_owns(
+    session: AsyncSession, user: AuthenticatedUser, ct: CaseTypeModel,
+) -> None:
+    """Delete and restore act on the row itself, never on a fork (8i).
+
+    They were gated on the privilege alone: any tenant's admin could delete
+    another tenant's case type, or a default out from under every tenant.
+    Another tenant's row is 404; a default is the platform operator's.
+    """
+    if await ownership.may_write_in_place(session, user, ct):
+        return
+    if ct.tenant_id is not None:
+        raise HTTPException(status_code=404, detail="Case type not found")
+    raise HTTPException(
+        status_code=403,
+        detail="A default case type is shared by every tenant; only the "
+               "platform operator may delete or restore it.")
+
+
+async def authorize_create(
+    session: AsyncSession, user: AuthenticatedUser, requested: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """The tenant a new case type goes into, after the privilege check (8i).
+
+    Every path that creates a case type — this route, HxDraft, HxDBMigrate,
+    the NLP builder, the app import — comes through here. The platform operator
+    keeps the tenant as asked (NULL = a default, as before); anybody else
+    creates in their own tenant.
+    """
+    try:
+        owner = await ownership.owner_for_create(session, user, requested)
+    except ownership.OwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    _assert_can_write_case_type(user, owner, action="create")
+    return owner
+
+
+async def name_taken(
+    session: AsyncSession, owner: uuid.UUID | None, name: str, version: str,
+) -> bool:
+    """Is name + version already used in this owner's namespace? Unique per
+    tenant since migration 212; a default and a tenant's own may share it."""
+    return (await session.execute(
+        select(CaseTypeModel.id).where(
+            CaseTypeModel.tenant_key == case_type_tenant_key(owner),
+            CaseTypeModel.name == name,
+            CaseTypeModel.version == version,
+        ).limit(1)
+    )).first() is not None
+
+
+async def authorize_edit(
+    session: AsyncSession, user: AuthenticatedUser, ct: CaseTypeModel,
+) -> CaseTypeModel:
+    """The row an edit lands on (8i): the row itself, or the caller's fork of a
+    default the caller may not change for every tenant.
+
+    Another tenant's row is 404, as a read of it is. The privilege is checked
+    BEFORE a fork is made, so a refused edit leaves nothing behind.
+    """
+    if await ownership.may_write_in_place(session, user, ct):
+        _assert_can_write_case_type(user, ct.tenant_id, action="update")
+        return ct
+    if ct.tenant_id is not None:
+        raise HTTPException(status_code=404, detail="Case type not found")
+    mine = await ownership.caller_tenant(session, user)
+    if mine is None:
+        raise HTTPException(status_code=403, detail="Your tenant could not be resolved.")
+    _assert_can_write_case_type(user, mine, action="update")
+    try:
+        return await ownership.fork(session, ct, mine)
+    except ownership.OwnershipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 def _assert_can_write_case_type(
@@ -220,11 +349,9 @@ def _assert_can_write_case_type(
                     "Configure this in Access Directory → Access Roles."
                 ),
             )
-        if str(case_type_tenant_id) != str(user.tenant_id or ""):
-            raise HTTPException(
-                status_code=403,
-                detail="You can only edit case types owned by your tenant.",
-            )
+        # Which tenant's row this is was decided by the caller (8i:
+        # `authorize_create` / `authorize_edit`); a string compare here refused
+        # slug-token users their own case types.
 
 
 @router.patch("/{case_type_id}", response_model=CaseTypeResponse)
@@ -242,7 +369,9 @@ async def update_case_type(
             status_code=404, detail="Case type not found"
         )
 
-    _assert_can_write_case_type(user, ct.tenant_id, action="update")
+    # 8i: a tenant editing a default edits its own fork of it from now on.
+    ct = await authorize_edit(session, user, ct)
+    case_type_id = ct.id
 
     allowed = {
         "definition_json", "description", "default_priority",
@@ -321,6 +450,7 @@ async def delete_case_type(
     case_type_id: uuid.UUID,
     hard: bool = False,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.case_types.write")),
 ):
     """Soft-delete a case type (or hard-delete if ?hard=true).
 
@@ -330,6 +460,7 @@ async def delete_case_type(
     ct = await repo.get_case_type(session, case_type_id)
     if ct is None:
         raise HTTPException(status_code=404, detail="Case type not found")
+    await _assert_owns(session, _user, ct)
 
     if hard:
         # A hard delete of a case type that still has cases violates the
@@ -363,11 +494,13 @@ async def delete_case_type(
 async def restore_case_type(
     case_type_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    _user: AuthenticatedUser = Depends(hxguard.guard("design.case_types.write")),
 ):
     """Restore a soft-deleted case type."""
     ct = await repo.get_case_type(session, case_type_id)
     if ct is None:
         raise HTTPException(status_code=404, detail="Case type not found")
+    await _assert_owns(session, _user, ct)
 
     if not getattr(ct, "is_deleted", False):
         raise HTTPException(status_code=409, detail="Case type is not deleted")

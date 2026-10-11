@@ -64,6 +64,9 @@ PRIVILEGE = "case.actions.transfer_tenant"
 MOVE_RETAG: frozenset[str] = frozenset({
     "documents", "hxnexus_document_chunks", "doc_extraction_jobs",
     "document_index_jobs", "case_outcomes",
+    # Outbound-only send log (nothing threads back through it). Its connector is
+    # the source's, so `connector_id` is cleared on the way (Oct item 8a).
+    "sms_messages",
 })
 
 #: Content that follows the case with no tenant column to change.
@@ -81,9 +84,30 @@ CLOSE: frozenset[str] = frozenset({"case_assignments", "case_sla_instances"})
 SEVER: frozenset[str] = frozenset({
     "case_relationships", "portal_customer_cases", "portal_submission_refs",
     "hxwork_sprint_cards",
+    # Oct 18a: which arm of the SOURCE's content rollout the case landed in.
+    # The destination has no such rollout; the source keeps its count honest.
+    "content_rollout_cases", "content_rollout_shadow",
     # `case_instances.parent_case_id`, both directions.
     "case_instances",
 })
+
+#: Customer threads that run on the SOURCE's own channels — its WhatsApp and SMS
+#: endpoints, its mailboxes (Oct item 8a; blocked the move until 2026-09-28).
+#:
+#: They are **not moved**. Moved, the destination could reply through the
+#: source's number or mailbox, and the customer's next message — matched by an
+#: open conversation on the source's endpoint, or by message id — would land in
+#: another company's case. So the source keeps them, **detached** from the case
+#: (`case_id` → NULL) and, for conversations, **closed**: the customer's next
+#: message opens a fresh thread at the source, which is who they wrote to. The
+#: destination gets the history as a **read-only transcript** note on the case,
+#: source staff pseudonymised, and talks to the customer on its own channels.
+REHOME: frozenset[str] = frozenset({
+    "channel_conversations", "channel_messages", "email_messages",
+})
+
+#: The transcript is a note, not an archive. Past this it says it was cut.
+TRANSCRIPT_MAX_CHARS = 200_000
 
 #: Any row here refuses the transfer, with the table named.
 BLOCK: dict[str, str] = {
@@ -99,16 +123,6 @@ BLOCK: dict[str, str] = {
     "handoff_work_orders": "work on it has been handed to an outside party",
     "field_sync_events": "a field node holds it",
     "doc_storage_routes": "its documents are routed to tenant-specific storage",
-    # Customer communications run on the SOURCE's mailboxes, numbers and
-    # WhatsApp endpoints. Moved, the destination could reply through the
-    # source's channel, and the customer's next reply — threaded by message id
-    # or by an open conversation on the source's endpoint — would land in
-    # another company's case. Found in the 2026-09-17 audit; blocked rather
-    # than moved until threads can be re-homed onto the destination's channels.
-    "channel_conversations": "its customer conversations run on the source's own channel endpoints",
-    "channel_messages": "its customer conversations run on the source's own channel endpoints",
-    "email_messages": "its emails thread through the source's own mailboxes",
-    "sms_messages": "its text messages run on the source's own numbers",
 }
 
 #: The source's own operational record about the case. Stays with the source,
@@ -125,6 +139,10 @@ STAY: frozenset[str] = frozenset({
     "hxcanvas_boards", "portal_csat",
     # This module's own table: the tombstone the source keeps.
     "case_tenant_transfers",
+    # Oct item 13. An ACTIVE hold refuses the move outright (see `blockers`),
+    # so only released holds are ever here at move time: the source's record
+    # that it once froze the case, for a matter the destination has no part in.
+    "legal_holds",
 })
 
 #: Every column in a moved table that names a person of the SOURCE tenant.
@@ -160,7 +178,8 @@ CASE_COLUMNS = ("case_id", "case_instance_id", "parent_case_id", "source_case_id
 
 
 def classified() -> set[str]:
-    return set(MOVE_RETAG) | set(MOVE_WITH_CASE) | set(CLOSE) | set(SEVER) | set(BLOCK) | set(STAY)
+    return (set(MOVE_RETAG) | set(MOVE_WITH_CASE) | set(CLOSE) | set(SEVER)
+            | set(REHOME) | set(BLOCK) | set(STAY))
 
 
 def unclassified() -> set[str]:
@@ -255,6 +274,12 @@ async def blockers(session: AsyncSession, case: CaseInstanceModel,
             CaseRiskHoldModel.status == "open"))).scalar() or 0)
     if holds:
         out.append("an HxSentinel risk hold is open on it")
+
+    # A legal hold (Oct item 13). Until it existed, the risk hold above was the
+    # stand-in for "this case must stay where it is".
+    from case_service.legal_hold import service as _legal_hold
+    if await _legal_hold.is_held(session, case.id):
+        out.append("it is under a legal hold")
 
     # The data subject, under every identifier a request may have been filed
     # with: the portal submitter's email, and any portal customer linked to the
@@ -388,6 +413,71 @@ def _retag(value: Any, source: TenantModel, destination: TenantModel) -> Any:
     return value
 
 
+def _when(value) -> str:
+    return value.strftime("%Y-%m-%d %H:%M") if value else "—"
+
+
+async def _rehome_communications(session: AsyncSession, case: CaseInstanceModel,
+                                 source: TenantModel, row: CaseTenantTransferModel,
+                                 manifest: dict[str, Any]) -> None:
+    """Detach the source's customer threads from the case; hand the destination
+    a read-only transcript of them. See `REHOME`."""
+    from velaris_shared.db.models import (
+        CaseMessageModel, ChannelConversationModel, ChannelMessageModel, EmailMessageModel,
+    )
+
+    entries: list[tuple[Any, str]] = []
+    for m in (await session.execute(select(ChannelMessageModel).where(
+            ChannelMessageModel.case_id == case.id))).scalars().all():
+        who = (f"customer ({m.peer_address})" if m.direction == "inbound"
+               else f"agent {pseudonym(source.id, m.author) or '—'}")
+        entries.append((m.received_at or m.sent_at or m.created_at,
+                        f"[{_when(m.received_at or m.sent_at or m.created_at)}] "
+                        f"{(m.channel or 'channel').upper()} · {who}\n{m.body or ''}"))
+    for e in (await session.execute(select(EmailMessageModel).where(
+            EmailMessageModel.case_id == case.id))).scalars().all():
+        at = e.received_at or e.sent_at or e.created_at
+        head = (f"from {e.from_address}" if e.direction == "inbound"
+                else f"to {', '.join(e.to_addresses or [])}")
+        entries.append((at, f"[{_when(at)}] EMAIL · {e.direction} · {head}\n"
+                            f"Subject: {e.subject or ''}\n{e.body_text or ''}"))
+
+    tables = Base.metadata.tables
+    conv = tables["channel_conversations"]
+    res = await session.execute(update(conv).where(conv.c.case_id == case.id).values(
+        case_id=None, status="closed", assigned_to=None))
+    if res.rowcount:
+        manifest["rehomed"]["channel_conversations"] = res.rowcount
+    for name in ("channel_messages", "email_messages"):
+        t = tables[name]
+        res = await session.execute(update(t).where(t.c.case_id == case.id).values(case_id=None))
+        if res.rowcount:
+            manifest["rehomed"][name] = res.rowcount
+
+    if not entries:
+        return
+    def _at(value) -> datetime:
+        # Columns here mix naive and aware datetimes; compare them as UTC.
+        if value is None:
+            return datetime.max.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    entries.sort(key=lambda x: _at(x[0]))
+    body = "\n\n".join(text for _, text in entries)
+    cut = len(body) > TRANSCRIPT_MAX_CHARS
+    if cut:
+        body = body[:TRANSCRIPT_MAX_CHARS]
+    header = (f"Customer communication history carried from {source.name} when this "
+              f"case moved here (transfer {row.id}). Read-only: the live threads "
+              f"stay on {source.name}'s own channels. Reply from this tenant's channels.")
+    if cut:
+        header += f" Truncated at {TRANSCRIPT_MAX_CHARS} characters."
+    session.add(CaseMessageModel(
+        id=uuid.uuid4(), case_id=case.id, author="velaris:tenant-transfer",
+        author_name="Tenant transfer", body=header + "\n\n" + body,
+        portal_visible=False))
+    manifest["rehomed"]["transcript_entries"] = len(entries)
+
+
 async def accept(session: AsyncSession, *, row: CaseTenantTransferModel, actor: str,
                  note: str | None, restart_sla=None) -> CaseTenantTransferModel:
     """The move. Every check again, then every write, then one commit by the caller.
@@ -415,7 +505,8 @@ async def accept(session: AsyncSession, *, row: CaseTenantTransferModel, actor: 
         raise TransferError("Policy refuses moving this case to that tenant.",
                             code="VEL-CASE-TENANT-TRANSFER-POLICY-403", status_code=403)
 
-    manifest: dict[str, Any] = {"moved": {}, "closed": {}, "severed": {}, "stayed": sorted(STAY)}
+    manifest: dict[str, Any] = {"moved": {}, "closed": {}, "severed": {}, "rehomed": {},
+                                "stayed": sorted(STAY)}
     tables = Base.metadata.tables
 
     # Refuse, before any write, a row tagged with a THIRD tenant. It would be
@@ -485,7 +576,8 @@ async def accept(session: AsyncSession, *, row: CaseTenantTransferModel, actor: 
         or_(t.c.source_case_id == case.id, t.c.target_case_id == case.id)))
     if res.rowcount:
         manifest["severed"]["case_relationships"] = res.rowcount
-    for name in ("portal_customer_cases", "portal_submission_refs", "hxwork_sprint_cards"):
+    for name in ("portal_customer_cases", "portal_submission_refs", "hxwork_sprint_cards",
+                 "content_rollout_cases", "content_rollout_shadow"):
         t = tables[name]
         res = await session.execute(delete(t).where(t.c.case_id == case.id))
         if res.rowcount:
@@ -510,6 +602,13 @@ async def accept(session: AsyncSession, *, row: CaseTenantTransferModel, actor: 
         HxGuardTupleModel.object_type == "case", HxGuardTupleModel.object_id == case.id))
     if res.rowcount:
         manifest["severed"]["hxguard_tuples"] = res.rowcount
+
+    # ── REHOME ──────────────────────────────────────────────────────────────
+    # After the pseudonym pass on purpose: the transcript note is written by
+    # the platform, and its author must not be run through it.
+    await _rehome_communications(session, case, source, row, manifest)
+    t = tables["sms_messages"]
+    await session.execute(update(t).where(t.c.case_id == case.id).values(connector_id=None))
 
     # ── the case itself ─────────────────────────────────────────────────────
     previous_creator = case.created_by

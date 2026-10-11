@@ -28,6 +28,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared import hxguard
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import (
@@ -109,7 +110,7 @@ async def _require_namespace_role(session: AsyncSession, user: AuthenticatedUser
 async def create_connector(
     body: ConnectorCreate,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.write")),
 ):
     if body.connector_type not in {ct["connector_type"] for ct in list_connector_types()}:
         raise coded(400, CONN_UNKNOWN_TYPE_400, f"Unknown connector_type: '{body.connector_type}'")
@@ -122,7 +123,11 @@ async def create_connector(
         raise HTTPException(409, f"Connector '{body.name}' already exists")
 
     await hxvault.ensure_dek(session, user.tenant_id)
+    # No connector recorded an owner until 2026-09-30, and a NULL one is shared
+    # with every tenant (list_connectors). The platform operator's stays that
+    # way, as before; a tenant's is its own.
     connector = ConnectorRegistryModel(
+        tenant_id=await tenant_for_write(session, user, None),
         name=body.name,
         connector_type=body.connector_type,
         description=body.description,
@@ -161,7 +166,7 @@ async def list_connectors(
     connector_type: Optional[str] = Query(None),
     enabled:        Optional[bool] = Query(None),
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.read")),
 ):
     from sqlalchemy import or_
     stmt = select(ConnectorRegistryModel).order_by(ConnectorRegistryModel.name)
@@ -194,7 +199,7 @@ async def list_connectors(
 async def get_connector_detail(
     connector_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.read")),
 ):
     connector = await _get_or_404(session, connector_id)
     out = _connector_out(connector, include_config=True)
@@ -216,7 +221,7 @@ async def update_connector(
     body: ConnectorUpdate,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.write")),
 ):
     connector = await _get_or_404(session, connector_id)
     if body.name        is not None: connector.name        = body.name
@@ -251,7 +256,7 @@ async def update_connector(
 async def delete_connector(
     connector_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.write")),
 ):
     connector = await _get_or_404(session, connector_id)
     # Retire (never delete) the connector's variable namespace — written
@@ -279,7 +284,7 @@ async def delete_connector(
 async def test_connector(
     connector_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.execute")),
 ):
     """Test connector credentials and connectivity."""
     connector = await _get_or_404(session, connector_id)
@@ -305,7 +310,7 @@ async def sandbox_execute(
     connector_id: uuid.UUID,
     body: SandboxRequest,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.execute")),
 ):
     """Sandbox: execute a connector with sample input data."""
     connector = await _get_or_404(session, connector_id)
@@ -378,7 +383,7 @@ async def list_events(
     page:         int                 = Query(1, ge=1),
     page_size:    int                 = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.read")),
 ):
     """Unified paginated event list — outbound connector calls + inbound webhooks."""
     events: list[dict] = []
@@ -389,6 +394,10 @@ async def list_events(
         if connector_id: stmt = stmt.where(IntegrationCallModel.connector_id == connector_id)
         if case_id:      stmt = stmt.where(IntegrationCallModel.case_id == case_id)
         if status:       stmt = stmt.where(IntegrationCallModel.status == status)
+        # Every tenant's rows until 2026-09-29 (8d).
+        from case_service.tenancy.identity import scope_to_caller
+        stmt = await scope_to_caller(stmt, IntegrationCallModel, session, _,
+                                     via=(IntegrationCallModel.connector_id, ConnectorRegistryModel))
         rows = (await session.execute(stmt)).scalars().all()
         for r in rows:
             events.append({**_call_out(r), "direction": "outbound"})
@@ -400,6 +409,8 @@ async def list_events(
         if connector_id: stmt2 = stmt2.where(WebhookReceiverEventModel.connector_id == connector_id)
         if case_id:      stmt2 = stmt2.where(WebhookReceiverEventModel.matched_case_id == case_id)
         if status:       stmt2 = stmt2.where(WebhookReceiverEventModel.status == status)
+        from case_service.tenancy.identity import scope_to_caller
+        stmt2 = await scope_to_caller(stmt2, WebhookReceiverEventModel, session, _)
         rows2 = (await session.execute(stmt2)).scalars().all()
         for r in rows2:
             events.append({
@@ -437,12 +448,16 @@ async def list_calls(
     status:       Optional[str]       = Query(None),
     limit:        int                 = Query(50, le=200),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.read")),
 ):
     stmt = select(IntegrationCallModel).order_by(desc(IntegrationCallModel.created_at)).limit(limit)
     if connector_id: stmt = stmt.where(IntegrationCallModel.connector_id == connector_id)
     if case_id:      stmt = stmt.where(IntegrationCallModel.case_id == case_id)
     if status:       stmt = stmt.where(IntegrationCallModel.status == status)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, IntegrationCallModel, session, _,
+                                 via=(IntegrationCallModel.connector_id, ConnectorRegistryModel))
     rows = (await session.execute(stmt)).scalars().all()
     return {"calls": [_call_out(r) for r in rows], "total": len(rows)}
 
@@ -454,11 +469,15 @@ async def list_dlq(
     connector_id: Optional[uuid.UUID] = Query(None),
     unresolved_only: bool             = Query(True),
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.read")),
 ):
     stmt = select(DeadLetterQueueModel).order_by(desc(DeadLetterQueueModel.created_at))
     if connector_id:    stmt = stmt.where(DeadLetterQueueModel.connector_id == connector_id)
     if unresolved_only: stmt = stmt.where(DeadLetterQueueModel.resolution.is_(None))
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, DeadLetterQueueModel, session, _,
+                                 via=(DeadLetterQueueModel.connector_id, ConnectorRegistryModel))
     rows = (await session.execute(stmt)).scalars().all()
     return {"items": [_dlq_out(r) for r in rows], "total": len(rows)}
 
@@ -467,7 +486,7 @@ async def list_dlq(
 async def retry_dlq(
     item_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("integration.connectors.write")),
 ):
     item = await session.get(DeadLetterQueueModel, item_id)
     if not item:

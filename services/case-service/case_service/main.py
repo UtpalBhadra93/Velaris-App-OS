@@ -16,6 +16,7 @@ from case_service.api.routers import (
     case_tenant_transfers,
     case_types,
     cases,
+    legal_holds,
     data_models,
     forms,
     my_work,
@@ -77,6 +78,7 @@ from case_service.api.routers.model_market import router as model_market_router 
 from case_service.api.routers.healing import router as healing_router  # F-08 self-healing processes
 from case_service.api.routers.handoff import router as handoff_router  # F-09 agent handoff
 from case_service.api.routers.field import router as field_router  # F-10 field operations
+from case_service.api.routers.rollouts import router as rollouts_router  # Oct 18a staged rollouts
 from case_service.api.routers.intent import router as intent_router  # F-11 intent execution
 from case_service.api.routers.negotiate import router as negotiate_router  # F-12 negotiation
 from case_service.api.routers.engage import router as engage_router  # item 12 rep desk
@@ -645,6 +647,16 @@ async def lifespan(app: FastAPI):
         logger.warning("Self-healing watch sweep unavailable: %s", _e)
     # <<< F-08 healing sweep
 
+    # >>> Oct 18a: the content rollout sweep (guard, ramp, shadow). It acts only
+    # on rollouts an operator gave a policy, so with none it finds nothing;
+    # VELARIS_ROLLOUT_SWEEP=off stops it outright.
+    try:
+        from case_service.rollouts.sweep import cron as _rollout_cron
+        _asyncio.create_task(_rollout_cron())
+    except Exception as _e:
+        logger.warning("Rollout sweep unavailable: %s", _e)
+    # <<< Oct 18a rollout sweep
+
     # >>> RPA bot runner
     # Default OFF: this loop starts containers on the host, so it is opt-in per
     # deployment. Its own `start()` checks the flag and logs when disabled, so a
@@ -843,11 +855,18 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    from fastapi import Depends as _Depends
+
+    from case_service.core.tenant_path_guard import tenant_path_guard
+
     app = FastAPI(
         title="Velaris Case Service",
         description="Case management API for the Velaris BPM platform",
         version="0.1.0",
         lifespan=lifespan,
+        # 8d (2026-09-29): every route keyed by a tenant-owned id refuses
+        # another tenant's row, in one place. See core/tenant_path_guard.py.
+        dependencies=[_Depends(tenant_path_guard)],
     )
 
     # Commit each request's database work BEFORE its response is sent. Must be
@@ -938,6 +957,18 @@ def create_app() -> FastAPI:
     # them. A 500 tells an operator nothing about which of these happened, and
     # the three differ completely in what to do next — so they are mapped here,
     # at the one place every request passes through.
+    # A legal hold refuses from deep inside retention, erasure and the vault —
+    # places no router catches. Mapped here so every one of them answers the
+    # same 409 with the same code instead of a bare 500.
+    from case_service.legal_hold.service import LegalHoldError
+
+    @app.exception_handler(LegalHoldError)
+    async def _legal_hold_handler(request, exc):  # noqa: ANN001
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_payload(exc.code, str(exc)),
+        )
+
     @app.exception_handler(KeyShreddedError)
     async def _vault_shredded_handler(request, exc):  # noqa: ANN001
         # 410 Gone, not 500 or 404: the object existed, the key was destroyed
@@ -1046,6 +1077,7 @@ def create_app() -> FastAPI:
     app.include_router(cases.router, prefix=prefix)
     app.include_router(case_config.router, prefix=prefix)
     app.include_router(case_tenant_transfers.router, prefix=prefix)
+    app.include_router(legal_holds.router, prefix=prefix)
     app.include_router(assignments.router, prefix=prefix)
     app.include_router(queues.router, prefix=prefix)
     app.include_router(sla.router, prefix=prefix)
@@ -1118,6 +1150,7 @@ def create_app() -> FastAPI:
     app.include_router(healing_router, prefix=prefix)       # F-08 self-healing processes
     app.include_router(handoff_router, prefix=prefix)       # F-09 agent handoff
     app.include_router(field_router, prefix=prefix)         # F-10 field operations
+    app.include_router(rollouts_router, prefix=prefix)      # Oct 18a staged rollouts
     app.include_router(intent_router, prefix=prefix)        # F-11 intent execution
     app.include_router(negotiate_router, prefix=prefix)     # F-12 negotiation
     app.include_router(engage_router, prefix=prefix)        # item 12 rep desk

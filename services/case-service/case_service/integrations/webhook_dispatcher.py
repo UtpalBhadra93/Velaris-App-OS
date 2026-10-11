@@ -28,6 +28,12 @@ CASE_EVENTS = [
     "assignment.created", "assignment.claimed", "assignment.completed",
     "sla.started", "sla.at_risk", "sla.breached", "sla.paused", "sla.resumed",
     "form.submitted",
+    # Oct 18a: a content rollout changing state. Delivered to subscriptions on
+    # the rollout's BASELINE case type, and to the operator's platform-wide ones.
+    "rollout.requested", "rollout.approved", "rollout.percent_changed",
+    "rollout.activated", "rollout.deactivated", "rollout.switched",
+    "rollout.promoted", "rollout.rolled_back", "rollout.superseded",
+    "rollout.policy_changed", "rollout.guard_tripped", "rollout.rebased",
 ]
 
 

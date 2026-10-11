@@ -8,7 +8,7 @@ import { useParams } from "react-router-dom";
 import { BRAND } from "@/branding";
 import { useFeatureFlags } from "@/app/FeatureFlagsContext";
 import CaseDetail from "./CaseDetail";
-import { clearCustomerToken, setNotifyEmail, slideSession } from "./portalApi";
+import { clearCustomerToken, downloadMyData, setNotifyEmail, slideSession } from "./portalApi";
 import { portalErrorText } from "./portalError";
 import { flushPending, listPending, onQueueChange, queueSubmission, registerPortalPwa } from "./portalOffline";
 import { PortalFormField, getCaseTypeForm, postAskFeedback } from "./portalApi";
@@ -1375,6 +1375,17 @@ export default function Portal() {
                     <button onClick={() => { setEditName(custProfile.display_name); setEditPhone(custProfile.phone ?? ""); setEditAltEmail(custProfile.alt_email ?? ""); setEditPref(custProfile.preferred_email); setEditMode(true); setEditErr(null); }}
                       style={C.secondary}>Edit</button>
                   )}
+                  <button onClick={async () => {
+                    try {
+                      const text = await downloadMyData(slug ?? "");
+                      const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+                      const a = document.createElement("a");
+                      a.href = url; a.download = "my-data.json"; a.click();
+                      URL.revokeObjectURL(url);
+                    } catch (e) { alert((e as Error).message); }
+                  }} style={C.secondary} title="GDPR Art. 15 — everything we hold about you">
+                    Download my data
+                  </button>
                   <button onClick={custLogout} style={{ ...C.secondary, color: "#ef4444", borderColor: "#fca5a5" }}>Logout</button>
                 </div>
               </div>

@@ -60,6 +60,7 @@ async def create_project_from_scan(
         total_artifacts=len(artifacts),
         roadmap={"ordered_artifacts": ordered_ids},
         dependencies=deps,
+        tenant_id=scan.tenant_id,     # 8e: the project is its scan's tenant's
     )
     session.add(project)
     await session.flush()

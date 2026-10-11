@@ -226,3 +226,19 @@ export const voiceFillAction = (slug: string, caseId: string, stepId: string, te
 export const getSessionToken = (slug: string, caseId: string, sessionId: string) =>
   custFetch<{ url: string; token: string; title: string | null; record_intent: boolean; session_id?: string }>(
     slug, `/account/cases/${caseId}/sessions/${sessionId}/token`, { method: "POST" });
+
+/** Oct item 8f — GDPR Art. 15: the customer downloads what the organisation
+ *  holds about them. Their OWN account only; returned as the JSON text. */
+export async function downloadMyData(slug: string): Promise<string> {
+  const tok = getCustomerToken(slug);
+  const res = await fetch(`/api/v1/portal/${slug}/account/export`, {
+    headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+  });
+  if (res.status === 401) {
+    clearCustomerToken(slug);
+    throw new PortalAuthError("Your session has expired — please log in again.");
+  }
+  if (res.status === 429) throw new Error("You have downloaded your data several times recently — please try again later.");
+  if (!res.ok) throw new Error("Your data could not be prepared just now.");
+  return res.text();
+}

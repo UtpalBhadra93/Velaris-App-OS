@@ -115,7 +115,7 @@ async def generate(
 
 @router.get("/generated")
 async def list_generated(
-    _user: AuthenticatedUser = Depends(get_current_user),
+    _user: AuthenticatedUser = Depends(hxguard.guard("platform.testsuite.read")),
     session: AsyncSession = Depends(get_session),
 ):
     await _require_enabled(session, _user)

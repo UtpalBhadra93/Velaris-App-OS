@@ -7,7 +7,7 @@ from typing import Any
 
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -178,7 +178,13 @@ def _quantile_from_buckets(buckets, count, q):
 @router.get("/api/v1/observability/traces/recent")
 async def recent_traces(
     limit: int = Query(50, ge=1, le=200), _user: AuthenticatedUser = Depends(hxguard.guard("platform.status.read")),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    # Spans are this PROCESS's traces — every tenant's requests. 8d (2026-09-29).
+    from case_service.tenancy.identity import is_platform_operator
+
+    if not await is_platform_operator(session, _user):
+        raise HTTPException(403, "Process traces span every tenant; platform operator only.")
     spans = recent_spans(limit=limit)
     return {"count": len(spans), "spans": spans}
 
@@ -197,6 +203,9 @@ async def list_events(
         q = q.where(TelemetryEventModel.severity == severity)
     if event_type:
         q = q.where(TelemetryEventModel.event_type == event_type)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, TelemetryEventModel, session, _user)
     res = await session.execute(q)
     rows = res.scalars().all()
     return {

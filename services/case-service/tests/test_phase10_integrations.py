@@ -11,6 +11,15 @@ from datetime import datetime, timezone
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """8g: webhook URLs now pass the relay's SSRF check, which resolves the
+    host. These made-up hosts do not resolve; treat them as public so the tests
+    do not depend on the network."""
+    from case_service.hxbridge import security
+    monkeypatch.setattr(security, "_resolve_and_check", lambda hostname: None)
+
+
 class TestWebhookCRUD:
     async def test_create_webhook(self, client):
         resp = await client.post("/api/v1/webhooks", json={

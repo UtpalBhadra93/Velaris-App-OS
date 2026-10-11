@@ -149,6 +149,12 @@ async def working_pattern(
     cal = None
     if row is not None and row.business_calendar_id:
         cal = await session.get(BusinessCalendarModel, row.business_calendar_id)
+        # 8e: a tenant that forked this default calendar works to its fork.
+        from velaris_shared.tenancy import inherit
+        from velaris_shared.tenancy.identity import resolve_tenant
+        owner = await resolve_tenant(session, str(tenant_id or "default"))
+        cal = await inherit.resolve(session, BusinessCalendarModel, cal,
+                                    owner[0] if owner else None)
 
     directory = (await session.execute(
         select(UserDirectoryModel).where(UserDirectoryModel.user_id == user_id)

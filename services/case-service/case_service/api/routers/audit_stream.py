@@ -138,9 +138,11 @@ async def list_targets(
     session: AsyncSession = Depends(get_session),
     _user: AuthenticatedUser = Depends(hxguard.guard("audit.stream.read")),
 ):
-    rows = (await session.execute(
-        select(AuditStreamTargetModel).order_by(AuditStreamTargetModel.created_at)
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(AuditStreamTargetModel).order_by(AuditStreamTargetModel.created_at),
+        AuditStreamTargetModel, session, _user))).scalars().all()
     return {"items": [_serialise(r) for r in rows], "kinds": list(KINDS)}
 
 

@@ -417,6 +417,8 @@ async def get_case_variables(
     session: AsyncSession = Depends(get_session),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # Was authentication only until 2026-09-29: another tenant's case now 404s.
+    await hxguard.require_case(session, user, "case.read", case_id)
     try:
         values = await vars_get_all(session, _operator_ctx(user), case_id)
     except VariableError as e:

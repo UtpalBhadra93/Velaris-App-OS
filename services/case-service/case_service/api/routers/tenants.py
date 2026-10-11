@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from velaris_shared.auth.dependencies import get_current_user
+from velaris_shared.auth.models import AuthenticatedUser
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,8 +101,16 @@ async def create_tenant(
 async def list_tenants(
     status: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     tenants = await tenant_repo.list_tenants(session, status=status)
+    # 8d (2026-09-29): every admin, of any tenant, listed every tenant. A
+    # tenant's admin sees their own; the platform operator sees all.
+    from case_service.tenancy.identity import is_platform_operator, same_tenant
+
+    if not await is_platform_operator(session, user):
+        tenants = [t for t in tenants
+                   if await same_tenant(session, t.id, getattr(user, "tenant_id", None))]
     return [_to_response(t) for t in tenants]
 
 
@@ -172,6 +182,9 @@ async def permanently_delete_tenant(
         raise HTTPException(404, "Tenant not found")
     if tenant.slug == "default":
         raise HTTPException(400, "Cannot delete default tenant")
+    # Its cases go with it — not while one is under a legal hold (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_tenant_free(session, tenant.id, "permanently deleted")
     await session.delete(tenant)
     await session.commit()
 

@@ -197,8 +197,13 @@ async def list_events(
     status: str | None = None,
     connector_id: uuid.UUID | None = None,
     limit: int = 100,
+    user=None,
 ) -> list[WebhookReceiverEventModel]:
     q = select(WebhookReceiverEventModel).order_by(WebhookReceiverEventModel.received_at.desc()).limit(limit)
+    if user is not None:
+        # Every tenant's events until 2026-09-29 (8d).
+        from case_service.tenancy.identity import scope_to_caller
+        q = await scope_to_caller(q, WebhookReceiverEventModel, session, user)
     if status:
         q = q.where(WebhookReceiverEventModel.status == status)
     if connector_id:

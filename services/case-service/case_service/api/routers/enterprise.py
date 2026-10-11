@@ -12,6 +12,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
+
+from velaris_shared.tenancy.identity import caller_tenant_uuid
+from case_service.core.tenant_path_guard import platform_operator_only as _platform_operator_only
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +35,7 @@ router = APIRouter(prefix="/enterprise", tags=["enterprise"], dependencies=[Depe
 
 # ─── Security events ─────────────────────────────────────────────
 
-@router.get("/security-events")
+@router.get("/security-events", dependencies=[Depends(_platform_operator_only)])
 async def list_security_events(
     event_type: str | None = None,
     user_id: str | None = None,
@@ -49,7 +52,7 @@ async def list_security_events(
     )
 
 
-@router.get("/security-events/stats")
+@router.get("/security-events/stats", dependencies=[Depends(_platform_operator_only)])
 async def security_event_stats(
     days: int = Query(30, ge=1, le=365),
     session: AsyncSession = Depends(get_session),
@@ -102,6 +105,7 @@ class GDPRRequestCreate(BaseModel):
 async def create_gdpr_request(
     body: GDPRRequestCreate,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Create a GDPR data subject request."""
     if body.request_type not in ("export", "delete", "rectify", "restrict"):
@@ -113,6 +117,7 @@ async def create_gdpr_request(
         request_type=body.request_type,
         requested_by=body.requested_by,
         reason=body.reason,
+        tenant_id=await caller_tenant_uuid(session, user),
     )
     await session.commit()
 
@@ -132,7 +137,7 @@ async def create_gdpr_request(
     return {"request_id": str(req_id), "status": "pending"}
 
 
-@router.get("/gdpr/requests")
+@router.get("/gdpr/requests", dependencies=[Depends(_platform_operator_only)])
 async def list_gdpr_requests(
     subject_id: str | None = None,
     status: str | None = None,
@@ -299,6 +304,97 @@ async def export_user_data(
     )
 
 
+# ─── Customer subject access (GDPR Art. 15) — Oct item 8f ──────────────────
+
+class CustomerExportIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    emails: list[str] = Field(default_factory=list, max_length=20)
+    phones: list[str] = Field(default_factory=list, max_length=20)
+    portal_customer_ids: list[str] = Field(default_factory=list, max_length=20)
+    customer_ids: list[str] = Field(default_factory=list, max_length=20)
+    #: Internal staff notes and which agent handled a call. Off by default: an
+    #: operator turns it on only after reviewing for third parties' data.
+    include_internal: bool = False
+    #: Counts only — "do we hold anything?" — nothing personal in the answer.
+    summary: bool = False
+    reason: str = Field(min_length=5, max_length=2000)
+
+
+async def _export_gate(session: AsyncSession, actor: AuthenticatedUser,
+                       tenant: str, ref: str) -> list:
+    """The same HxArbiter `export` gate the staff export passes through."""
+    try:
+        from case_service.hxarbiter import pep as _arb_pep
+        allowed, obligations = await _arb_pep.check_with_obligations(
+            session, caller_handles=("watermark_export",), tenant_id=str(tenant),
+            action=_arb_pep.ACTION_EXPORT_CASE, subject_id=str(actor.user_id),
+            subject_kind=_arb_pep.SubjectKind.USER, resource_kind="data_subject",
+            resource_id=ref[:255],
+            context={"purpose": "dsar_article_15_customer", "destination_region": "external"},
+            legacy_allowed=True, claimed_by="privacy.customer_export")
+    except PermissionError:
+        raise
+    except Exception as exc:                                     # noqa: BLE001
+        logger.warning("customer export: HxArbiter PEP unavailable: %s", exc)
+        return []
+    if not allowed:
+        raise PermissionError("VEL-ARB-EXPORT-DENIED-403: policy refuses this export.")
+    return obligations
+
+
+@router.post("/gdpr/customer-export")
+async def export_customer_data(
+    body: CustomerExportIn,
+    session: AsyncSession = Depends(get_session),
+    actor: AuthenticatedUser = Depends(hxguard.guard("privacy.customers.export")),
+):
+    """Everything this tenant holds about one customer (GDPR Art. 15).
+
+    Only the caller's tenant is searched. Recorded as a GDPR request and a
+    security event — with counts, never the data.
+    """
+    from case_service.privacy import customer_export
+    tenant = getattr(actor, "tenant_id", None) or "default"
+    ref = ",".join((body.emails + body.phones + body.portal_customer_ids
+                    + body.customer_ids)[:5]) or "unspecified"
+    try:
+        obligations = await _export_gate(session, actor, tenant, ref)
+        data = await customer_export.build(
+            session, tenant=tenant, emails=body.emails, phones=body.phones,
+            portal_customer_ids=body.portal_customer_ids, customer_ids=body.customer_ids,
+            include_internal=body.include_internal)
+    except PermissionError as exc:
+        raise _policy_refusal(exc) from exc
+    except customer_export.ExportError as exc:
+        raise HTTPException(422, f"VEL-PRIVACY-EXPORT-422: {exc}") from exc
+    for ob in obligations:
+        if str(getattr(ob, "kind", "")) == "watermark_export":
+            data["watermark"] = {"applied": True, "label": str(
+                (getattr(ob, "params", {}) or {}).get("label")
+                or "CONFIDENTIAL — subject access response")}
+    counts = customer_export.counts(data)
+    if body.summary:
+        return {"searched_for": data["searched_for"], "counts": counts,
+                "exists": any(counts.values()),
+                "internal_notes_withheld": data["internal_notes_withheld"]}
+
+    req_id = await gdpr.create_request(
+        session, subject_id=f"customer:{ref}"[:255], request_type="export",
+        requested_by=actor.user_id, reason=body.reason)
+    await gdpr.complete_request(session, req_id)
+    await security_events.log_security_event(
+        session, event_type="gdpr.customer_exported", severity="warning",
+        user_id=actor.user_id, resource_type="customer", resource_id=ref[:255],
+        action="export", outcome="success",
+        details={"request_id": str(req_id), "tenant": str(tenant), "counts": counts,
+                 "include_internal": body.include_internal})
+    await session.commit()
+    return Response(
+        content=json.dumps(data, indent=2, default=str), media_type="application/json",
+        headers={"Content-Disposition":
+                 f'attachment; filename="customer-export-{str(req_id)[:8]}.json"'})
+
+
 @router.post("/gdpr/anonymize/{user_id}")
 async def anonymize_user(
     user_id: str,
@@ -363,11 +459,15 @@ async def _ensure_default_policies(session: AsyncSession):
 @router.get("/retention-policies")
 async def list_retention_policies(
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     from velaris_shared.db.models import RetentionPolicyModel
     await _ensure_default_policies(session)
     await session.commit()
     stmt = select(RetentionPolicyModel).order_by(RetentionPolicyModel.resource_type)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    stmt = await scope_to_caller(stmt, RetentionPolicyModel, session, user)
     result = await session.execute(stmt)
     return [
         {

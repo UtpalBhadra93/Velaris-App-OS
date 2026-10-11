@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import UserDirectoryModel, HelixUserModel
@@ -59,11 +60,16 @@ async def create_entry(
     existing = (await session.execute(q)).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(409, f"User {body.user_id} already exists")
+    # A directory row IS tenant membership. Stored as sent until 2026-09-30.
+    try:
+        tenant_id = await tenant_for_write(session, user, body.tenant_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     u = UserDirectoryModel(
         user_id=body.user_id, email=body.email, display_name=body.display_name,
         manager_user_id=body.manager_user_id,
         access_group_ids=body.access_group_ids, roles=body.roles,
-        timezone=body.timezone, tenant_id=body.tenant_id, is_active=body.is_active,
+        timezone=body.timezone, tenant_id=tenant_id, is_active=body.is_active,
         metadata_json=body.metadata_json,
     )
     session.add(u)

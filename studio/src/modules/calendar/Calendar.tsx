@@ -51,7 +51,7 @@ import {
   type Absence,
   type CalendarEvent,
 } from "@shared/api/client";
-import { Button, Card, EmptyState, Spinner, Tabs } from "@shared/components";
+import { Button, Card, EmptyState, Spinner, Tabs, OwnershipPill } from "@shared/components";
 import MeetRoom from "@shared/components/MeetRoom";
 import { ALL_DAYS, DAY_NAMES, TZ_GROUPS } from "@shared/constants/calendar";
 
@@ -800,7 +800,9 @@ function CalendarsTab() {
         <Card key={c.id} style={{ marginBottom: "var(--space-sm)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{c.name}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: 8 }}>
+                {c.name} <OwnershipPill row={c} />
+              </div>
               <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
                 {c.timezone} · {c.work_start_hour}:00–{c.work_end_hour}:00
               </div>

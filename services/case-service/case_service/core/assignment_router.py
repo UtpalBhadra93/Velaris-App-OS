@@ -236,6 +236,16 @@ async def _resolve_rule_based(
         logger.warning("Invalid rule_id %s: %s", rule_id, exc)
         return "queue", rule.get("target", "default-queue")
 
+    # 8e: the case type names a rule by id; a tenant that forked that default
+    # rule gets its fork. The case's own tenant decides — not the caller's.
+    if db_rule is not None and context.get("case_id"):
+        from velaris_shared.db.models import CaseInstanceModel, RuleDefinitionModel
+        from velaris_shared.tenancy import inherit
+        case_tenant = await session.scalar(
+            select(CaseInstanceModel.tenant_id).where(
+                CaseInstanceModel.id == _uuid.UUID(str(context["case_id"]))))
+        db_rule = await inherit.resolve(session, RuleDefinitionModel, db_rule, case_tenant)
+
     if db_rule is None or not db_rule.enabled:
         logger.warning("Business rule %s not found or disabled", rule_id)
         return "queue", rule.get("target", "default-queue")

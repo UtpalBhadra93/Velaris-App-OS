@@ -190,6 +190,10 @@ const apiProxy = {
       target: "http://localhost:8200",
       changeOrigin: true,
     },
+    "/api/v1/legal-holds":{
+      target: "http://localhost:8200",
+      changeOrigin: true,
+    },
     "/api/v1/user-directory":{
       target: "http://localhost:8200",
       changeOrigin: true,

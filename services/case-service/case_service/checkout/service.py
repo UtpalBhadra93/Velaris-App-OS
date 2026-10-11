@@ -129,6 +129,12 @@ async def create_order(
     case_type = await ct_svc.resolve_order_case_type(session, tenant)
     case_tenant = ct_svc.tenant_uuid(tenant)   # UUID or None — never a bare string
     tracking_token = _new_tracking_token()
+    from case_service.rollouts import service as _rollouts
+    case_type, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=case_type, tenant=case_tenant,
+        subject=_rollouts.subject_of(
+            (customer or {}).get("email") if isinstance(customer, dict) else None,
+            created_by, tracking_token))
     case = await repo.create_case_instance(session, data={
         "case_type_id": case_type.id,
         "case_type_version": case_type.version,
@@ -148,6 +154,8 @@ async def create_order(
         "created_by": created_by,
         "tenant_id": case_tenant,
     })
+    await _rollouts.record(session, case_id=case.id, res=_rollout, tenant=case_tenant,
+                           via="checkout")
 
     # Start case-level SLAs (the delivery-estimate ring depends on these). Best-effort.
     try:
@@ -231,6 +239,11 @@ async def create_subcase(
         raise HTTPException(422, "kind must be 'return' or 'complaint'")
 
     case_tenant = ct_svc.tenant_uuid(order.tenant_id)
+    from case_service.rollouts import service as _rollouts
+    case_type, _rollout = await _rollouts.resolve_case_type(
+        session, case_type=case_type, tenant=case_tenant,
+        subject=_rollouts.subject_of(getattr(order, "customer_email", None),
+                                     order.tracking_token))
     sub = await repo.create_case_instance(session, data={
         "case_type_id": case_type.id,
         "case_type_version": case_type.version,
@@ -244,6 +257,8 @@ async def create_subcase(
         "created_by": "hxcheckout:customer",
         "tenant_id": case_tenant,
     })
+    await _rollouts.record(session, case_id=sub.id, res=_rollout, tenant=case_tenant,
+                           via="checkout_subcase")
     try:
         await case_lifecycle.on_case_created(
             session, case_id=sub.id, case_type_def=case_type.definition_json or {},

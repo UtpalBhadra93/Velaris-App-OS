@@ -1,0 +1,20 @@
+[
+  {
+    "key": "clinic-booking",
+    "name": "Clinic booking",
+    "industry": "healthcare",
+    "summary": "Booking, rescheduling and pre-visit forms.",
+    "guidance": "Book and reschedule freely; say nothing about results or treatment unless the caller is Full-verified. If the caller describes an emergency, direct them to emergency services immediately.",
+    "actions": [
+      {"key": "callback", "label": "Book the appointment", "defaults": {"minutes": 30}},
+      {"key": "document_request", "label": "Send pre-visit forms",
+       "defaults": {"message": "Please complete your pre-visit forms before your appointment: {portal_link}"}},
+      {"key": "reply", "label": "Send appointment details", "min_tier": "full"},
+      {"key": "consent", "label": "Record consent", "defaults": {"purpose": "data_sharing"}},
+      {"key": "follow_up", "label": "Set a recall"},
+      {"key": "payment", "label": "Take a booking deposit",
+       "defaults": {"description": "Appointment deposit", "currency": "gbp"}},
+      {"key": "live_session", "label": "Start a video consultation"}
+    ]
+  }
+]

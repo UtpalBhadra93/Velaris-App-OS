@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from velaris_shared import hxguard
 from velaris_shared.auth.dependencies import get_current_user
 from velaris_shared.auth.models import AuthenticatedUser
 
@@ -248,7 +249,7 @@ def _read_logs(
 # ── Endpoints ─────────────────────────────────────────────────────
 
 @router.get("/services")
-async def list_services(_: AuthenticatedUser = Depends(get_current_user)):
+async def list_services(_: AuthenticatedUser = Depends(hxguard.guard("platform.logs.read"))):
     """List all known service log files and their availability."""
     result = []
     for name, path in SERVICE_LOGS.items():
@@ -267,7 +268,7 @@ async def get_log_entries(
     severity:      Optional[str] = Query(None, description="ERROR | WARNING | INFO | DEBUG"),
     since_minutes: int           = Query(60, description="How many minutes back to look"),
     limit:         int           = Query(200, le=1000),
-    _:             AuthenticatedUser = Depends(get_current_user),
+    _:             AuthenticatedUser = Depends(hxguard.guard("platform.logs.read")),
 ):
     """Return filtered log entries from one or all services."""
     services_to_read = (
@@ -296,7 +297,7 @@ class AnalyseRequest(BaseModel):
 @router.post("/analyse")
 async def analyse_log(
     body: AnalyseRequest,
-    _:    AuthenticatedUser = Depends(get_current_user),
+    _:    AuthenticatedUser = Depends(hxguard.guard("platform.logs.read")),
 ):
     """Send a log block or traceback to HxNexus for AI root-cause analysis."""
     from velaris_shared.llm.factory import generate_json
@@ -341,7 +342,7 @@ async def correlate_with_hxstream(
     case_id:        Optional[str] = None,
     event_id:       Optional[str] = None,
     window_minutes: int = 5,
-    _: AuthenticatedUser = Depends(get_current_user),
+    _: AuthenticatedUser = Depends(hxguard.guard("platform.logs.read")),
 ):
     """Find log entries in the same time window as an HxStream error event."""
     # Grab recent errors across all services that could relate to the case

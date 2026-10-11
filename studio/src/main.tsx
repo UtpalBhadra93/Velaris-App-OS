@@ -121,6 +121,7 @@ const Workforce = lazy(() => import("@modules/workforce/Workforce"));
 const ModelMarket = lazy(() => import("@modules/modelmarket/ModelMarket"));
 const RepDesk = lazy(() => import("@modules/engage/RepDesk"));
 const Healing = lazy(() => import("@modules/healing/Healing"));
+const TenantTransfers = lazy(() => import("@modules/case-manager/TenantTransfer"));
 const FieldOps = lazy(() => import("@modules/field/FieldOps"));
 const Intent = lazy(() => import("@modules/intent/Intent"));
 const Negotiate = lazy(() => import("@modules/negotiate/Negotiate"));
@@ -205,6 +206,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/model-market" element={<PermRoute path="/model-market" pageName="Model Marketplace"><ModelMarket /></PermRoute>} />
           <Route path="/rep-desk"    element={<PermRoute path="/rep-desk"    pageName="Rep Desk"><RepDesk /></PermRoute>} />
           <Route path="/healing"     element={<PermRoute path="/healing"     pageName="Self-Healing"><Healing /></PermRoute>} />
+          <Route path="/case-transfers" element={<PermRoute path="/case-transfers" pageName="Case Transfers"><TenantTransfers /></PermRoute>} />
           <Route path="/field-ops"   element={<PermRoute path="/field-ops"   pageName="Field Operations"><FieldOps /></PermRoute>} />
           <Route path="/intent"      element={<PermRoute path="/intent"      pageName="Intent Execution"><Intent /></PermRoute>} />
           <Route path="/joint-contracts" element={<PermRoute path="/joint-contracts" pageName="Joint Contracts"><Negotiate /></PermRoute>} />

@@ -33,6 +33,7 @@ from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
 from velaris_shared.db.models import (
     CustomerInteractionModel,
+    CustomerLinkModel,
     CustomerMergeModel,
     CustomerProfileModel,
     TenantModel,
@@ -41,7 +42,10 @@ from velaris_shared.db.session import get_session
 from velaris_shared.middleware.endpoint_rate_limit import rate_limit
 
 from case_service.core.timestamps import iso_utc
-from case_service.engage import entitlement, identity, insights, interactions, three_sixty
+from case_service.engage import (
+    action_rail, backfill, entitlement, erasure, identity, insights, interactions, joins,
+    three_sixty,
+)
 from case_service.tenancy.identity import resolve_tenant
 
 log = logging.getLogger(__name__)
@@ -50,6 +54,12 @@ router = APIRouter(prefix="/engage", tags=["engage"])
 
 #: A screen-pop happens on every inbound call. It is the hot path here.
 _pop_rl = rate_limit(max_calls=120, window_seconds=60, name="engage-pop")
+#: Minting a join link makes a credential; opening one is where a guesser would
+#: try tokens. Both are bounded per client (Oct item 1).
+_join_create_rl = rate_limit(max_calls=30, window_seconds=60, name="engage-join-create")
+_join_redeem_rl = rate_limit(max_calls=20, window_seconds=60, name="engage-join-redeem")
+#: A backfill scan reads every portal account and case submitter in the tenant.
+_backfill_rl = rate_limit(max_calls=3, window_seconds=60, name="engage-backfill")
 #: A recap spends a model call and writes a ledger row. Bounded per client so a
 #: script cannot turn the rep desk into a free inference endpoint.
 _recap_rl = rate_limit(max_calls=20, window_seconds=60, name="engage-recap")
@@ -355,11 +365,23 @@ async def three_sixty_view(
     subject = hxguard.subject_from_user(user)
     allowed = {
         action: (await hxguard.check(session, subject, action)).allow
-        for action in sorted(set(three_sixty.PANEL_ACTIONS.values()))
+        for action in sorted(set(three_sixty.PANEL_ACTIONS.values()) - {"case.read"})
     }
+    # `case.read` is answered per case, not once: asked without a case id it
+    # fails closed, which withheld this panel from everybody until 2026-09-29.
+    allowed["case.read"] = True
+    readable = None
+    if "cases" in three_sixty.TIER_PANELS[tier]:
+        linked = list((await session.execute(
+            select(CustomerLinkModel.object_id).where(
+                CustomerLinkModel.customer_id == profile.id,
+                CustomerLinkModel.object_kind == "case").limit(50))).scalars().all())
+        readable = await three_sixty.readable_case_ids(
+            session, user, tenant_uuid=tenant_uuid, case_ids=linked)
     revealed = await _revealed(session, profile.id, interaction_id)
     return await three_sixty.compose(
-        session, profile=profile, tier=tier, allowed=allowed, revealed=revealed)
+        session, profile=profile, tier=tier, allowed=allowed, revealed=revealed,
+        readable_cases=readable)
 
 
 async def _revealed(session: AsyncSession, customer_id: uuid.UUID,
@@ -536,6 +558,449 @@ async def on_behalf(
     consent = await interactions.consent_gate(
         session, tenant_token=token, profile=profile, purpose=body.purpose)
     return {"attribution": attribution, "consent": consent}
+
+
+# ── Oct item 2: the action rail (2026-09-29) ─────────────────────────────────
+
+
+class ConsentIn(_Strict):
+    interaction_id: uuid.UUID
+    purpose: str = Field(max_length=32)
+    action: str = Field(max_length=16)
+    subject_kind: str = Field(default="email", max_length=8)
+
+
+@router.get("/profiles/{customer_id}/action-rail")
+async def get_action_rail(
+    customer_id: uuid.UUID,
+    interaction_id: uuid.UUID = Query(...),
+    rail: str | None = Query(None, max_length=64, pattern="^[a-z0-9][a-z0-9-]{1,62}$"),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.read")),
+) -> dict[str, Any]:
+    """Every rail action, and whether THIS rep may do it now on THIS call.
+
+    Read-only. Each action is performed through the API it already lives on,
+    which checks again; this is what lets a disabled button say why.
+    """
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    profile = await _profile(session, customer_id, tenant_uuid)
+    # The tier the rail judges by is this call's, so it must be this customer's.
+    row = await _call_with(session, interaction_id, tenant_uuid, profile)
+    return await action_rail.rail(session, user=user, tenant_uuid=tenant_uuid,
+                                  tenant_token=token, profile=profile, interaction=row,
+                                  rail_key=rail)
+
+
+@router.post("/profiles/{customer_id}/consent", status_code=201)
+async def capture_consent(
+    customer_id: uuid.UUID,
+    body: ConsentIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.actions.consent")),
+) -> dict[str, Any]:
+    """Record the customer's own answer, given on this call.
+
+    Its own route rather than `POST /compliance/consent`: that one takes any
+    subject string from its caller, while this one takes the subject from the
+    profile and binds the record to the interaction, the rep and the tier. A rep
+    may record what the person on a verified call said about themselves, and
+    nothing else.
+    """
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    profile = await _profile(session, customer_id, tenant_uuid)
+    row = await _call_with(session, body.interaction_id, tenant_uuid, profile)
+    try:
+        out = await action_rail.capture_consent(
+            session, tenant_token=token, profile=profile, interaction=row,
+            purpose=body.purpose, action=body.action, subject_kind=body.subject_kind,
+            actor=getattr(user, "user_id", None) or "unknown")
+    except PermissionError as exc:
+        raise HTTPException(409, f"VEL-ENGAGE-TIER-409: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(422, f"VEL-ENGAGE-422: {exc}") from exc
+    await session.commit()
+    return out
+
+
+# ── Oct item 1: a join link for the next rep (2026-09-29) ────────────────────
+
+
+class JoinLinkIn(_Strict):
+    mode: str = Field(default="warm", max_length=8)
+    for_user_id: str | None = Field(default=None, max_length=255)
+    for_queue: str | None = Field(default=None, max_length=128)
+    ttl_minutes: int | None = Field(default=None, ge=1, le=joins.MAX_TTL_MINUTES)
+
+
+class RedeemIn(_Strict):
+    token: str = Field(min_length=16, max_length=128)
+
+
+@router.post("/interactions/{interaction_id}/join-links", status_code=201,
+             dependencies=[Depends(_join_create_rl)])
+async def create_join_link(
+    interaction_id: uuid.UUID,
+    body: JoinLinkIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.write")),
+) -> dict[str, Any]:
+    """A link for a named rep, or a queue, to join this live contact.
+
+    The token is in THIS response only; it is stored as a hash.
+    """
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    row = await session.get(CustomerInteractionModel, interaction_id)
+    if row is None or row.tenant_id != tenant_uuid:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such interaction")
+    try:
+        link, secret = await joins.create(
+            session, tenant_uuid=tenant_uuid, tenant_token=token, interaction=row,
+            actor=user, mode=body.mode, for_user_id=body.for_user_id,
+            for_queue=body.for_queue, ttl_minutes=body.ttl_minutes)
+    except joins.JoinError as exc:
+        raise HTTPException(exc.status, f"VEL-ENGAGE-JOIN-{exc.status}: {exc}") from exc
+    await session.commit()
+    return {**joins.link_json(link), "token": secret,
+            # A FRAGMENT, not a query string: a fragment never leaves the
+            # browser, so the credential is not written to access logs.
+            "path": f"/rep-desk#join={secret}",
+            "note": "Share it now: it is shown once, works once, and expires."}
+
+
+@router.get("/interactions/{interaction_id}/join-links")
+async def list_join_links(
+    interaction_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.read")),
+) -> dict[str, Any]:
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    row = await session.get(CustomerInteractionModel, interaction_id)
+    if row is None or row.tenant_id != tenant_uuid:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such interaction")
+    from velaris_shared.db.models import CustomerInteractionJoinModel
+
+    rows = (await session.execute(select(CustomerInteractionJoinModel).where(
+        CustomerInteractionJoinModel.interaction_id == row.id,
+        CustomerInteractionJoinModel.tenant_id == tenant_uuid,
+    ).order_by(CustomerInteractionJoinModel.created_at.desc()).limit(50))).scalars().all()
+    return {"links": [joins.link_json(r) for r in rows]}
+
+
+@router.delete("/join-links/{join_id}")
+async def revoke_join_link(
+    join_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.write")),
+) -> dict[str, Any]:
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from velaris_shared.db.models import CustomerInteractionJoinModel
+
+    row = await session.get(CustomerInteractionJoinModel, join_id)
+    if row is None or row.tenant_id != tenant_uuid:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such join link")
+    try:
+        await joins.revoke(session, row=row, actor=user)
+    except joins.JoinError as exc:
+        raise HTTPException(exc.status, f"VEL-ENGAGE-JOIN-{exc.status}: {exc}") from exc
+    await session.commit()
+    return joins.link_json(row)
+
+
+@router.post("/join-links/redeem", dependencies=[Depends(_join_redeem_rl)])
+async def redeem_join_link(
+    body: RedeemIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.write")),
+) -> dict[str, Any]:
+    """Open the contact for the rep the link names. Screen-pop shaped, so the
+    rep desk renders it exactly as it renders a call it took itself."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    try:
+        link, origin, joined = await joins.redeem(
+            session, tenant_uuid=tenant_uuid, token=body.token, actor=user)
+    except joins.JoinError as exc:
+        await session.rollback()
+        raise HTTPException(exc.status, f"VEL-ENGAGE-JOIN-{exc.status}: {exc}") from exc
+    await session.commit()
+    return {
+        "interaction_id": str(joined.id),
+        "customer_id": str(joined.customer_id) if joined.customer_id else None,
+        "verification_level": joined.verification_level,
+        "resolution": {"resolved": joined.customer_id is not None, "rung": 0,
+                       "reason": "joined from a colleague's contact",
+                       "confidence": "join link",
+                       "verified": joined.verification_level == "full"},
+        "stub": None if joined.customer_id else {
+            "actions": [], "prefill": {},
+            "note": "The contact you joined is not linked to a customer yet."},
+        "inherited_verification": True,
+        "joined_from": str(origin.id),
+        "mode": link.mode,
+    }
+
+
+# ── Oct item 5: industry action rails (2026-09-29) ───────────────────────────
+
+
+class RailIn(_Strict):
+    config: dict[str, Any]
+    enabled: bool = True
+
+
+@router.get("/rails")
+async def list_rails(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.interactions.read")),
+) -> dict[str, Any]:
+    """This tenant's rails — from packs and its own. A rep sees them to pick one."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from velaris_shared.db.models import EngageRailConfigModel as R
+    from case_service.engage import rail_config
+
+    rows = (await session.execute(select(R).where(R.tenant_id == tenant_uuid)
+                                  .order_by(R.name))).scalars().all()
+    return {"rails": [rail_config.row_json(r) for r in rows]}
+
+
+@router.put("/rails/{rail_key}")
+async def put_rail(
+    rail_key: str,
+    body: RailIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.config.write")),
+) -> dict[str, Any]:
+    """Create a tenant rail, or edit one (a pack rail edited here is kept across
+    pack upgrades). The same validation as a pack's."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from datetime import datetime, timezone
+
+    from velaris_shared.db.models import EngageRailConfigModel as R
+    from case_service.engage import rail_config
+
+    try:
+        cfg = rail_config.validate({**body.config, "key": rail_key})
+    except rail_config.RailError as exc:
+        raise HTTPException(422, f"VEL-ENGAGE-RAIL-422: {exc}") from exc
+    now = datetime.now(timezone.utc)
+    who = getattr(user, "user_id", None) or "unknown"
+    row = (await session.execute(select(R).where(
+        R.tenant_id == tenant_uuid, R.rail_key == rail_key))).scalars().first()
+    if row is None:
+        row = R(id=uuid.uuid4(), tenant_id=tenant_uuid, rail_key=rail_key, name=cfg["name"],
+                industry=cfg["industry"], source="tenant", config=cfg, enabled=body.enabled,
+                created_at=now, updated_at=now, edited_at=now, edited_by=who)
+        session.add(row)
+    else:
+        row.name, row.industry, row.config, row.enabled = (
+            cfg["name"], cfg["industry"], cfg, body.enabled)
+        row.updated_at, row.edited_at, row.edited_by = now, now, who
+    await session.commit()
+    return rail_config.row_json(row)
+
+
+class RailToggleIn(_Strict):
+    enabled: bool
+
+
+@router.patch("/rails/{rail_key}")
+async def toggle_rail(
+    rail_key: str,
+    body: RailToggleIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.config.write")),
+) -> dict[str, Any]:
+    """Switch a rail on or off WITHOUT marking it edited — a pack rail that is
+    merely switched off still takes its pack's upgrades."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from datetime import datetime, timezone
+
+    from velaris_shared.db.models import EngageRailConfigModel as R
+    from case_service.engage import rail_config
+
+    row = (await session.execute(select(R).where(
+        R.tenant_id == tenant_uuid, R.rail_key == rail_key))).scalars().first()
+    if row is None:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such rail")
+    row.enabled, row.updated_at = body.enabled, datetime.now(timezone.utc)
+    await session.commit()
+    return rail_config.row_json(row)
+
+
+@router.delete("/rails/{rail_key}")
+async def delete_rail(
+    rail_key: str,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.config.write")),
+) -> dict[str, Any]:
+    """A tenant's own rail is deleted; a pack's is DISABLED (deleting it would let
+    the next pack upgrade quietly bring it back)."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from datetime import datetime, timezone
+
+    from velaris_shared.db.models import EngageRailConfigModel as R
+    from case_service.engage import rail_config
+
+    row = (await session.execute(select(R).where(
+        R.tenant_id == tenant_uuid, R.rail_key == rail_key))).scalars().first()
+    if row is None:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such rail")
+    if row.source == "pack":
+        row.enabled, row.updated_at = False, datetime.now(timezone.utc)
+        await session.commit()
+        return {"disabled": True, "rail": rail_config.row_json(row)}
+    await session.delete(row)
+    await session.commit()
+    return {"deleted": True, "key": rail_key}
+
+
+# ── Oct item 3: profile backfill that PROPOSES (2026-09-29) ──────────────────
+
+
+class EraseIn(_Strict):
+    reason: str = Field(min_length=5, max_length=2000)
+
+
+@router.post("/profiles/{customer_id}/erase")
+async def erase_profile(
+    customer_id: uuid.UUID,
+    body: EraseIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.profile.erase")),
+) -> dict[str, Any]:
+    """Erase one customer from the rep desk (a person with no portal account has
+    no other door). Irreversible; the consent ledger is left as the legal record."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    row = await session.get(CustomerProfileModel, customer_id)
+    if row is None or row.tenant_id != tenant_uuid:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such customer")
+    out = await erasure.forget(session, tenant_uuid=tenant_uuid, profile_ids=[row.id],
+                               reason=f"rep desk erasure by {getattr(user, 'user_id', '?')}: "
+                                      f"{body.reason.strip()}")
+    await session.commit()
+    return out
+
+
+class DecideIn(_Strict):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/backfill/runs", status_code=201, dependencies=[Depends(_backfill_rl)])
+async def start_backfill(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.backfill.run")),
+) -> dict[str, Any]:
+    """Scan this tenant's history and write proposals. Applies nothing."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    run = await backfill.run_scan(session, tenant_uuid=tenant_uuid, tenant_token=token,
+                                  started_by=getattr(user, "user_id", None) or "unknown")
+    await session.commit()
+    return backfill.run_json(run)
+
+
+@router.get("/backfill/runs")
+async def list_backfill_runs(
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.backfill.decide")),
+) -> dict[str, Any]:
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from velaris_shared.db.models import CustomerBackfillRunModel
+
+    rows = (await session.execute(select(CustomerBackfillRunModel).where(
+        CustomerBackfillRunModel.tenant_id == tenant_uuid)
+        .order_by(CustomerBackfillRunModel.started_at.desc()).limit(20))).scalars().all()
+    return {"runs": [backfill.run_json(r) for r in rows]}
+
+
+@router.get("/backfill/proposals")
+async def list_backfill_proposals(
+    status: str = Query("proposed", pattern="^(proposed|accepted|rejected|superseded)$"),
+    kind: str | None = Query(None, pattern="^(create_profile|enrich_profile|merge_profiles)$"),
+    limit: int = Query(50, ge=1, le=backfill.MAX_PAGE),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.backfill.decide")),
+) -> dict[str, Any]:
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    from sqlalchemy import func as _f
+
+    from velaris_shared.db.models import CustomerBackfillProposalModel as P
+
+    q = select(P).where(P.tenant_id == tenant_uuid, P.status == status)
+    c = select(_f.count()).select_from(P).where(P.tenant_id == tenant_uuid, P.status == status)
+    if kind:
+        q, c = q.where(P.kind == kind), c.where(P.kind == kind)
+    rows = (await session.execute(q.order_by(P.kind, P.updated_at.desc())
+                                  .offset(offset).limit(limit))).scalars().all()
+    return {"total": (await session.execute(c)).scalar_one(),
+            "proposals": [backfill.proposal_json(r) for r in rows]}
+
+
+async def _proposal(session, proposal_id, tenant_uuid):
+    from velaris_shared.db.models import CustomerBackfillProposalModel
+
+    row = await session.get(CustomerBackfillProposalModel, proposal_id)
+    if row is None or row.tenant_id != tenant_uuid:
+        raise HTTPException(404, "VEL-ENGAGE-404: no such proposal")
+    return row
+
+
+@router.post("/backfill/proposals/{proposal_id}/accept")
+async def accept_backfill_proposal(
+    proposal_id: uuid.UUID,
+    body: DecideIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.backfill.decide")),
+) -> dict[str, Any]:
+    """Apply one proposal, re-checked against the data as it is NOW."""
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    row = await _proposal(session, proposal_id, tenant_uuid)
+    try:
+        result = await backfill.accept(session, tenant_uuid=tenant_uuid, row=row,
+                                       actor=user, reason=body.reason)
+    except backfill.BackfillError as exc:
+        await session.rollback()
+        if exc.status == 409 and "Re-run" in str(exc):
+            row = await _proposal(session, proposal_id, tenant_uuid)
+            row.status, row.reason = "superseded", str(exc)
+            row.payload, row.evidence = {}, {}
+            await session.commit()
+        raise HTTPException(exc.status, f"VEL-ENGAGE-BACKFILL-{exc.status}: {exc}") from exc
+    await session.commit()
+    return {"proposal": backfill.proposal_json(row), "result": result}
+
+
+@router.post("/backfill/proposals/{proposal_id}/reject")
+async def reject_backfill_proposal(
+    proposal_id: uuid.UUID,
+    body: DecideIn,
+    session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(hxguard.guard("engage.backfill.decide")),
+) -> dict[str, Any]:
+    tenant_uuid, token = await _tenant(session, user)
+    await _gate(session, token)
+    row = await _proposal(session, proposal_id, tenant_uuid)
+    try:
+        await backfill.reject(session, row=row, actor=user, reason=body.reason or "")
+    except backfill.BackfillError as exc:
+        raise HTTPException(exc.status, f"VEL-ENGAGE-BACKFILL-{exc.status}: {exc}") from exc
+    await session.commit()
+    return {"proposal": backfill.proposal_json(row)}
 
 
 # ── P5: analytics and wrap-up codes (2026-09-17) ─────────────────────────────

@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.db.models import (
     AccessGroupModel,
     HelixUserModel,
@@ -624,9 +625,11 @@ async def list_scim_tokens(
     _user: AuthenticatedUser = Depends(hxguard.guard("identity.scim.read")),
 ):
     """Metadata only. The token itself is unrecoverable by design."""
-    rows = (await session.execute(
-        select(ScimTokenModel).order_by(ScimTokenModel.created_at.desc())
-    )).scalars().all()
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    rows = (await session.execute(await scope_to_caller(
+        select(ScimTokenModel).order_by(ScimTokenModel.created_at.desc()),
+        ScimTokenModel, session, _user))).scalars().all()
     return {"tokens": [{
         "id": str(r.id), "name": r.name, "tenant_id": r.tenant_id,
         "created_by": r.created_by,
@@ -644,9 +647,15 @@ async def create_scim_token(
     user: AuthenticatedUser = Depends(hxguard.guard("identity.scim.write")),
 ):
     """Mint a token. **The plaintext is in this response and nowhere else.**"""
+    # A SCIM token provisions and deactivates accounts in its tenant. Stored as
+    # sent until 2026-09-30 — a tenant admin could mint one for another tenant.
+    try:
+        tenant_id = await tenant_for_write(session, user, body.tenant_id or None)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     plaintext = secrets.token_urlsafe(40)
     row = ScimTokenModel(
-        tenant_id=(body.tenant_id or None),
+        tenant_id=tenant_id,
         name=body.name,
         token_hash=hashlib.sha256(plaintext.encode()).hexdigest(),
         scopes=["users:write", "groups:read"],

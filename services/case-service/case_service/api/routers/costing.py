@@ -214,6 +214,9 @@ async def delete_time_entry(
     if entry is None or entry.user_id != str(user.user_id):
         raise HTTPException(404, "Time entry not found")   # anti-oracle
     await _authorized_case(session, user, str(entry.case_id), "case.update")
+    # Who spent how long on a held case is part of its record (Oct item 13).
+    from case_service.legal_hold import service as _legal_hold
+    await _legal_hold.require_not_held(session, entry.case_id, "changed by deleting a time entry")
     await session.delete(entry)
     await session.commit()
 

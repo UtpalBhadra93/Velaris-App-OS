@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import select, func, true, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -56,15 +56,47 @@ async def get_case_type(
 
 
 async def get_case_type_by_name(
-    session: AsyncSession, name: str, version: str | None = None
+    session: AsyncSession, name: str, version: str | None = None,
+    *, tenant_key: str | None = None,
 ) -> CaseTypeModel | None:
+    """By name (+ version). `tenant_key` limits it to one owner's namespace —
+    `case_type_tenant_key(tenant_id)`, 'platform' for the defaults (8i); omitted,
+    every owner, as before."""
     stmt = select(CaseTypeModel).where(CaseTypeModel.name == name)
+    if tenant_key is not None:
+        stmt = stmt.where(CaseTypeModel.tenant_key == tenant_key)
     if version:
         stmt = stmt.where(CaseTypeModel.version == version)
     else:
         stmt = stmt.order_by(CaseTypeModel.created_at.desc())
     result = await session.execute(stmt)
     return result.scalars().first()
+
+
+def case_types_visible_to(tenant_id: uuid.UUID):
+    """SQL: the case types `tenant_id` can use (Oct 8i).
+
+    Its own rows, plus every default (NULL tenant) it has not FORKED. A fork
+    records the exact default it was copied from, and shadows only that row —
+    not every default of the same name, because a tenant-owned row of the same
+    name can also be a staged-rollout candidate (item 18a) that must sit BESIDE
+    its baseline, not hide it.
+    """
+    from sqlalchemy import and_, exists, or_
+    from sqlalchemy.orm import aliased
+
+    own = aliased(CaseTypeModel)
+    forked = exists(
+        select(own.id).where(
+            own.tenant_id == tenant_id,
+            own.forked_from_id == CaseTypeModel.id,
+            (own.is_deleted == False) | (own.is_deleted == None),  # noqa: E712
+        )
+    )
+    return or_(
+        CaseTypeModel.tenant_id == tenant_id,
+        and_(CaseTypeModel.tenant_id.is_(None), ~forked),
+    )
 
 
 async def list_case_types(
@@ -81,11 +113,9 @@ async def list_case_types(
             (CaseTypeModel.is_deleted == False) | (CaseTypeModel.is_deleted == None)  # noqa: E712
         )
     if tenant_id is not None:
-        # Return case types this tenant can USE: their own + platform-wide globals
-        from sqlalchemy import or_
-        base_filter.append(
-            or_(CaseTypeModel.tenant_id == tenant_id, CaseTypeModel.tenant_id.is_(None))
-        )
+        # Return case types this tenant can USE: their own + the defaults it
+        # has not forked (Oct 8i).
+        base_filter.append(case_types_visible_to(tenant_id))
 
     count_stmt = select(func.count()).select_from(CaseTypeModel)
     for f in base_filter:
@@ -557,11 +587,16 @@ async def list_data_models(
     *,
     offset: int = 0,
     limit: int = 50,
+    where=None,
 ) -> tuple[list[DataModelModel], int]:
+    """`where` narrows the rows (8e: the caller's tenant + inherited defaults)."""
     count_stmt = select(func.count()).select_from(DataModelModel)
+    if where is not None:
+        count_stmt = count_stmt.where(where)
     total = (await session.execute(count_stmt)).scalar_one()
     stmt = (
         select(DataModelModel)
+        .where(where if where is not None else true())
         .order_by(DataModelModel.name, DataModelModel.version)
         .offset(offset)
         .limit(limit)
@@ -620,11 +655,16 @@ async def list_forms(
     *,
     offset: int = 0,
     limit: int = 50,
+    where=None,
 ) -> tuple[list[FormDefinitionModel], int]:
+    """`where` narrows the rows (8e: the caller's tenant + inherited defaults)."""
     count_stmt = select(func.count()).select_from(FormDefinitionModel)
+    if where is not None:
+        count_stmt = count_stmt.where(where)
     total = (await session.execute(count_stmt)).scalar_one()
     stmt = (
         select(FormDefinitionModel)
+        .where(where if where is not None else true())
         .order_by(FormDefinitionModel.name, FormDefinitionModel.version)
         .offset(offset)
         .limit(limit)
@@ -688,9 +728,14 @@ async def list_rules(
     enabled: bool | None = None,
     offset: int = 0,
     limit: int = 50,
+    where=None,
 ) -> tuple[list[RuleDefinitionModel], int]:
+    """`where` narrows the rows (8e: the caller's tenant + inherited defaults)."""
     base = select(RuleDefinitionModel)
     count_base = select(func.count()).select_from(RuleDefinitionModel)
+    if where is not None:
+        base = base.where(where)
+        count_base = count_base.where(where)
 
     if rule_type:
         base = base.where(RuleDefinitionModel.rule_type == rule_type)
@@ -792,7 +837,11 @@ async def get_business_calendar_by_name(
 
 async def list_business_calendars(
     session: AsyncSession,
+    *,
+    where=None,
 ) -> list[BusinessCalendarModel]:
     stmt = select(BusinessCalendarModel).order_by(BusinessCalendarModel.name)
+    if where is not None:
+        stmt = stmt.where(where)
     result = await session.execute(stmt)
     return list(result.scalars().all())

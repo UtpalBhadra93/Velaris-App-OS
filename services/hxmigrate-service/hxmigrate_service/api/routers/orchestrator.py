@@ -21,13 +21,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from velaris_shared.config import get_settings
 from velaris_shared import hxguard
 from velaris_shared.db.models import (
-    MigrationProjectModel, MigrationTaskModel,
+    MigrationProjectModel, MigrationScanModel, MigrationTaskModel,
 )
-from velaris_shared.auth.dependencies import require_role
+from velaris_shared.auth.dependencies import get_current_user, require_role
+from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.tenancy.identity import is_superadmin, same_tenant, scope_to_caller
+from velaris_shared.tenancy.row_guard import owned_rows
 from velaris_shared.db.session import get_session
 from hxmigrate_service.orchestrator import orchestrator
 
-router = APIRouter(prefix="/orchestrator", tags=["orchestrator"], dependencies=[Depends(hxguard.guard("platform.orchestrator.access"))])
+# 8e (2026-10-01): projects are their tenant's; a task is its project's.
+router = APIRouter(prefix="/orchestrator", tags=["orchestrator"], dependencies=[
+    Depends(hxguard.guard("platform.orchestrator.access")),
+    Depends(owned_rows({
+        "project_id": MigrationProjectModel,
+        "task_id": (MigrationTaskModel, "project_id", MigrationProjectModel),
+    })),
+])
 
 
 class CreateProjectRequest(BaseModel):
@@ -52,12 +62,19 @@ class ProjectResponse(BaseModel):
 async def create_project(
     body: CreateProjectRequest,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Create a migration project from a Scout scan."""
     try:
         scan_uuid = uuid.UUID(body.scan_id)
     except ValueError:
         raise HTTPException(400, "Invalid scan_id")
+    # 8e: a project copies the scan's report, so another tenant's scan is
+    # "not found" here exactly as it is at /scout/scans/{id}.
+    scan = await session.get(MigrationScanModel, scan_uuid)
+    if scan is not None and not is_superadmin(user) \
+            and not await same_tenant(session, scan.tenant_id, user.tenant_id):
+        raise HTTPException(404, "Scan not found")
 
     try:
         project_id = await orchestrator.create_project_from_scan(
@@ -75,9 +92,11 @@ async def create_project(
 async def list_projects(
     status: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """List all migration projects."""
     stmt = select(MigrationProjectModel).order_by(MigrationProjectModel.created_at.desc())
+    stmt = await scope_to_caller(stmt, MigrationProjectModel, session, user)   # 8e
     if status:
         stmt = stmt.where(MigrationProjectModel.status == status)
 

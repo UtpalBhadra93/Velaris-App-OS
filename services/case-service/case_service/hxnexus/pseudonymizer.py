@@ -50,9 +50,25 @@ class Pseudonymizer:
         self._reverse[ph] = original
         return ph
 
+    def add_known(self, values) -> None:
+        """Register literal values to mask wherever they appear (HxPrivacy 11e).
+
+        The patterns below cannot see a name. A reviewer who confirmed that
+        `customer_name` holds personal data has told us what the name *is* for
+        this case — so that exact value is masked in the question, the context
+        and anything else `redact` is handed, and restored in the answer.
+        Longest first, so "Ann Smith" is taken before "Ann".
+        """
+        known = {str(v).strip() for v in (values or []) if str(v).strip()}
+        self._known = sorted(known | set(getattr(self, "_known", [])),
+                             key=len, reverse=True)
+
     def redact(self, text: str) -> str:
         if not text:
             return text
+        for value in getattr(self, "_known", []):
+            pattern = re.compile(r"(?<!\w)" + re.escape(value) + r"(?!\w)", re.IGNORECASE)
+            text = pattern.sub(lambda m: self._placeholder("FIELD", m.group(0)), text)
         for kind, pattern in _PATTERNS:
             def _sub(m: re.Match, _kind: str = kind) -> str:
                 value = m.group(0)
@@ -69,3 +85,29 @@ class Pseudonymizer:
         for placeholder, original in self._reverse.items():
             text = text.replace(placeholder, original)
         return text
+
+
+async def add_confirmed_fields(pseudo: Pseudonymizer, session, case) -> int:
+    """Mask the values of this case's confirmed personal-data fields (11e).
+
+    Off unless `pii_mask_ai_egress` is set, and a no-op without a case. Every
+    tenant's confirmed field names are used rather than the case's own: the
+    finding's tenant is stored in more than one spelling, and masking a value
+    that is then restored in the answer costs nothing, where missing one sends
+    a name to a provider. Never raises — a failure here must not turn a
+    question into a 500, and the pattern masking still applies.
+    """
+    try:
+        from velaris_shared.config import get_settings
+        if not get_settings().pii_mask_ai_egress or case is None:
+            return 0
+        from velaris_shared.db import pii_redaction as _pii
+
+        paths = await _pii.confirmed_field_paths(session)
+        values = _pii.values_at(getattr(case, "data", None) or {}, paths)
+        pseudo.add_known(values)
+        return len(values)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("confirmed-field masking skipped: %s", exc)
+        return 0

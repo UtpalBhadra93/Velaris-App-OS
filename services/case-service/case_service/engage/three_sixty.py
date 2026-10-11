@@ -61,7 +61,7 @@ TIER_PANELS: dict[str, tuple[str, ...]] = {
     "none":    ("summary",),
     "partial": ("summary", "cases", "conversations", "interactions"),
     "full":    ("summary", "cases", "conversations", "interactions",
-                "identifiers", "relations", "consents"),
+                "identifiers", "relations", "suggested_relations", "consents"),
 }
 
 #: Every panel, and the HxGuard action a reader must hold for it. **The action
@@ -74,6 +74,10 @@ PANEL_ACTIONS: dict[str, str] = {
     "interactions":  "engage.interactions.read",
     "identifiers":   "engage.profile.read",
     "relations":     "engage.profile.read",
+    # Oct item 4: HxGraph-derived connections. Exactly the relations panel's
+    # tier and grant — a suggestion about who else is in someone's life is no
+    # less personal than a relation somebody typed in.
+    "suggested_relations": "engage.profile.read",
     "consents":      "compliance.consent.read",
 }
 
@@ -111,15 +115,51 @@ def mask(kind: str, value: str) -> str:
     return ("•" * max(0, len(raw) - 2)) + raw[-2:]
 
 
+async def readable_case_ids(session: AsyncSession, user, *, tenant_uuid: uuid.UUID,
+                            case_ids: list[uuid.UUID]) -> set[str]:
+    """Which of these cases the reader may open, decided PER CASE.
+
+    `case.read` is a ReBAC action: HxGuard fails it closed without a case id, so
+    asking it once for the whole panel — as the 360 did from 2026-09-04 until
+    2026-09-29 — withheld the cases panel from every reader, admin included.
+    The question only has an answer per case. Asked through `require_case`,
+    the same gate the case API uses, so this list and the case screen agree;
+    another tenant's case is never readable here.
+    """
+    from velaris_shared import hxguard
+    from velaris_shared.db.models import CaseInstanceModel
+
+    if not case_ids:
+        return set()
+    mine = (await session.execute(
+        select(CaseInstanceModel.id).where(
+            CaseInstanceModel.id.in_(case_ids),
+            CaseInstanceModel.tenant_id == tenant_uuid))).scalars().all()
+    out: set[str] = set()
+    for cid in mine:
+        try:
+            await hxguard.require_case(session, user, "case.read", cid)
+        except Exception:                                        # noqa: BLE001
+            continue
+        out.add(str(cid))
+    return out
+
+
 async def compose(
     session: AsyncSession, *, profile: CustomerProfileModel, tier: str,
     allowed: dict[str, bool], revealed: set[str] | None = None,
+    readable_cases: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build the 360 for ONE reader at ONE tier.
 
     `allowed` is the reader's own HxGuard answers, computed by the caller and
     passed in — so this function cannot accidentally fetch on the composer's
     authority, and a test can prove the narrowing without a request context.
+
+    `readable_cases`, when given, narrows the cases panel to the cases the
+    reader may open (see `readable_case_ids`), and `cases_not_shown` counts the
+    rest — a list that silently dropped them would say "this customer has only
+    these", which is the empty-panel lie in a smaller size.
     """
     revealed = revealed or set()
     tier_rank = rank(tier)
@@ -141,6 +181,12 @@ async def compose(
             continue
         panels[panel] = await _panel(session, panel, profile, tier_rank, revealed)
 
+    not_shown = None
+    if readable_cases is not None and isinstance(panels.get("cases"), list):
+        rows = panels["cases"]
+        panels["cases"] = [r for r in rows if r["object_id"] in readable_cases]
+        not_shown = len(rows) - len(panels["cases"])
+
     stale = identity.staleness(profile)
     return {
         "customer_id": str(profile.id),
@@ -150,6 +196,7 @@ async def compose(
         # Named, so a rep can see that something exists rather than concluding
         # the customer has none of it.
         "withheld": withheld,
+        "cases_not_shown": not_shown,
         "source_of_truth": profile.source_of_truth,
         "external_system": profile.external_system,
         # Staleness is SHOWN, never hidden.
@@ -165,6 +212,10 @@ async def _panel(session: AsyncSession, panel: str, profile: CustomerProfileMode
         return await _identifiers(session, profile, tier_rank, revealed)
     if panel == "relations":
         return await _relations(session, profile)
+    if panel == "suggested_relations":
+        from velaris_shared.hxgraph.customer_graph import related
+
+        return await related(session, tenant_uuid=profile.tenant_id, customer_id=profile.id)
     if panel == "interactions":
         return await _interactions(session, profile)
     if panel in ("cases", "conversations"):

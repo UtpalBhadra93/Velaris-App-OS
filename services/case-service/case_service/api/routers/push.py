@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from case_service.core.tenant_path_guard import platform_operator_only as _platform_operator_only
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from velaris_shared.auth.dependencies import get_current_user, require_role
 from velaris_shared import hxguard
 from velaris_shared.auth.models import AuthenticatedUser
+from velaris_shared.tenancy.identity import tenant_for_write
 from velaris_shared.db.models import (
     DeviceTokenModel,
     NotificationPreferenceModel,
@@ -132,13 +134,23 @@ async def register_device(
         token=body.token,
         platform=body.platform,
         label=body.label,
-        tenant_id=body.tenant_id or getattr(current_user, "tenant_id", None),
+        # The body's tenant decided whose broadcasts this device received
+        # until 2026-09-30.
+        tenant_id=await _device_tenant(session, current_user, body.tenant_id),
         last_seen_at=datetime.now(timezone.utc),
     )
     session.add(device)
     await session.commit()
     await session.refresh(device)
     return _mask(device)
+
+
+async def _device_tenant(session: AsyncSession, user: AuthenticatedUser, requested):
+    try:
+        return await tenant_for_write(
+            session, user, requested or getattr(user, "tenant_id", None))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @router.delete("/devices/{device_id}", status_code=204)
@@ -180,6 +192,9 @@ async def admin_list_devices(
     session: AsyncSession = Depends(get_session),
 ):
     q = select(DeviceTokenModel)
+    # Every tenant's rows until 2026-09-29 (8d).
+    from case_service.tenancy.identity import scope_to_caller
+    q = await scope_to_caller(q, DeviceTokenModel, session, _)
     if channel:
         q = q.where(DeviceTokenModel.channel == channel)
     if active_only:
@@ -197,7 +212,7 @@ async def admin_list_devices(
     }
 
 
-@router.get("/admin/logs")
+@router.get("/admin/logs", dependencies=[Depends(_platform_operator_only)])
 async def admin_delivery_logs(
     user_id: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
