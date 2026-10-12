@@ -351,12 +351,10 @@ vds_restart_docker() {
 # Trim build cache. Safe unconditionally: never touches containers,
 # images or volumes. Default keeps 5 GB of warm cache for fast rebuilds.
 vds_prune_cache() {
-  local keep="${1:-5GB}" before after
+  local keep="${1:-5GB}"
   docker info >/dev/null 2>&1 || return 0
-  before="$(docker system df --format '{{.BuildCache}}' 2>/dev/null | head -1)"
   docker builder prune -af --keep-storage "$keep" >/dev/null 2>&1 \
     || docker builder prune -f >/dev/null 2>&1 || true
-  after="$(docker system df --format '{{.BuildCache}}' 2>/dev/null | head -1)"
   ok "Build cache trimmed (kept ≤ $keep)"
 }
 

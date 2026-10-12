@@ -1,6 +1,6 @@
-"""v3.1.1 — which document store a setting selects, and the update-agent probe.
+"""v3.1.2 — which document store a setting selects, and the update-agent probe.
 
-"minio" is what every install before v3.1.1 has in .env and must keep working;
+"minio" is what every install before v3.1.2 has in .env and must keep working;
 "s3" is the same client under the name used for an endpoint that is not MinIO;
 anything else — including unset and empty — is local disk.
 """
@@ -117,7 +117,7 @@ def test_remote_s3_over_plain_http_is_warned(monkeypatch, tmp_path, caplog, endp
     assert any("VELARIS_CASE_S3_SECURE" in r.message for r in caplog.records) is warns
 
 
-# ── S3 setting names (v3.1.1) ────────────────────────────────────────────────
+# ── S3 setting names (v3.1.2) ────────────────────────────────────────────────
 # VELARIS_CASE_S3_* are the documented names; VELARIS_CASE_MINIO_* are what an
 # earlier install has in .env and must be read for good.
 
@@ -144,7 +144,7 @@ def test_old_minio_names_are_still_read(monkeypatch):
                   VELARIS_CASE_MINIO_BUCKET="b", VELARIS_CASE_MINIO_SECURE="true")
     assert (s.s3_endpoint, s.s3_access_key, s.s3_secret_key, s.s3_bucket, s.s3_secure) \
         == ("old:9000", "ak", "sk", "b", True)
-    # …and the attribute names from before v3.1.1 still answer.
+    # …and the attribute names from before v3.1.2 still answer.
     assert (s.minio_endpoint, s.minio_access_key, s.minio_secret_key, s.minio_bucket, s.minio_secure) \
         == ("old:9000", "ak", "sk", "b", True)
 
@@ -196,7 +196,7 @@ def test_the_old_class_name_is_still_importable():
 
 
 @pytest.mark.parametrize("env,expected", [
-    # the install setup made before v3.1.1: warned about at every start
+    # the install setup made before v3.1.2: warned about at every start
     ({"VELARIS_CASE_STORAGE_BACKEND": "minio", "VELARIS_MINIO_PASSWORD": "pw"}, True),
     ({"VELARIS_CASE_STORAGE_BACKEND": "s3", "VELARIS_MINIO_PASSWORD": "pw",
       "VELARIS_CASE_S3_ENDPOINT": "127.0.0.1:9000"}, True),

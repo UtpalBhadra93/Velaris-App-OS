@@ -511,7 +511,7 @@ else
   _write_if_missing VELARIS_DB_PASSWORD            "$(openssl rand -hex 16)"
 fi
 # The bundled MinIO's password — only for a host that already runs it. A new
-# install has no MinIO (v3.1.1) and gets no MinIO setting at all.
+# install has no MinIO (v3.1.2) and gets no MinIO setting at all.
 if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'velaris-minio' \
    || docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qE '(^|_)velaris-minio-data$'; then
   _write_if_missing VELARIS_MINIO_PASSWORD         "$(openssl rand -hex 24)"
@@ -523,7 +523,7 @@ _write_if_missing VELARIS_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
 # the app derives a dev KEK from auth_secret (with a startup warning); production
 # should use a dedicated key so crypto-shredding is independent of auth_secret.
 _write_if_missing VELARIS_CASE_KEK               "$(openssl rand -hex 32)"
-# Documents go to local disk on a NEW install (v3.1.1). It was "minio" until the
+# Documents go to local disk on a NEW install (v3.1.2). It was "minio" until the
 # MinIO images left Docker Hub and a new install could no longer pull them.
 # `_write_if_missing` is the upgrade guarantee: an install that already says
 # "minio" keeps saying it, and keeps its container (compose-profiles.sh).
@@ -639,7 +639,7 @@ fi
 # Provision the folder and point .env at it — but never clobber an operator's own
 # path (either the new VELARIS_CASE_ var or a legacy VELARIS_CASE_ one).
 STORAGE_DIR="$VELARIS_DIR/data/documents"
-# Local disk is the default document store from v3.1.1, so the folder is made
+# Local disk is the default document store from v3.1.2, so the folder is made
 # private to this user — but only when it is created here. An existing folder
 # keeps the permissions its operator gave it (a backup job may rely on them).
 if [ ! -d "$STORAGE_DIR" ]; then

@@ -2,7 +2,7 @@
 from .backend import StorageBackend, StorageError, ObjectNotFound
 from .local_fs import LocalFSBackend
 from .s3_backend import S3Backend
-from .minio_backend import MinIOBackend  # the pre-3.1.1 name, kept importable
+from .minio_backend import MinIOBackend  # the pre-3.1.2 name, kept importable
 from .factory import get_storage_backend
 
 __all__ = [

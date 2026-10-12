@@ -332,7 +332,7 @@ services:
   # >>> P24 document storage
   # Bundled MinIO — kept ONLY for installs that already run it (profile `minio`).
   # The images left Docker Hub around 2026-09-11 and cannot be pulled by a new
-  # install; from v3.1.1 documents default to local disk and S3 is an endpoint
+  # install; from v3.1.2 documents default to local disk and S3 is an endpoint
   # the operator supplies. deploy/docker-compose/compose-profiles.sh switches the
   # profile on when this host already holds the container or its volume, so an
   # existing install keeps its documents without anybody setting anything.

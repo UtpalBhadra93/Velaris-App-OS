@@ -23,7 +23,7 @@ def get_storage_backend() -> StorageBackend:
 
     # ── Select raw backend ────────────────────────────────────────────────────
     # "s3" and "minio" are one backend: an S3 client pointed at the endpoint in
-    # VELARIS_CASE_S3_* (or the older VELARIS_CASE_MINIO_* names). "minio" is the name every install before v3.1.1
+    # VELARIS_CASE_S3_* (or the older VELARIS_CASE_MINIO_* names). "minio" is the name every install before v3.1.2
     # wrote into .env and stays valid; "s3" is the name for an endpoint that is
     # not MinIO (SeaweedFS, Garage, Ceph RGW, a hosted S3).
     if mode in ("minio", "s3"):
@@ -71,7 +71,7 @@ def get_storage_backend() -> StorageBackend:
 
 
 def bundled_minio_in_use(settings) -> bool:
-    """True when documents live in the MinIO container bundled before v3.1.1.
+    """True when documents live in the MinIO container bundled before v3.1.2.
 
     Recognised by the S3 backend being selected, the endpoint being on this
     machine, and the container's own password being present. An S3 endpoint the

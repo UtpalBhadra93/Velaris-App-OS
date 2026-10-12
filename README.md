@@ -71,11 +71,12 @@
 
 ---
 
-## What's new in 3.1.1
+## What's new in 3.1.2
 
 - **A patch for the update path.** MinIO's images left Docker Hub in September 2026; an update then stopped at the image pull with the new code checked out and its migrations unapplied, and said nothing. The updater now survives a failed pull, reports a stopped update, and finishes one when run again.
+- **The disk-reclaim step no longer ends an update.** It asked Docker for a field that does not exist, and stopped the update before the services were restarted; a first cut of this patch (v3.1.1) was withdrawn the same day for it.
 - **Documents on local disk by default** for a new install, encrypted at rest; object storage is any S3-compatible endpoint you supply. An install that already runs the bundled MinIO keeps it, untouched. `scripts/storage-migrate.py` copies a bucket to disk for those who want to leave it.
-- **The Studio update banner** says when the server has no update agent, and stays up after a stopped update. Full notes: [`releases/notes/v3.1.1.md`](releases/notes/v3.1.1.md).
+- **The Studio update banner** says when the server has no update agent, and stays up after a stopped update. Full notes: [`releases/notes/v3.1.2.md`](releases/notes/v3.1.2.md).
 
 ## What's new in 3.1.0
 

@@ -12,9 +12,9 @@
 #
 # The bundled MinIO (profile `minio`)
 # -----------------------------------
-# Until v3.1.1 every install ran a MinIO container for documents. MinIO's images
+# Until v3.1.2 every install ran a MinIO container for documents. MinIO's images
 # were withdrawn from Docker Hub around 2026-09-11, so a NEW install can no
-# longer pull one: from v3.1.1 a new install stores documents on local disk, and
+# longer pull one: from v3.1.2 a new install stores documents on local disk, and
 # object storage is an S3 endpoint the operator points at
 # (VELARIS_CASE_STORAGE_BACKEND=s3 + VELARIS_CASE_S3_*).
 #

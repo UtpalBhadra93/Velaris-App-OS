@@ -322,10 +322,10 @@ ON DUPLICATE KEY UPDATE
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- v3.1.1, prepared 2026-10-12 — the update path and document storage.
+-- v3.1.2, prepared 2026-10-12 — the update path and document storage.
 --
 -- **No rows, no migrations.** The updater survives a failed image pull, reports
 -- a stopped update and finishes one when re-run; a new install stores documents
 -- on local disk and the bundled MinIO is kept only where it already runs.
--- See releases/notes/v3.1.1.md.
+-- See releases/notes/v3.1.2.md.
 -- ══════════════════════════════════════════════════════════════════════════════

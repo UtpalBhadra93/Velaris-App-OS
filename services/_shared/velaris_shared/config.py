@@ -165,7 +165,7 @@ class Settings(BaseSettings):
         # but kept so the name stays greppable at the field it configures.
         validation_alias="VELARIS_CASE_STORAGE_LOCAL_PATH",
     )
-    # The S3 endpoint. VELARIS_CASE_S3_* are the names from v3.1.1; the
+    # The S3 endpoint. VELARIS_CASE_S3_* are the names from v3.1.2; the
     # VELARIS_CASE_MINIO_* names every earlier install may have in .env are read
     # for good — never remove them. When both are set the S3 name wins.
     s3_endpoint: str = Field(
@@ -214,7 +214,7 @@ class Settings(BaseSettings):
             return self.bundled_minio_password
         return "velaris_dev_password"
 
-    # The attribute names from before v3.1.1, for anything that still reads them.
+    # The attribute names from before v3.1.2, for anything that still reads them.
     @property
     def minio_endpoint(self) -> str:
         return self.s3_endpoint
