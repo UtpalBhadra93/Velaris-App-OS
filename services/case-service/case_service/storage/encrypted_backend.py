@@ -18,7 +18,7 @@ Security properties:
     - Each file has a unique nonce → identical files produce different ciphertext.
     - AES-256-GCM is authenticated → any tampering is detected on read.
     - The master key is the only secret; rotate it by re-encrypting all files (HxVault later).
-    - Admins with direct filesystem/MinIO access see only ciphertext.
+    - Admins with direct filesystem/bucket access see only ciphertext.
 
 Copyright (c) 2024-2025 Velaris Contributors
 SPDX-License-Identifier: BSL-1.1

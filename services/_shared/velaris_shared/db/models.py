@@ -6261,14 +6261,14 @@ class StorefrontProductModel(Base):
 
 
 class StorefrontProductImageModel(Base):
-    """A product image (stored in MinIO). First by display_order = primary."""
+    """A product image (held in document storage). First by display_order = primary."""
 
     __tablename__ = "storefront_product_images"
     __table_args__ = (Index("ix_storefront_images_product", "product_id"),)
 
     id:            Mapped[uuid.UUID] = mapped_column(GUID(),       primary_key=True, default=_new_uuid)
     product_id:    Mapped[uuid.UUID] = mapped_column(GUID(),       ForeignKey("storefront_products.id", ondelete="CASCADE"), nullable=False)
-    media_path:    Mapped[str]       = mapped_column(String(1024), nullable=False)   # MinIO object path
+    media_path:    Mapped[str]       = mapped_column(String(1024), nullable=False)   # document storage key
     alt_text:      Mapped[str]       = mapped_column(String(512),  default="")
     display_order: Mapped[int]       = mapped_column(Integer,      nullable=False, default=0)
 
@@ -6494,7 +6494,7 @@ class StorefrontSubscriberModel(Base):
 
 
 class StorefrontMediaModel(Base):
-    """Media library item (MinIO-backed)."""
+    """Media library item (held in document storage)."""
 
     __tablename__ = "storefront_media"
     __table_args__ = (Index("ix_storefront_media_store", "store_id"),)

@@ -300,7 +300,18 @@ function EngineStatus() {
         color: "var(--text-muted)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {/* This is the workflow ENGINE's database link, not the database itself.
+          "offline" was read as "PostgreSQL is down" on a server that was plainly
+          serving data: the engine had started without its database and was
+          running on its in-memory store, which a restart of the engine fixes. */}
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 6 }}
+        title={
+          dbOk
+            ? "The workflow engine is connected to its database."
+            : "The workflow engine is not connected to its database (it may be running on its in-memory store). The rest of the platform can still be serving data. Restart velaris-engine."
+        }
+      >
         <span
           style={{
             width: 6,
@@ -309,7 +320,7 @@ function EngineStatus() {
             background: dbOk ? "var(--status-completed)" : "var(--status-failed)",
           }}
         />
-        PostgreSQL {dbOk ? "connected" : "offline"}
+        {dbOk ? "Engine database connected" : "Engine database not connected"}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span

@@ -30,6 +30,16 @@ set -uo pipefail
 _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo .)"
 COMPOSE_DIR="${COMPOSE_DIR:-$(cd "$_self_dir/../deploy/docker-compose" 2>/dev/null && pwd || true)}"
 COMPOSE_FILE="${COMPOSE_DIR:-.}/docker-compose.yml"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
+# Keep the bundled MinIO in the set this script recreates, where an install has it.
+# shellcheck source=/dev/null
+[ -f "${COMPOSE_DIR:-.}/compose-profiles.sh" ] && . "${COMPOSE_DIR:-.}/compose-profiles.sh"
 
 c_red() { printf '\033[31m%s\033[0m\n' "$*"; }
 c_grn() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -145,10 +155,10 @@ apply_hardening() {
     return 1
   fi
   # Validate it parses before touching anything.
-  if ! ( cd "$COMPOSE_DIR" && docker compose config -q 2>/tmp/_compose_err ); then
-    c_red "  Compose file is invalid — NOT applying:"; sed 's/^/    /' /tmp/_compose_err; rm -f /tmp/_compose_err; return 1
+  if ! ( cd "$COMPOSE_DIR" && docker compose config -q 2>"$VELARIS_SCRATCH/_compose_err" ); then
+    c_red "  Compose file is invalid — NOT applying:"; sed 's/^/    /' "$VELARIS_SCRATCH/_compose_err"; rm -f "$VELARIS_SCRATCH/_compose_err"; return 1
   fi
-  rm -f /tmp/_compose_err
+  rm -f "$VELARIS_SCRATCH/_compose_err"
   # Warn loudly if the target compose would re-expose databases.
   c_yel "  Checking the target compose is actually hardened…"
   compose_still_exposes; local exposed=$?
@@ -160,7 +170,7 @@ apply_hardening() {
     c_grn "  OK: target compose binds all sensitive ports to loopback or none."
   fi
   # Snapshot current published ports for rollback reference.
-  local snap="/tmp/docker-ports-before-$(date +%Y%m%d-%H%M%S).txt"
+  local snap="$VELARIS_SCRATCH/docker-ports-before-$(date +%Y%m%d-%H%M%S).txt"
   docker ps --format '{{.Names}} {{.Ports}}' >"$snap" 2>/dev/null && c_grn "  Snapshot of current ports saved: $snap"
   # Confirm unless --yes; refuse to act blind without a TTY.
   if [ "$ASSUME_YES" != 1 ]; then

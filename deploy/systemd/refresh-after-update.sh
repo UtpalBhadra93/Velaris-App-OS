@@ -41,6 +41,13 @@ set -uo pipefail
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VELARIS_DIR="$(cd "$SRC_DIR/../.." && pwd)"
 UNIT_DIR="${VELARIS_UNIT_DIR:-/etc/systemd/system}"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
 UNITS=(velaris-engine velaris-case-service velaris-analytics-service
        velaris-hxgraph-service velaris-hxmigrate-service velaris-studio)
 
@@ -82,12 +89,12 @@ case "${DB_BACKEND:-postgresql}" in
   postgresql)
     if [ -f "$VELARIS_DIR/releases/manifest.sql" ]; then
       if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-           < "$VELARIS_DIR/releases/manifest.sql" 2>/tmp/velaris-manifest-err.log \
-         && ! grep -q "ERROR" /tmp/velaris-manifest-err.log; then
+           < "$VELARIS_DIR/releases/manifest.sql" 2>"$VELARIS_SCRATCH/velaris-manifest-err.log" \
+         && ! grep -q "ERROR" "$VELARIS_SCRATCH/velaris-manifest-err.log"; then
         green "  ✓ release manifest applied"
       else
         yellow "  ⚠ release manifest had errors — feature versions may be stale:"
-        head -5 /tmp/velaris-manifest-err.log
+        head -5 "$VELARIS_SCRATCH/velaris-manifest-err.log"
       fi
     fi ;;
   *)
@@ -115,7 +122,7 @@ build_studio() {
   rm -rf "$studio/dist.new"
   if ( cd "$studio" && PATH="$(dirname "$npm_bin"):$PATH" \
          "$npm_bin" run build -- --outDir dist.new --emptyOutDir ) \
-       >/tmp/velaris-studio-build.log 2>&1 && [ -f "$studio/dist.new/index.html" ]; then
+       >"$VELARIS_SCRATCH/velaris-studio-build.log" 2>&1 && [ -f "$studio/dist.new/index.html" ]; then
     rm -rf "$studio/dist.old"
     [ -d "$studio/dist" ] && mv "$studio/dist" "$studio/dist.old"
     mv "$studio/dist.new" "$studio/dist"
@@ -124,8 +131,8 @@ build_studio() {
   else
     rm -rf "$studio/dist.new"
     red "  ✗ Studio build FAILED — still serving the previous release."
-    red "    Log: /tmp/velaris-studio-build.log"
-    tail -5 /tmp/velaris-studio-build.log
+    red "    Log: $VELARIS_SCRATCH/velaris-studio-build.log"
+    tail -5 "$VELARIS_SCRATCH/velaris-studio-build.log"
     return 1
   fi
 }

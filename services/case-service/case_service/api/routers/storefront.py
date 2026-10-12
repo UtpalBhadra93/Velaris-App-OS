@@ -1029,7 +1029,7 @@ async def save_seo(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MEDIA LIBRARY  (MinIO-backed via the shared storage backend)
+#  MEDIA LIBRARY  (held in document storage via the shared backend)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Accepted formats: images + video + digital-product files. SVG is intentionally
@@ -1072,7 +1072,7 @@ async def upload_media(
     user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Upload a media asset to the store's library (stored via the MinIO/local backend)."""
+    """Upload a media asset to the store's library (stored via the document storage backend)."""
     await require_enabled_user(session, user)
     store = await get_store_for_user(session, slug, user)
 

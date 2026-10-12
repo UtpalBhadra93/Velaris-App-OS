@@ -37,6 +37,13 @@ set -euo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="$VELARIS_DIR/.backups"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
 KEEP_DAYS=""
 QUIET=false
 
@@ -69,8 +76,8 @@ BACKUP_FILE="$BACKUP_DIR/velaris-${STAMP}.sql"
 
 # ── Take the dump ─────────────────────────────────────────────────
 say "▶ Backing up $DB_NAME ..."
-if ! docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" > "$BACKUP_FILE" 2>/tmp/velaris-backup-err.log; then
-  warn "✗ Backup FAILED — see /tmp/velaris-backup-err.log"
+if ! docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" > "$BACKUP_FILE" 2>"$VELARIS_SCRATCH/velaris-backup-err.log"; then
+  warn "✗ Backup FAILED — see $VELARIS_SCRATCH/velaris-backup-err.log"
   # A truncated dump is more dangerous than none: it looks like a backup.
   rm -f "$BACKUP_FILE"
   # Recorded as failed, so the posture shows the gap rather than an old

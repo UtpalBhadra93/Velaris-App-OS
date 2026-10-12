@@ -467,13 +467,13 @@ export const ERROR_CATALOG: Record<string, ComponentErrors> = {
         http: "503",
         symptom: "Document upload fails with a server error; nothing is stored.",
         rootCause:
-          "The configured storage path is not writable, or the MinIO backend is unreachable. " +
+          "The configured storage path is not writable, or the S3 endpoint is unreachable. " +
           "Most common: local storage pointing at a directory the service user cannot create " +
           "(e.g. /var/lib/velaris/documents — /var/lib is root-owned), so the filesystem write raises PermissionError.",
         resolution:
           "Operator: point VELARIS_CASE_STORAGE_LOCAL_PATH at a writable, install-local path " +
           "(recommended <install-dir>/data/documents) or create the configured directory with correct ownership, " +
-          "then restart case-service. For MinIO: verify endpoint, credentials, and that the bucket exists. " +
+          "then restart case-service. For S3 storage: verify endpoint, credentials, and that the bucket exists. " +
           "User: retry; if it persists, contact your administrator — the file was not saved.",
         related: ["VEL-SYS-STORAGE-PRECHECK", "VEL-SYS-BODY-413"],
       },

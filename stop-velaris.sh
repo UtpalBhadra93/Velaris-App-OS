@@ -12,6 +12,10 @@
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
+# Which optional compose services this install runs (the bundled MinIO is kept
+# only where it already exists) — see the file for the rule.
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh" ] && . "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh"
 
 red()   { echo -e "\033[0;31m$*\033[0m"; }
 green() { echo -e "\033[0;32m$*\033[0m"; }

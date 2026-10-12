@@ -49,7 +49,6 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 ![pgvector](https://img.shields.io/badge/pgvector-4169E1?logo=postgresql&logoColor=white)
 ![Valkey](https://img.shields.io/badge/Valkey-2A6DB2?logo=valkey&logoColor=white)
-![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white)
 
 ![OpenBao](https://img.shields.io/badge/OpenBao-secrets-FFCF25?logo=openbao&logoColor=black)
 ![JWT](https://img.shields.io/badge/JWT_RS256-000000?logo=jsonwebtokens&logoColor=white)
@@ -71,6 +70,12 @@
 </p>
 
 ---
+
+## What's new in 3.1.1
+
+- **A patch for the update path.** MinIO's images left Docker Hub in September 2026; an update then stopped at the image pull with the new code checked out and its migrations unapplied, and said nothing. The updater now survives a failed pull, reports a stopped update, and finishes one when run again.
+- **Documents on local disk by default** for a new install, encrypted at rest; object storage is any S3-compatible endpoint you supply. An install that already runs the bundled MinIO keeps it, untouched. `scripts/storage-migrate.py` copies a bucket to disk for those who want to leave it.
+- **The Studio update banner** says when the server has no update agent, and stays up after a stopped update. Full notes: [`releases/notes/v3.1.1.md`](releases/notes/v3.1.1.md).
 
 ## What's new in 3.1.0
 
@@ -188,7 +193,7 @@
 │  ├── PostgreSQL 16 (+ pgvector)  :5432                         │
 │  ├── Temporal                    :7233  (UI :8233)             │
 │  ├── Valkey                      :6379                         │
-│  ├── MinIO                       :9000  (console :9001)        │
+│  ├── Documents: local disk (S3 endpoint optional)              │
 │  ├── OpenBao (secrets manager)                                 │
 │  ├── Ollama (local AI backend)   :11434                        │
 │  ├── LiveKit SFU + egress (HxMeet video/recording)  :7880      │
@@ -208,7 +213,7 @@
 | Process engine | Temporal, BPMN 2.0 |
 | Database | PostgreSQL 16 (+ pgvector) |
 | Cache / realtime | Valkey 8 (Redis-compatible) |
-| Object storage | MinIO (S3-compatible) |
+| Document storage | Local disk by default, encrypted at rest; any S3-compatible endpoint optional |
 | AI (HxNexus) | Ollama (local default), Anthropic Claude, OpenAI, Google Gemini, Groq, Mistral, DeepSeek, Azure — or any OpenAI-compatible endpoint. Sovereignty-first: per-tenant `local_only` (any open-weight model) vs consented external, pseudonymized + audited |
 | Real-time sessions (HxMeet) | Self-hosted LiveKit SFU + egress; Whisper live captions (auto-detected GPU: CUDA / Vulkan); recordings & transcripts sealed to the case (tenant DEK + audit-chain anchor) |
 | Auth | JWT RS256 (RSA-2048), bcrypt, TOTP MFA, WebAuthn passkeys, RBAC + ABAC, SSO (SAML / OIDC) |
@@ -265,7 +270,6 @@ This script:
 | API + docs (via gateway) | http://localhost:8200/docs |
 | Engine API + docs | http://localhost:8100/docs |
 | Temporal UI | http://localhost:8233 |
-| MinIO console | http://localhost:9001 |
 | Mailpit (dev email) | http://localhost:8025 |
 
 ### 4. Update

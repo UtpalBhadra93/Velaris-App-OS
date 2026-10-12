@@ -13,7 +13,7 @@
 #            interactively; the flag (or VELARIS_DOCKER_DATA_ROOT) answers it
 #            up front for unattended installs.
 #
-#  Build output is captured to /tmp/velaris-setup.log (previous run kept as
+#  Build output is captured to ~/.local/state/velaris/velaris-setup.log (previous run kept as
 #  .log.prev) and the terminal shows a progress bar. On failure the tail of
 #  that log is printed automatically.
 # ═══════════════════════════════════════════════════════════════════
@@ -21,6 +21,13 @@
 set -euo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
 ERRORS=0
 
 # uv lives in ~/.local/bin. It is added to .bashrc during install, but that
@@ -83,7 +90,7 @@ VERBOSE=0
 for _a in ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; do
   case "$_a" in -v|--verbose) VERBOSE=1 ;; esac
 done
-SETUP_LOG="${VELARIS_SETUP_LOG:-/tmp/velaris-setup.log}"
+SETUP_LOG="${VELARIS_SETUP_LOG:-$VELARIS_SCRATCH/velaris-setup.log}"
 # Keep the previous run: a log truncated on every start is a log that is empty
 # exactly when someone needs it.
 [ -f "$SETUP_LOG" ] && mv -f "$SETUP_LOG" "$SETUP_LOG.prev" 2>/dev/null || true
@@ -503,7 +510,12 @@ if [ "$DB_CONFIGURED" = "0" ] && [ "$DB_FAMILY" = "mysql" ]; then
 else
   _write_if_missing VELARIS_DB_PASSWORD            "$(openssl rand -hex 16)"
 fi
-_write_if_missing VELARIS_MINIO_PASSWORD         "$(openssl rand -hex 24)"
+# The bundled MinIO's password — only for a host that already runs it. A new
+# install has no MinIO (v3.1.1) and gets no MinIO setting at all.
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'velaris-minio' \
+   || docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qE '(^|_)velaris-minio-data$'; then
+  _write_if_missing VELARIS_MINIO_PASSWORD         "$(openssl rand -hex 24)"
+fi
 _write_if_missing VELARIS_ADMIN_PASSWORD         "$(openssl rand -hex 16)"
 _write_if_missing VELARIS_CASE_AUTH_SECRET         "$(openssl rand -hex 32)"
 _write_if_missing VELARIS_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
@@ -511,7 +523,13 @@ _write_if_missing VELARIS_CASE_STORAGE_MASTER_KEY  "$(openssl rand -hex 32)"
 # the app derives a dev KEK from auth_secret (with a startup warning); production
 # should use a dedicated key so crypto-shredding is independent of auth_secret.
 _write_if_missing VELARIS_CASE_KEK               "$(openssl rand -hex 32)"
-_write_if_missing VELARIS_CASE_STORAGE_BACKEND     "minio"
+# Documents go to local disk on a NEW install (v3.1.1). It was "minio" until the
+# MinIO images left Docker Hub and a new install could no longer pull them.
+# `_write_if_missing` is the upgrade guarantee: an install that already says
+# "minio" keeps saying it, and keeps its container (compose-profiles.sh).
+# Object storage is opt-in: VELARIS_CASE_STORAGE_BACKEND=s3 and the
+# VELARIS_CASE_S3_* endpoint settings, pointing at an S3 service you run.
+_write_if_missing VELARIS_CASE_STORAGE_BACKEND     "local"
 
 # The ports this install actually uses. Written whatever was chosen — including
 # the defaults — so the units, the gateway template and the documentation all
@@ -621,7 +639,13 @@ fi
 # Provision the folder and point .env at it — but never clobber an operator's own
 # path (either the new VELARIS_CASE_ var or a legacy VELARIS_CASE_ one).
 STORAGE_DIR="$VELARIS_DIR/data/documents"
-mkdir -p "$STORAGE_DIR"
+# Local disk is the default document store from v3.1.1, so the folder is made
+# private to this user — but only when it is created here. An existing folder
+# keeps the permissions its operator gave it (a backup job may rely on them).
+if [ ! -d "$STORAGE_DIR" ]; then
+  mkdir -p "$STORAGE_DIR"
+  chmod 700 "$STORAGE_DIR"
+fi
 if grep -qE "^(VELARIS|HELIX)_CASE_STORAGE_LOCAL_PATH=" "$ENV_FILE"; then
   ok "Document storage path already set in .env — keeping existing value"
 else
@@ -631,6 +655,10 @@ fi
 
 # Load the generated vars into this shell so docker compose can use them
 set -o allexport; source "$ENV_FILE"; set +o allexport
+# Which optional compose services this install runs (the bundled MinIO is kept
+# only where it already exists) — see the file for the rule.
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh" ] && . "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh"
 
 # ── Step 2: Docker group ──────────────────────────────────────────
 step "Step 2/9 — Checking Docker group membership..."
@@ -862,11 +890,11 @@ if [ "$DB_FAMILY" = "mysql" ]; then
       SKIPPED=$((SKIPPED + 1)); continue
     fi
     echo -n "    apply $filename ... "
-    if mysql_client "$MY_NAME" < "$migration_file" 2>/tmp/migration_err.log; then
+    if mysql_client "$MY_NAME" < "$migration_file" 2>"$VELARIS_SCRATCH/migration_err.log"; then
       mysql_client "$MY_NAME" -e "INSERT IGNORE INTO schema_migrations(filename) VALUES('$filename');"
       green "✓"; APPLIED=$((APPLIED + 1))
     else
-      red "FAILED"; cat /tmp/migration_err.log
+      red "FAILED"; cat "$VELARIS_SCRATCH/migration_err.log"
       red "  $filename was NOT recorded as applied; the database is part-migrated."
       red "  Fix the migration, then re-run: everything before it is already recorded."
       exit 1
@@ -941,12 +969,12 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
   # so a migration whose statements were rejected is marked done and never
   # runs again. Migration 080 did exactly that on every fresh install.
   if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>"$VELARIS_SCRATCH/migration_err.log"; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))
   else
-    red "FAILED"; cat /tmp/migration_err.log
+    red "FAILED"; cat "$VELARIS_SCRATCH/migration_err.log"
     red "  $filename was NOT recorded as applied; the database is part-migrated."
     red "  Fix the migration, then re-run: everything before it is already recorded."
     exit 1
@@ -1151,7 +1179,7 @@ elif ask "Enable the firewall (allow SSH + Studio 5173, deny everything else)?";
   sudo ufw default allow outgoing >/dev/null 2>&1 || true
   if sudo ufw --force enable >/dev/null 2>&1; then
     ok "Firewall active — inbound SSH + 5173 only."
-    echo "    Everything else (Postgres, Redis, Kafka, MinIO, OpenBao, the API"
+    echo "    Everything else (Postgres, Redis, Kafka, OpenBao, the API"
     echo "    gateway) is loopback-bound and was never reachable from outside."
     echo "    Adding TLS later: allow 443/tcp and put Studio behind it."
   else
@@ -1197,12 +1225,45 @@ else
       # would then double-bind the ports at the next boot.
       sudo systemctl start velaris-engine velaris-case-service velaris-analytics-service velaris-hxgraph-service velaris-hxmigrate-service velaris-studio 2>/dev/null || true
       SYSTEMD_MANAGED=1
+      _UNITS_INSTALLED_NOW=1
       ok "systemd units installed, enabled and started"
       echo "    Status:  sudo systemctl status velaris-case-service"
       echo "    Logs:    sudo journalctl -u velaris-case-service -f"
       warn "Manage with systemctl from now on — do NOT also run ./start-velaris.sh."
     else
       warn "systemd install failed — start-velaris.sh still works."
+    fi
+    echo ""
+  fi
+
+  # The update agent. "Update this environment" in Studio only RECORDS the
+  # approval; velaris-update.timer is what acts on it. Without the timer the
+  # approval waits for ever (found on a real server, 2026-10-12). With
+  # `auto_update: false` — the default — the agent does nothing on its own: it
+  # applies only what an administrator approved in Studio.
+  #
+  # Offered when the units were installed in THIS run (a new install) or when a
+  # person is here to answer. Never on an unattended re-run of setup over an
+  # existing install: `ask` answers yes without a terminal, and switching this
+  # on there would be an update's decision, not an operator's.
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] \
+     && [ ! -f /etc/systemd/system/velaris-update.timer ] \
+     && [ "${DB_FAMILY:-postgresql}" != "mysql" ] \
+     && { [ "${_UNITS_INSTALLED_NOW:-0}" = "1" ] || { [ "$NONINTERACTIVE" != "1" ] && [ -t 0 ]; }; }; then
+    if ask "Install the update agent, so updates approved in Studio are applied (hourly check)?"; then
+      if "$VELARIS_DIR/update-velaris.sh" --install-timer; then
+        case "$(git -C "$VELARIS_DIR" remote get-url origin 2>/dev/null || true)" in
+          git@*|ssh://*)
+            warn "This install's git remote is SSH. The agent runs with no terminal: if the key"
+            echo "    has a passphrase it cannot fetch. The repository is public — use HTTPS:"
+            echo "    git remote set-url origin https://github.com/Velaris-App-OS/Velaris-App-OS.git" ;;
+        esac
+      else
+        warn "Update agent not installed — run ./update-velaris.sh --install-timer later."
+      fi
+    else
+      echo "    Skipped. Updates approved in Studio will wait until you run"
+      echo "    ./update-velaris.sh --auto, or install the agent with --install-timer."
     fi
     echo ""
   fi

@@ -62,3 +62,9 @@ deploy/docker-compose/egress-gw/conf/allowlist.json
 deploy/docker-compose/egress-gw/log/*
 !deploy/docker-compose/egress-gw/log/.gitkeep
 .venv
+
+# Updater runtime state (written by update-velaris.sh on an install)
+.update-in-progress
+.update-status
+.update-request
+.update-notify-state

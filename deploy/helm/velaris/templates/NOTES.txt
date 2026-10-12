@@ -17,7 +17,8 @@ Three things this chart cannot decide for you:
    The default store is a path inside the container: a document is lost when its
    pod restarts, and with more than one replica each pod holds a different set.
    Either point the platform at object storage
-   (`caseService.env.VELARIS_CASE_STORAGE_BACKEND=minio`) or enable
+   (`caseService.env.VELARIS_CASE_STORAGE_BACKEND=s3` plus the
+   `VELARIS_CASE_S3_*` endpoint settings) or enable
    `caseService.documents.persistence` (ReadWriteMany if replicas > 1).
 {{- else }}2. Documents are on a volume ({{ .Values.caseService.documents.mountPath }}).
    With more than one replica that volume must be ReadWriteMany.

@@ -20,8 +20,10 @@ SPDX-License-Identifier: BSL-1.1
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -196,6 +198,36 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
     return None
 
 
+_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?")
+
+
+def _update_agent_installed() -> bool | None:
+    """Whether anything on this host will act on an approved update.
+
+    POST /request only writes `.update-request`; the thing that reads it is
+    `velaris-update.timer`, which exists only if an operator ran
+    `update-velaris.sh --install-timer`. Without it an approval sits unread
+    for ever and the banner kept saying "applies at the next agent check"
+    (found on a real server, 2026-10-12).
+
+    True / False when systemd can be asked; None when it cannot (no systemd
+    here, e.g. a container) — the caller must not turn "unknown" into "missing".
+    """
+    import shutil
+    import subprocess
+
+    if not Path("/run/systemd/system").is_dir() or not shutil.which("systemctl"):
+        return None
+    try:
+        rc = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "velaris-update.timer"],
+            timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode
+    except Exception:
+        return None
+    return rc == 0
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/status", dependencies=[Depends(_platform_operator)])
@@ -238,6 +270,7 @@ async def update_status(
         "update_window": cfg["update_window"],
         "pending_request": _read_json_file(root / ".update-request"),
         "last_update_status": _read_json_file(root / ".update-status"),
+        "agent_installed": await asyncio.to_thread(_update_agent_installed),
     }
 
 
@@ -650,6 +683,10 @@ async def request_rollback(
     target = body.to_version or beacon.get("previous_version")
     if not target:
         raise HTTPException(409, "No previous version recorded — nothing to roll back to.")
+    # The agent puts this string into a `git checkout` and a `sed` expression.
+    # It is refused there too; refusing it here means it is never written.
+    if not _VERSION_RE.fullmatch(str(target)):
+        raise HTTPException(422, "to_version must be a version such as 3.1.0.")
     if target == cfg["version"]:
         raise HTTPException(409, f"Already on v{target}.")
 

@@ -22,16 +22,31 @@ def get_storage_backend() -> StorageBackend:
     mode = getattr(s, "storage_backend", "local").lower()
 
     # ── Select raw backend ────────────────────────────────────────────────────
-    if mode == "minio":
-        from .minio_backend import MinIOBackend
-        raw: StorageBackend = MinIOBackend(
-            endpoint=s.minio_endpoint,
-            access_key=s.minio_access_key,
-            secret_key=s.minio_secret_key,
-            bucket=s.minio_bucket,
-            secure=s.minio_secure,
+    # "s3" and "minio" are one backend: an S3 client pointed at the endpoint in
+    # VELARIS_CASE_S3_* (or the older VELARIS_CASE_MINIO_* names). "minio" is the name every install before v3.1.1
+    # wrote into .env and stays valid; "s3" is the name for an endpoint that is
+    # not MinIO (SeaweedFS, Garage, Ceph RGW, a hosted S3).
+    if mode in ("minio", "s3"):
+        from .s3_backend import S3Backend
+        raw: StorageBackend = S3Backend(
+            endpoint=s.s3_endpoint,
+            access_key=s.s3_access_key,
+            secret_key=s.s3_secret_key,
+            bucket=s.s3_bucket,
+            secure=s.s3_secure,
         )
-        logger.info("Storage backend: MinIO (%s / %s)", s.minio_endpoint, s.minio_bucket)
+        logger.info("Storage backend: S3 (%s / %s)", s.s3_endpoint, s.s3_bucket)
+        # `s3_secure` defaults to False because the endpoint used to be a
+        # container on this machine. Pointed anywhere else, that default sends
+        # every document over plain HTTP. Warn, never change the default: an
+        # existing install on localhost:9000 depends on it.
+        _host = str(s.s3_endpoint).rsplit(":", 1)[0].strip("[]").lower()
+        if not s.s3_secure and _host not in ("localhost", "127.0.0.1", "::1", "minio"):
+            logger.warning(
+                "SECURITY WARNING: document storage endpoint %s is not on this machine "
+                "and VELARIS_CASE_S3_SECURE is false — documents travel unencrypted "
+                "over the network. Set VELARIS_CASE_S3_SECURE=true.", s.s3_endpoint,
+            )
     else:
         from .local_fs import LocalFSBackend
         base = getattr(s, "storage_local_path", "/tmp/velaris-docs")
@@ -53,6 +68,20 @@ def get_storage_backend() -> StorageBackend:
         "(openssl rand -hex 32) to enable AES-256-GCM at-rest encryption."
     )
     return raw
+
+
+def bundled_minio_in_use(settings) -> bool:
+    """True when documents live in the MinIO container bundled before v3.1.1.
+
+    Recognised by the S3 backend being selected, the endpoint being on this
+    machine, and the container's own password being present. An S3 endpoint the
+    operator supplied — even one on localhost with its own secret and no bundled
+    password — is not this.
+    """
+    if (getattr(settings, "storage_backend", "") or "local").lower() not in ("minio", "s3"):
+        return False
+    host = str(settings.s3_endpoint).rsplit(":", 1)[0].strip("[]").lower()
+    return bool(settings.bundled_minio_password) and host in ("localhost", "127.0.0.1", "::1", "minio")
 
 
 def reset_storage_backend() -> None:

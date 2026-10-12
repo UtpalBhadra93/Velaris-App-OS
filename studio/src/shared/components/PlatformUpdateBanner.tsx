@@ -29,7 +29,14 @@ interface UpdateStatus {
   update_window: string;
   pending_request: { mode: string; requested_at: string } | null;
   last_update_status: { result: string; message: string; timestamp: string } | null;
+  /** false = no update agent on this server; null/absent = cannot be told. */
+  agent_installed?: boolean | null;
 }
+
+// An update that began and did not finish. After the code pull the installed
+// version already equals the channel's, so `update_available` is false and the
+// banner used to disappear at exactly the moment it had something to say.
+const STOPPED = new Set(["failed", "unhealthy", "restart_required"]);
 
 export function PlatformUpdateBanner() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
@@ -82,9 +89,34 @@ export function PlatformUpdateBanner() {
     }
   };
 
-  if (!status || !status.update_available) return null;
+  if (!status) return null;
+
+  const stopped = STOPPED.has(status.last_update_status?.result ?? "");
+  if (!status.update_available) {
+    if (!stopped) return null;
+    return (
+      <div
+        style={{
+          padding: "10px 16px",
+          marginBottom: 16,
+          borderRadius: 8,
+          border: "1px solid #fca5a5",
+          background: "#fef2f2",
+          color: "#7f1d1d",
+          fontSize: 14,
+        }}
+      >
+        <span style={{ fontWeight: 600 }}>⚠ The last platform update did not finish. </span>
+        {status.last_update_status?.message}
+        {" — on the server, run "}
+        <code>./update-velaris.sh</code>
+        {" to finish it."}
+      </div>
+    );
+  }
 
   const security = status.release?.security ?? false;
+  const noAgent = status.agent_installed === false;
 
   return (
     <div
@@ -115,7 +147,14 @@ export function PlatformUpdateBanner() {
 
       {status.pending_request ? (
         <>
-          <span style={{ opacity: 0.8 }}>
+          {noAgent && (
+            <span style={{ color: "#b91c1c" }}>
+              Approved, but this server has no update agent, so nothing will apply it. On the
+              server run <code>./update-velaris.sh --auto</code> now, or{" "}
+              <code>./update-velaris.sh --install-timer</code> once so approvals apply themselves.
+            </span>
+          )}
+          <span style={{ opacity: 0.8, display: noAgent ? "none" : undefined }}>
             Update approved ({status.pending_request.mode === "now"
               ? "applies at the next agent check"
               : `applies in the next maintenance window ${status.update_window || ""}`})
@@ -144,9 +183,9 @@ export function PlatformUpdateBanner() {
       )}
 
       {error && <span style={{ color: "#b91c1c" }}>{error}</span>}
-      {status.last_update_status?.result === "unhealthy" && (
+      {stopped && (
         <span style={{ color: "#b91c1c" }}>
-          Last update needs attention: {status.last_update_status.message}
+          Last update needs attention: {status.last_update_status?.message}
         </span>
       )}
     </div>

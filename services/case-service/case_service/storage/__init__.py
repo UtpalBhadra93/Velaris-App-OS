@@ -1,10 +1,11 @@
-"""HELIX storage — pluggable object storage (MinIO / LocalFS)."""
+"""Velaris storage — pluggable document storage (local disk / S3)."""
 from .backend import StorageBackend, StorageError, ObjectNotFound
 from .local_fs import LocalFSBackend
-from .minio_backend import MinIOBackend
+from .s3_backend import S3Backend
+from .minio_backend import MinIOBackend  # the pre-3.1.1 name, kept importable
 from .factory import get_storage_backend
 
 __all__ = [
     "StorageBackend", "StorageError", "ObjectNotFound",
-    "LocalFSBackend", "MinIOBackend", "get_storage_backend",
+    "LocalFSBackend", "S3Backend", "MinIOBackend", "get_storage_backend",
 ]

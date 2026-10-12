@@ -41,6 +41,8 @@ set -uo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
+# An uninstall takes the bundled MinIO with it whether or not it was detected.
+export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}minio"
 
 # ── Colour helpers ────────────────────────────────────────────────
 red()    { echo -e "\033[0;31m$*\033[0m"; }

@@ -179,6 +179,24 @@ async def lifespan(app: FastAPI):
                 settings.storage_local_path, _exc,
             )
 
+    # ── VEL-SYS-STORAGE-BUNDLED-MINIO — documents on an image nobody can re-pull
+    # MinIO's images left the public registries around 2026-09-11. An install
+    # whose documents are in the bundled container keeps working only for as
+    # long as this host holds that image: a pruned host or a restore onto a new
+    # machine cannot get it back. Say so at every start, with the way out.
+    # Recognised by the container's own password being present and the endpoint
+    # being on this machine — an S3 endpoint the operator supplied is not this.
+    from case_service.storage.factory import bundled_minio_in_use
+
+    if bundled_minio_in_use(settings):
+        logger.warning(
+            "VEL-SYS-STORAGE-BUNDLED-MINIO: documents are stored in the bundled MinIO "
+            "container, whose image can no longer be downloaded. If this host loses the "
+            "image, the documents cannot be served. Keep a copy of the image "
+            "(docker save) or move the documents to local disk: "
+            ".venv/bin/python scripts/storage-migrate.py"
+        )
+
     # ── Security check: warn loudly if default JWT secret is still in use ───
     if settings.auth_secret == _DEFAULT_JWT_SECRET:
         logger.warning(

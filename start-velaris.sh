@@ -10,6 +10,17 @@ set -euo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
+# Which optional compose services this install runs (the bundled MinIO is kept
+# only where it already exists) — see the file for the rule.
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh" ] && . "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh"
 
 # uv installs itself to ~/.local/bin, which is NOT on PATH in a fresh non-login
 # shell. Add it here rather than making the operator export it — a missing uv
@@ -240,7 +251,9 @@ fi
 
 echo ""
 echo "  Checking containers:"
-for svc in velaris-db temporal temporal-ui minio cache mailpit; do
+_CHECK_SVCS="velaris-db temporal temporal-ui cache mailpit"
+[ "${VELARIS_BUNDLED_MINIO_ACTIVE:-false}" = true ] && _CHECK_SVCS="$_CHECK_SVCS minio"
+for svc in $_CHECK_SVCS; do
   if docker ps --format '{{.Names}}' | grep -q "$svc"; then
     green "    ✓ $svc running"
   else
@@ -304,11 +317,11 @@ if [ "$DB_FAMILY" = "mysql" ]; then
       echo "    skip  $filename"; SKIPPED=$((SKIPPED + 1)); continue
     fi
     echo -n "    apply $filename ... "
-    if mysql_client "$DB_NAME" < "$migration_file" 2>/tmp/migration_err.log; then
+    if mysql_client "$DB_NAME" < "$migration_file" 2>"$VELARIS_SCRATCH/migration_err.log"; then
       mysql_client "$DB_NAME" -e "INSERT IGNORE INTO schema_migrations(filename) VALUES('$filename');"
       green "✓"; APPLIED=$((APPLIED + 1))
     else
-      red "FAILED"; cat /tmp/migration_err.log
+      red "FAILED"; cat "$VELARIS_SCRATCH/migration_err.log"
       red "  Migration failed — stopping."; exit 1
     fi
   done
@@ -339,12 +352,12 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
   # (repaired by 217). setup-velaris.sh and update-velaris.sh already had it;
   # this runner was missed until 2026-10-11.
   if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>"$VELARIS_SCRATCH/migration_err.log"; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))
   else
-    red "FAILED"; cat /tmp/migration_err.log; FAILED=$((FAILED + 1))
+    red "FAILED"; cat "$VELARIS_SCRATCH/migration_err.log"; FAILED=$((FAILED + 1))
     red "  Migration failed — stopping."; exit 1
   fi
 done
@@ -379,9 +392,9 @@ if [ -f "$MANIFEST_FILE" ]; then
   fi
   echo "▶ Syncing release manifest ($DB_COUNT features in DB, $MANIFEST_COUNT in manifest)..."
   if [ "$DB_FAMILY" = "mysql" ]; then
-    _man_ok=0; mysql_client "$DB_NAME" < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
+    _man_ok=0; mysql_client "$DB_NAME" < "$MANIFEST_FILE" 2>"$VELARIS_SCRATCH/manifest_err.log" && _man_ok=1
   else
-    _man_ok=0; docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q < "$MANIFEST_FILE" 2>/tmp/manifest_err.log && _man_ok=1
+    _man_ok=0; docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q < "$MANIFEST_FILE" 2>"$VELARIS_SCRATCH/manifest_err.log" && _man_ok=1
   fi
   if [ "$_man_ok" = "1" ]; then
     if [ "$MANIFEST_COUNT" -gt "$DB_COUNT" ]; then
@@ -390,7 +403,7 @@ if [ -f "$MANIFEST_FILE" ]; then
       green "  ✓ Release manifest synced ($MANIFEST_COUNT features, versions refreshed)"
     fi
   else
-    yellow "  ⚠ Release manifest sync had warnings:"; cat /tmp/manifest_err.log
+    yellow "  ⚠ Release manifest sync had warnings:"; cat "$VELARIS_SCRATCH/manifest_err.log"
   fi
   echo ""
 fi
@@ -612,7 +625,7 @@ elif ! npm ls --depth=0 >/dev/null 2>&1; then
 fi
 if [ "$_NEED_NPM" = 1 ]; then
   echo "  Studio dependencies missing/stale — running npm install..."
-  _NPM_LOG=/tmp/velaris-npm-install.log
+  _NPM_LOG="$VELARIS_SCRATCH/velaris-npm-install.log"
   if npm install --prefer-offline >"$_NPM_LOG" 2>&1 \
      || npm install >"$_NPM_LOG" 2>&1; then   # retry online if offline-first failed
     rm -rf "$VELARIS_DIR/studio/node_modules/.vite"
@@ -668,6 +681,7 @@ echo "║  Studio:        http://localhost:5173                 ║"
 echo "║  Engine API:    http://localhost:8100                 ║"
 echo "║  Case Service:  http://localhost:8200                 ║"
 echo "║  Temporal UI:   http://localhost:8233                 ║"
+[ "${VELARIS_BUNDLED_MINIO_ACTIVE:-false}" = true ] && \
 echo "║  MinIO Console: http://localhost:9001                 ║"
 echo "║  Mailpit UI:    http://localhost:8025                 ║"
 echo "╠═══════════════════════════════════════════════════════╣"

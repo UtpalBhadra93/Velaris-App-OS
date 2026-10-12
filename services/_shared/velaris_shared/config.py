@@ -156,18 +156,84 @@ class Settings(BaseSettings):
     vault_cache_resync_seconds: int = Field(default=30, validation_alias="VELARIS_CASE_VAULT_RESYNC_SECONDS")
 
     # >>> P24 document storage
-    storage_backend: str = "local"  # "local" | "minio"
+    # "local" (default) | "s3" | "minio" — the last two are the same S3 client;
+    # the endpoint is the minio_* settings below, whatever service answers it.
+    storage_backend: str = "local"
     storage_local_path: str = Field(
         default="./data/velaris-docs",  # relative to working dir
         # Explicit alias is redundant now that the class prefix is VELARIS_CASE_,
         # but kept so the name stays greppable at the field it configures.
         validation_alias="VELARIS_CASE_STORAGE_LOCAL_PATH",
     )
-    minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "velaris"
-    minio_secret_key: str = "velaris_dev_password"
-    minio_bucket: str = "velaris-docs"
-    minio_secure: bool = False
+    # The S3 endpoint. VELARIS_CASE_S3_* are the names from v3.1.1; the
+    # VELARIS_CASE_MINIO_* names every earlier install may have in .env are read
+    # for good — never remove them. When both are set the S3 name wins.
+    s3_endpoint: str = Field(
+        default="localhost:9000",
+        validation_alias=AliasChoices("VELARIS_CASE_S3_ENDPOINT", "VELARIS_CASE_MINIO_ENDPOINT"),
+    )
+    s3_access_key: str = Field(
+        default="velaris",
+        validation_alias=AliasChoices("VELARIS_CASE_S3_ACCESS_KEY", "VELARIS_CASE_MINIO_ACCESS_KEY"),
+    )
+    # Empty = not set. Resolved by `s3_secret_key` below, never read directly.
+    s3_secret_key_configured: str = Field(
+        default="",
+        validation_alias=AliasChoices("VELARIS_CASE_S3_SECRET_KEY", "VELARIS_CASE_MINIO_SECRET_KEY"),
+    )
+    s3_bucket: str = Field(
+        default="velaris-docs",
+        validation_alias=AliasChoices("VELARIS_CASE_S3_BUCKET", "VELARIS_CASE_MINIO_BUCKET"),
+    )
+    s3_secure: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("VELARIS_CASE_S3_SECURE", "VELARIS_CASE_MINIO_SECURE"),
+    )
+    # The bundled MinIO container's root password, as setup wrote it for the
+    # compose file. Read here only as the fallback in `s3_secret_key`.
+    bundled_minio_password: str = Field(default="", validation_alias="VELARIS_MINIO_PASSWORD")
+
+    @property
+    def s3_secret_key(self) -> str:
+        """The secret the S3 client signs with.
+
+        1. the configured secret (VELARIS_CASE_S3_SECRET_KEY, or the MINIO name);
+        2. else, for an endpoint ON THIS MACHINE, the bundled container's own
+           password. From 2026-08-06 setup wrote STORAGE_BACKEND=minio and a
+           random VELARIS_MINIO_PASSWORD for the container, and never told the
+           service: it signed with the dev default below, MinIO answered
+           SignatureDoesNotMatch, and document storage was dead on every install
+           made that way (found 2026-10-12). Never used for a remote endpoint —
+           one service's password is not another's;
+        3. else the historical dev default, so nothing that worked stops.
+        """
+        if self.s3_secret_key_configured:
+            return self.s3_secret_key_configured
+        host = str(self.s3_endpoint).rsplit(":", 1)[0].strip("[]").lower()
+        if self.bundled_minio_password and host in ("localhost", "127.0.0.1", "::1", "minio"):
+            return self.bundled_minio_password
+        return "velaris_dev_password"
+
+    # The attribute names from before v3.1.1, for anything that still reads them.
+    @property
+    def minio_endpoint(self) -> str:
+        return self.s3_endpoint
+
+    @property
+    def minio_access_key(self) -> str:
+        return self.s3_access_key
+
+    @property
+    def minio_secret_key(self) -> str:
+        return self.s3_secret_key
+
+    @property
+    def minio_bucket(self) -> str:
+        return self.s3_bucket
+
+    @property
+    def minio_secure(self) -> bool:
+        return self.s3_secure
 
     # At-rest encryption for document storage (local and MinIO).
     # Set VELARIS_CASE_STORAGE_MASTER_KEY to a 64-char hex string (32 bytes).

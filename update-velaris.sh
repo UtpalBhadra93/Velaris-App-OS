@@ -15,11 +15,34 @@
 set -euo pipefail
 
 VELARIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run by the timer, this script gets systemd's bare PATH and no terminal.
+#  - `uv` normally lives in ~/.local/bin, which that PATH lacks: the dependency
+#    sync was being skipped as "uv not found" on every timer-driven update.
+#    Appended, so nothing an operator has on PATH is overridden.
+#  - git must fail at once rather than wait for a passphrase or password nobody
+#    is there to type. With a terminal attached nothing changes.
+export PATH="$PATH${HOME:+:$HOME/.local/bin:$HOME/.cargo/bin}"
+if [ ! -t 0 ]; then
+  export GIT_TERMINAL_PROMPT=0
+  export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes"
+fi
 COMPOSE_FILE="$VELARIS_DIR/deploy/docker-compose/docker-compose.yml"
+# Which optional compose services this install runs (the bundled MinIO is kept
+# only where it already exists) — see the file for the rule.
+# shellcheck source=/dev/null
+[ -f "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh" ] && . "$VELARIS_DIR/deploy/docker-compose/compose-profiles.sh"
 DB_CONTAINER="docker-compose-velaris-db-1"
 DB_USER="velaris"
 DB_NAME="velaris"
 BACKUP_DIR="$VELARIS_DIR/.backups"
+# Scratch files and error logs go to a directory only this user can write. A
+# fixed name under /tmp can be pre-created, or pointed somewhere else, by any
+# other local user before this script writes to it.
+VELARIS_SCRATCH="${VELARIS_SCRATCH:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/velaris}"
+if ! { mkdir -p "$VELARIS_SCRATCH" && chmod 700 "$VELARIS_SCRATCH" && [ -w "$VELARIS_SCRATCH" ]; } 2>/dev/null; then
+  VELARIS_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/velaris.XXXXXX")"
+fi
 
 # ── UPDATE SOURCE CONFIG — read from velaris.yaml ───────────────
 # To switch from GitHub to your own server, edit velaris.yaml:
@@ -162,17 +185,72 @@ if ! _velaris_check_gateway_limits; then
   exit 1
 fi
 bold()   { echo -e "\033[1m$*\033[0m"; }
-step()   { echo ""; bold "▶ $*"; }
+_CURRENT_STEP=""
+step()   { _CURRENT_STEP="$*"; echo ""; bold "▶ $*"; }
 
 # ── Version beacon — fleet visibility for ops ────────────────────
 # previous_version is the rollback target — carry it across beacon writes
 # so an hourly "current" status never erases it.
 PREVIOUS_VERSION=$(python3 -c "import json; print(json.load(open('$VELARIS_DIR/.update-status')).get('previous_version') or '')" 2>/dev/null || echo "")
+_STATUS_WRITTEN=false
 _write_status() {
   # args: result message
+  _STATUS_WRITTEN=true
   cat > "$VELARIS_DIR/.update-status" <<EOF
 {"version": "${CURRENT_VERSION:-unknown}", "previous_version": "${PREVIOUS_VERSION}", "channel": "$UPDATE_CHANNEL", "result": "$1", "message": "$2", "timestamp": "$(date -Iseconds)"}
 EOF
+}
+
+# ── An update that stops must say so ─────────────────────────────
+# `set -e` ends this script at the first failing command, and until 2026-10-12
+# it could do that halfway through with no message and no beacon: the code
+# checked out, the migrations not applied, `.update-status` still describing
+# the run before. Once the update proper has begun, any exit that is not a
+# success and has not already written its own status writes one here, naming
+# the step. The marker is left in place so a re-run finishes the job.
+UPDATE_MARKER_FILE="$VELARIS_DIR/.update-in-progress"
+_IN_UPDATE=false
+_on_exit() {
+  local rc=$?
+  [[ -n "${MANIFEST_FILE:-}" ]] && rm -f "$MANIFEST_FILE" "${MANIFEST_FILE}.sig"
+  if [[ "$rc" -ne 0 && "$_IN_UPDATE" == true && "$_STATUS_WRITTEN" == false ]]; then
+    red ""
+    red "  ✗ The update STOPPED at: ${_CURRENT_STEP:-unknown step} (exit $rc)"
+    red "    It is NOT complete. Fix the cause above, then run ./update-velaris.sh again —"
+    red "    it will pick up where this run stopped."
+    _write_status "failed" "stopped at ${_CURRENT_STEP:-unknown step} (exit $rc) - update to v${LATEST_VERSION:-?} not complete"
+    rm -f "$UPDATE_REQUEST_FILE"   # consumed — never auto-retry a failing update
+  fi
+}
+trap _on_exit EXIT
+
+# A version string arrives from OUTSIDE this script — the channel manifest, or
+# `to_version` in a rollback request written by the web tier — and is then put
+# into a `git checkout`, a `sed` expression, a `python3 -c` string and the JSON
+# beacon. Only a plain version may get that far: GNU sed alone would run a
+# command for anything carrying `/e`.
+_valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; }
+_require_valid_version() {
+  # args: value, where it came from
+  if ! _valid_version "$1"; then
+    red "  ✗ Refusing to act on a version that is not a version (from $2)."
+    _write_status "failed" "refused: invalid version string from $2"
+    rm -f "$UPDATE_REQUEST_FILE"
+    exit 1
+  fi
+}
+
+# Migration files this database has not recorded. 0 when the database cannot
+# be asked — an unreachable database is not evidence of anything pending.
+_pending_migrations() {
+  local applied f n=0
+  applied=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAq \
+              -c "SELECT filename FROM schema_migrations;" 2>/dev/null) || { echo 0; return 0; }
+  for f in "$VELARIS_DIR"/migrations/postgresql/*.sql; do
+    [ -f "$f" ] || continue
+    grep -qxF "$(basename "$f")" <<<"$applied" || n=$((n + 1))
+  done
+  echo "$n"
 }
 
 # ── Maintenance window check (HH:MM-HH:MM, wrap-around supported) ─
@@ -206,6 +284,9 @@ After=network-online.target docker.service
 Type=oneshot
 User=$USER
 WorkingDirectory=$VELARIS_DIR
+# The PATH of the shell that installed the timer, so the agent finds the same
+# uv / npm / docker the operator does.
+Environment="PATH=$PATH"
 ExecStart=$VELARIS_DIR/update-velaris.sh --auto
 EOF
       sudo tee /etc/systemd/system/velaris-update.timer > /dev/null <<EOF
@@ -283,7 +364,10 @@ step "Step 2/7 — Checking for updates ($UPDATE_SOURCE, channel: $UPDATE_CHANNE
 # carry a valid cosign signature (channels.json.sig) — fail closed on any
 # verification problem. Without the key file, verification is skipped
 # (not configured).
-MANIFEST_FILE="/tmp/velaris-channels.json"
+# A private file, not a fixed name in /tmp: any local user could pre-create or
+# swap a predictable path between the download and the read, and so choose the
+# version this script installs. Removed by _on_exit.
+MANIFEST_FILE="$(mktemp "${TMPDIR:-/tmp}/velaris-channels.XXXXXX")"
 
 _manifest_url() {
   if [[ "$UPDATE_SOURCE" == "github" ]]; then
@@ -342,6 +426,8 @@ fetch_latest_version() {
   fi
 }
 
+RESUMING=false
+RESUME_FROM=""
 MANIFEST_RC=0
 fetch_manifest || MANIFEST_RC=$?
 if [[ "$MANIFEST_RC" -eq 2 ]]; then
@@ -357,6 +443,7 @@ if [[ "$REQUEST_ACTION" == "rollback" ]]; then
     rm -f "$UPDATE_REQUEST_FILE"
     exit 1
   fi
+  _require_valid_version "$REQUEST_TO_VERSION" "the rollback request"
   LATEST_VERSION="$REQUEST_TO_VERSION"
   yellow "  Rollback requested → v$LATEST_VERSION"
   yellow "  Code and images are reverted; DB migrations are NOT reverted"
@@ -378,17 +465,36 @@ else
     yellow "  ⚠ Channel manifest unreachable — falling back to latest release"
     LATEST_VERSION=$(fetch_latest_version)
   fi
+  _require_valid_version "$LATEST_VERSION" "the channel manifest"
 
   if [[ "$LATEST_VERSION" == "$CURRENT_VERSION" ]]; then
-    green "  ✓ Already on the channel version (v$CURRENT_VERSION)"
-    _write_status "current" "already on v$CURRENT_VERSION"
-    rm -f "$UPDATE_REQUEST_FILE"   # request satisfied — nothing newer pinned
-    exit 0
+    # "Already on it" is only true if the last update FINISHED. One that stopped
+    # after the code pull leaves velaris.yaml on the new version with its
+    # migrations unapplied, and reporting "current" here would skip them for
+    # good — new code on the old schema, permanently.
+    _PENDING=$(_pending_migrations)
+    if [[ -f "$UPDATE_MARKER_FILE" || "$_PENDING" -gt 0 ]]; then
+      if [[ "$AUTO_MODE" == true && -z "$REQUEST_MODE" ]]; then
+        # The timer on its own never retries a stopped update (the same rule as
+        # a failed migration). The beacon keeps the original failure.
+        yellow "  ⚠ v$CURRENT_VERSION is checked out but its update did not finish ($_PENDING migration(s) pending)."
+        yellow "    Run ./update-velaris.sh by hand, or approve the update in Studio, to finish it."
+        exit 0
+      fi
+      RESUMING=true
+      RESUME_FROM=$(head -1 "$UPDATE_MARKER_FILE" 2>/dev/null | tr -cd '0-9A-Za-z.-' || true)
+      yellow "  ⚠ v$CURRENT_VERSION is checked out but its update did not finish ($_PENDING migration(s) pending) — finishing it"
+    else
+      green "  ✓ Already on the channel version (v$CURRENT_VERSION)"
+      _write_status "current" "already on v$CURRENT_VERSION"
+      rm -f "$UPDATE_REQUEST_FILE"   # request satisfied — nothing newer pinned
+      exit 0
+    fi
   fi
 
   # Never downgrade automatically — a manifest behind the installed version
   # means this env ran ahead (e.g. dev box switched to prod channel).
-  if [[ "$(printf '%s\n%s\n' "$LATEST_VERSION" "$CURRENT_VERSION" | sort -V | tail -1)" == "$CURRENT_VERSION" ]]; then
+  if [[ "$RESUMING" == false ]] && [[ "$(printf '%s\n%s\n' "$LATEST_VERSION" "$CURRENT_VERSION" | sort -V | tail -1)" == "$CURRENT_VERSION" ]]; then
     yellow "  ⚠ Channel pins v$LATEST_VERSION but v$CURRENT_VERSION is installed — not downgrading"
     _write_status "skipped" "channel v$LATEST_VERSION behind installed v$CURRENT_VERSION"
     rm -f "$UPDATE_REQUEST_FILE"   # unsatisfiable request
@@ -412,7 +518,11 @@ else
 fi
 
 echo ""
-green "  New version available: v$CURRENT_VERSION → v$LATEST_VERSION"
+if [[ "$RESUMING" == true ]]; then
+  green "  Finishing the update to v$LATEST_VERSION"
+else
+  green "  New version available: v$CURRENT_VERSION → v$LATEST_VERSION"
+fi
 echo ""
 
 # ── Confirm ───────────────────────────────────────────────────────
@@ -422,6 +532,7 @@ if [[ "$AUTO_YES" == false ]]; then
 fi
 
 # ── Step 3: Backup database ───────────────────────────────────────
+_IN_UPDATE=true   # from here a stop is reported by _on_exit
 step "Step 3/7 — Backing up database..."
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/velaris-v${CURRENT_VERSION}-$(date +%Y%m%d-%H%M%S).sql"
@@ -466,6 +577,9 @@ fi
 # ── Step 4: Pull latest code ──────────────────────────────────────
 step "Step 4/7 — Pulling latest code..."
 cd "$VELARIS_DIR"
+# Written before the tree changes and removed only when the run reaches its end:
+# while it exists, "already on the channel version" is not to be believed.
+[[ -f "$UPDATE_MARKER_FILE" ]] || echo "$CURRENT_VERSION" > "$UPDATE_MARKER_FILE"
 
 # Protect per-host OpenBao runtime secrets (unseal keys, root token, AppRole)
 # from the update. They live in the tree but are generated per-server; while any
@@ -498,9 +612,9 @@ if [[ "$UPDATE_SOURCE" == "github" ]]; then
 elif [[ "$UPDATE_SOURCE" == "server" ]]; then
   # Own server: download and extract tarball
   TARBALL_URL="${UPDATE_SERVER_URL%/latest}/download/v${LATEST_VERSION}.tar.gz"
-  curl -sf --max-time 120 -o /tmp/velaris-update.tar.gz "$TARBALL_URL"
-  tar -xzf /tmp/velaris-update.tar.gz -C "$VELARIS_DIR" --strip-components=1
-  rm -f /tmp/velaris-update.tar.gz
+  curl -sf --max-time 120 -o "$VELARIS_SCRATCH/velaris-update.tar.gz" "$TARBALL_URL"
+  tar -xzf "$VELARIS_SCRATCH/velaris-update.tar.gz" -C "$VELARIS_DIR" --strip-components=1
+  rm -f "$VELARIS_SCRATCH/velaris-update.tar.gz"
 fi
 
 # Restore the host's live secrets (overwrites whatever the update brought),
@@ -540,13 +654,13 @@ else
   yellow "  ⚠ uv not found — skipping Python dependency sync"
 fi
 if [ -d "$VELARIS_DIR/studio" ]; then
-  if ( cd "$VELARIS_DIR/studio" && { npm install --prefer-offline >/tmp/velaris-npm-install.log 2>&1 \
-         || npm install >/tmp/velaris-npm-install.log 2>&1; } \
+  if ( cd "$VELARIS_DIR/studio" && { npm install --prefer-offline >"$VELARIS_SCRATCH/velaris-npm-install.log" 2>&1 \
+         || npm install >"$VELARIS_SCRATCH/velaris-npm-install.log" 2>&1; } \
        && rm -rf node_modules/.vite ); then
     green "  ✓ Studio npm dependencies installed"
   else
-    tail -5 /tmp/velaris-npm-install.log
-    yellow "  ⚠ npm install FAILED — Studio may not load. Full log: /tmp/velaris-npm-install.log"
+    tail -5 "$VELARIS_SCRATCH/velaris-npm-install.log"
+    yellow "  ⚠ npm install FAILED — Studio may not load. Full log: $VELARIS_SCRATCH/velaris-npm-install.log"
   fi
 fi
 
@@ -556,8 +670,17 @@ step "Step 5/7 — Pulling new Docker images..."
 # subcommand, and two services declare secrets with `${VAR:?...}`. Without it
 # this aborts with "required variable VELARIS_MINIO_PASSWORD is missing" on any
 # host that lacks a stray .env beside the compose file — i.e. every real server.
-docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" pull
-green "  ✓ Images updated"
+#
+# A failed pull is NOT a reason to stop. On 2026-10-12 the `minio/mc` repository
+# had been withdrawn from Docker Hub; `pull` exited non-zero, `set -e` ended the
+# script here without a word, and the install was left with the new code checked
+# out and none of its migrations applied. An image this host already holds keeps
+# working; one it truly lacks fails loudly at `up`, where it is named.
+if docker compose -f "$COMPOSE_FILE" --env-file "$VELARIS_DIR/.env" pull; then
+  green "  ✓ Images updated"
+else
+  yellow "  ⚠ Some images could not be pulled — continuing with the ones already on this host"
+fi
 
 # ── Step 5b: Reclaim superseded layers + keep the cache cap in place ──
 # Every update supersedes image layers and (where a service builds) leaves the
@@ -624,13 +747,13 @@ for migration_file in $(find "$VELARIS_DIR/migrations/postgresql" -maxdepth 1 -n
   # again, on an EXISTING install, unattended. `setup` learned this from
   # migration 080; the update path never had the fix.
   if docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
-      -v ON_ERROR_STOP=1 < "$migration_file" 2>/tmp/migration_err.log; then
+      -v ON_ERROR_STOP=1 < "$migration_file" 2>"$VELARIS_SCRATCH/migration_err.log"; then
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q \
       -c "INSERT INTO schema_migrations(filename) VALUES('$filename') ON CONFLICT DO NOTHING;"
     green "✓"; APPLIED=$((APPLIED + 1))
   else
     red "FAILED"
-    cat /tmp/migration_err.log
+    cat "$VELARIS_SCRATCH/migration_err.log"
     red "  Migration failed — rolling back to v$CURRENT_VERSION"
     red "  Restore backup with: psql -U $DB_USER $DB_NAME < $BACKUP_FILE"
     _write_status "failed" "migration $filename failed during update to v$LATEST_VERSION"
@@ -769,7 +892,14 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
+# A finished-off update came from the version the interrupted run started on,
+# not from the one it had already checked out.
+if [[ "$RESUMING" == true ]]; then
+  [[ -n "$RESUME_FROM" ]] && PREVIOUS_VERSION="$RESUME_FROM"
+else
 PREVIOUS_VERSION="$CURRENT_VERSION"  # beacon records where we came from (rollback target)
+fi
+rm -f "$UPDATE_MARKER_FILE"          # every step ran; what follows is a verdict, not a stop
 CURRENT_VERSION="$LATEST_VERSION"    # beacon reports the new version
 rm -f "$UPDATE_REQUEST_FILE"         # request consumed (success or halt — admin re-requests)
 

@@ -136,7 +136,7 @@ async def _build_dev_context(session: AsyncSession) -> str:
         f"Form definitions ({len(forms)}): " + ", ".join(f.label for f in forms),
         "",
         "Architecture: FastAPI (Python) backend + React/TypeScript frontend.",
-        "DB: PostgreSQL with SQLAlchemy ORM. Auth: JWT. Storage: local or MinIO.",
+        "DB: PostgreSQL with SQLAlchemy ORM. Auth: JWT. Storage: local disk or S3.",
         "AI: HxNexus (Ollama/OpenAI/Anthropic backends). Knowledge: HxGraph.",
         "Deployment: Docker Compose (development), Helm (production).",
     ]

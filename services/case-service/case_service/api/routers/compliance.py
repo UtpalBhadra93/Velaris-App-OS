@@ -134,7 +134,7 @@ async def generate_report(
         tenant_id=tenant,
     )
 
-    # Persist report metadata. Storage of bytes via MinIO is optional
+    # Persist report metadata. Storage of bytes in document storage is optional
     # (P24 storage backend can be wired in via tenant config); we store
     # the JSON inline in summary if small, otherwise store separately.
     report = ComplianceReportModel(
@@ -220,7 +220,7 @@ async def download_report(
 
     # Re-generate fresh bytes for the requested format. Reports are
     # deterministic given period + chain state, so re-generation is safe;
-    # this avoids double-storing in DB and works without MinIO.
+    # this avoids double-storing in DB and works without object storage.
     result = await generate_evidence_pack(
         session, framework=report.framework,
         period_start=report.period_start, period_end=report.period_end,

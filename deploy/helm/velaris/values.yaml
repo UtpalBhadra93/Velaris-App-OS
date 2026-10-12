@@ -105,8 +105,9 @@ caseService:
   # one replica each pod holds a different set, so a download hits the wrong pod
   # and 404s.
   #
-  # Two honest options: point the platform at MinIO/S3
-  # (`VELARIS_CASE_STORAGE_BACKEND=minio` in `caseService.env`), or keep the
+  # Two honest options: point the platform at an S3-compatible endpoint
+  # (`VELARIS_CASE_STORAGE_BACKEND=s3` and `VELARIS_CASE_S3_*` in
+  # `caseService.env` — the chart ships no object store of its own), or keep the
   # filesystem and give it a volume here. A ReadWriteOnce volume only works with
   # ONE replica; more than one needs ReadWriteMany.
   documents:
